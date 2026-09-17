@@ -4,6 +4,7 @@ members = [
     "crates/ccosel-abi",
     "crates/ccosel-sdk",
     "crates/ccosel-host",
+    "crates/ccosel-host-wasmtime",
     # Added as each lands; see ARCHITECTURE.md for the target layout.
 ]
 # `apps/` is deliberately a SEPARATE workspace: guest modules need

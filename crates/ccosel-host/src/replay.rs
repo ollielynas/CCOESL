@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::ops::Range;
 
-use ccosel_abi::{validate, Cmd, DecodeError, Decoder, RespRecord, ResponseFlags};
+use ccosel_abi::{validate, Align, Cmd, DecodeError, Decoder, RespRecord, ResponseFlags, ScopeKind};
 
 use crate::convert;
 
@@ -225,21 +225,36 @@ impl Cx<'_> {
                 Cmd::BeginScope { id, layout } => {
                     let end = closes[i];
                     let inner = i + 1..end;
-                    let egui_layout = convert::layout(layout);
 
-                    if layout.kind == ccosel_abi::ScopeKind::Frame {
-                        egui::Frame::group(ui.style()).show(ui, |ui| {
-                            ui.with_layout(egui_layout, |ui| {
-                                self.render(ui, cmds, closes, inner.clone());
+                    // Dispatch to egui's own container helpers rather than building a layout by
+                    // hand. They size the child region to its row/column, whereas
+                    // `with_layout(left_to_right(Center))` hands the child the *full remaining
+                    // height* and centres within it — which silently pushes every subsequent
+                    // row off the bottom of the viewport.
+                    ui.push_id(self.egui_id(id), |ui| match (layout.kind, layout.cross_align) {
+                        (ScopeKind::Horizontal, Align::Min) => {
+                            ui.horizontal_top(|ui| self.render(ui, cmds, closes, inner.clone()));
+                        }
+                        (ScopeKind::Horizontal, _) => {
+                            ui.horizontal(|ui| self.render(ui, cmds, closes, inner.clone()));
+                        }
+                        (ScopeKind::Vertical, Align::Center) => {
+                            ui.vertical_centered(|ui| {
+                                self.render(ui, cmds, closes, inner.clone())
                             });
-                        });
-                    } else {
-                        ui.push_id(self.egui_id(id), |ui| {
-                            ui.with_layout(egui_layout, |ui| {
-                                self.render(ui, cmds, closes, inner.clone());
+                        }
+                        (ScopeKind::Vertical, _) => {
+                            ui.vertical(|ui| self.render(ui, cmds, closes, inner.clone()));
+                        }
+                        (ScopeKind::Frame, _) => {
+                            egui::Frame::group(ui.style()).show(ui, |ui| {
+                                self.render(ui, cmds, closes, inner.clone())
                             });
-                        });
-                    }
+                        }
+                        (ScopeKind::Group, _) => {
+                            ui.scope(|ui| self.render(ui, cmds, closes, inner.clone()));
+                        }
+                    });
 
                     i = end + 1;
                     continue;

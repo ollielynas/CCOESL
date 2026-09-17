@@ -20,10 +20,12 @@
 extern crate alloc;
 
 mod recorder;
+pub mod runtime;
 mod response;
 mod ui;
 
 pub use ccosel_abi::{Align, Color32, Pos2, Rect, ScopeKind, Vec2};
+pub use ccosel_abi::ABI_VERSION;
 pub use recorder::Recorder;
 pub use response::Response;
 pub use ui::{Text, Ui};

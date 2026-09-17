@@ -16,8 +16,8 @@ crates/
   ccosel-abi/             the guest<->shell contract. no_std, bytemuck only.   [BUILT]
   ccosel-sdk/             guest side: Ui facade, encoder, response lookup     [BUILT]
   ccosel-host/            decode + replay into egui::Ui. NO wasm runtime dep. [BUILT]
+  ccosel-host-wasmtime/   native/server backend                               [BUILT]
   ccosel-proto/           client<->server RPC types (serde/postcard)
-  ccosel-host-wasmtime/   native backend
   ccosel-host-web/        wasm-bindgen + web-sys backend
   ccosel-transport/       WS codec, pending-call table, reconnect/resume, coalescing
   ccosel-cas/             content-defined chunking + hashing (client and server)
@@ -135,8 +135,20 @@ nothing despite responses being a frame stale.
 - [x] `ccosel-sdk` — `Ui` facade, recorder, `Text`; native harness asserts the byte stream
 - [x] `ccosel-host` — decode + replay into `egui::Ui`, tested against an offscreen context
 - [x] `cargo run -p ccosel-host --example replay_demo` — SDK -> bytes -> egui, natively
-- [ ] `ccosel-host-wasmtime`, response write-back over a real wasm boundary
+- [x] `ccosel-host-wasmtime` — real modules over a real memory boundary, response write-back
+- [x] File Browser v0 as an actual `.wasm` guest: **27.7 KB raw, 11.8 KB gzipped**
 - [ ] `ccosel-server` skeleton, `ccosel-transport`
-- [ ] File Browser v0 (native host), then web host, then CAS upload/download, then `xtask`
+- [ ] `ccosel-host-web`, then CAS upload/download, then `xtask`
+
+## Running it
+
+```
+cargo test                                            # 28 tests, both workspaces
+cargo run -p ccosel-host-wasmtime --example dev_shell  # the native dev loop
+cd apps && cargo build --release --target wasm32-unknown-unknown
+```
+
+`dev_shell` loads the same `.wasm` the browser will fetch — no `wasm-bindgen`, no JS glue — so
+a bug reproduced there is the bug that would happen in the browser, with a real debugger.
 
 Build order and rationale: see the plan at `~/.claude/plans/read-through-teh-readme-mellow-pond.md`.

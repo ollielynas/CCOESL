@@ -211,7 +211,11 @@ impl Text {
         Self {
             buf: String::from(initial),
             version: 1,
-            push_pending: true,
+            // An empty initial buffer needs no push: the shell's own default is already
+            // empty, so sending one would cost bytes to say nothing. It also means an app
+            // whose fields start empty emits byte-identical frames from the very first one,
+            // which is what subtree caching will later depend on.
+            push_pending: !initial.is_empty(),
         }
     }
 

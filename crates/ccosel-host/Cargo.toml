@@ -8,7 +8,3 @@ description = "Decodes an app's command stream and replays it into a real egui::
 [dependencies]
 ccosel-abi = { workspace = true }
 egui = { workspace = true }
-
-[dev-dependencies]
-ccosel-sdk = { path = "../ccosel-sdk" }
-eframe = { workspace = true }

@@ -1,0 +1,16 @@
+[package]
+name = "ccosel-host-wasmtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Native/server AppHost backend for CCOSEL, via wasmtime."
+
+[dependencies]
+ccosel-abi = { workspace = true }
+ccosel-host = { workspace = true }
+bytemuck = { workspace = true }
+wasmtime = { version = "48", default-features = false, features = ["runtime", "cranelift", "std"] }
+
+[dev-dependencies]
+egui = { workspace = true }
+eframe = { workspace = true }

@@ -11,6 +11,8 @@
 //! malformed halfway through is discarded entirely and the previous frame stands.
 
 mod convert;
+mod host;
 mod replay;
 
+pub use host::{AppHost, AppInstance, FrameArgs, FrameResult, HostError};
 pub use replay::{ReplayError, Replayer};
