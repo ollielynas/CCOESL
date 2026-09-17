@@ -37,7 +37,6 @@
   const note = document.getElementById('note');
 
   const SHELL = './dist/ccosel-shell_bg.wasm';
-  const APP = './dist/file-browser.wasm';
 
   function human(n) {
     return n > 1048576 ? (n / 1048576).toFixed(1) + ' MB' : Math.round(n / 1024) + ' KB';
@@ -78,7 +77,8 @@
     await init({ module_or_path: bytes });
 
     boot.remove();
-    await start(document.getElementById('canvas'), APP);
+    // App modules are fetched lazily by the shell, from its own registry - not preloaded here.
+    await start(document.getElementById('canvas'));
   }
 
   boot_().catch((err) => {

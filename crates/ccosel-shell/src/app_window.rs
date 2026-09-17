@@ -4,6 +4,14 @@ use ccosel_abi::{RespRecord, REPAINT_ON_INPUT_ONLY};
 use ccosel_host::{AppInstance, FrameArgs, Replayer};
 
 pub struct AppWindow<I: AppInstance> {
+    pub title: String,
+    pub icon: &'static str,
+    pub app_id: &'static str,
+    /// Distinct per *instance*, not per app: two Files windows must not share egui state, or
+    /// they would fight over scroll position and focus.
+    pub instance_id: u64,
+    pub open: bool,
+    pub default_size: [f32; 2],
     instance: I,
     replayer: Replayer,
     /// Responses from the previous frame, handed back to the guest on the next one.
@@ -16,8 +24,21 @@ pub struct AppWindow<I: AppInstance> {
 }
 
 impl<I: AppInstance> AppWindow<I> {
-    pub fn new(instance: I) -> Self {
+    pub fn new(
+        instance: I,
+        instance_id: u64,
+        app_id: &'static str,
+        title: String,
+        icon: &'static str,
+        default_size: [f32; 2],
+    ) -> Self {
         Self {
+            title,
+            icon,
+            app_id,
+            instance_id,
+            open: true,
+            default_size,
             instance,
             replayer: Replayer::new(),
             responses: Vec::new(),
@@ -25,6 +46,12 @@ impl<I: AppInstance> AppWindow<I> {
             last_commands: Vec::new(),
             error: None,
         }
+    }
+
+    /// Bytes the guest emitted last frame — the number that would cross the network if this
+    /// app were ever hosted remotely, and a useful health signal either way.
+    pub fn command_bytes(&self) -> usize {
+        self.last_commands.len()
     }
 
     pub fn ui(&mut self, ui: &mut egui::Ui) {
@@ -63,7 +90,7 @@ impl<I: AppInstance> AppWindow<I> {
         }
 
         if !self.last_commands.is_empty() {
-            match self.replayer.replay(ui, 1, &self.last_commands) {
+            match self.replayer.replay(ui, self.instance_id, &self.last_commands) {
                 Ok(responses) => self.responses = responses,
                 Err(e) => {
                     // A malformed frame is dropped whole; the previous one stays up.

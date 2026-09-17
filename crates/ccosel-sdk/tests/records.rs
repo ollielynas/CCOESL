@@ -4,7 +4,7 @@
 //! This is the loop app authors get: write UI, assert the command stream, no browser.
 
 use ccosel_abi::{Cmd, Decoder, RespRecord, ResponseFlags};
-use ccosel_sdk::{App, Recorder, Text, Ui, Vec2};
+use ccosel_sdk::{App, FrameCtx, Recorder, Text, Ui, Vec2};
 
 struct Demo {
     clicks: u32,
@@ -27,7 +27,7 @@ impl App for Demo {
 }
 
 fn record(app: &mut Demo, rec: &mut Recorder) -> Vec<u8> {
-    let mut ui = Ui::root(rec);
+    let mut ui = Ui::root(rec, FrameCtx::default());
     app.update(&mut ui);
     rec.commands().to_vec()
 }
@@ -213,7 +213,7 @@ fn deeply_nested_scopes_still_produce_a_valid_buffer() {
     }
 
     let mut rec = Recorder::new();
-    let mut ui = Ui::root(&mut rec);
+    let mut ui = Ui::root(&mut rec, FrameCtx::default());
     Deep.update(&mut ui);
     ccosel_abi::validate(rec.commands()).unwrap();
 }

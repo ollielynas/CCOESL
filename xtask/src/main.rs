@@ -103,22 +103,34 @@ fn build_web() -> Result<()> {
         ],
     )?;
 
-    let guest_dst = dist.join("file-browser.wasm");
-    std::fs::copy(
-        root.join("apps/target/wasm32-unknown-unknown/release/file_browser.wasm"),
-        &guest_dst,
-    )?;
+    // Guest crate names use underscores; the served names use hyphens, matching the registry.
+    let guests = [("file_browser", "file-browser"), ("clock", "clock")];
+    for (crate_name, served) in guests {
+        std::fs::copy(
+            root.join(format!(
+                "apps/target/wasm32-unknown-unknown/release/{crate_name}.wasm"
+            )),
+            dist.join(format!("{served}.wasm")),
+        )
+        .with_context(|| format!("copying {crate_name}"))?;
+    }
 
     println!("\nwire sizes (what a client actually downloads):");
     report("shell.wasm", &dist.join("ccosel-shell_bg.wasm"))?;
     report("shell.js", &dist.join("ccosel-shell.js"))?;
-    let guest_gz = report("file-browser.wasm", &guest_dst)?;
 
-    if guest_gz > GUEST_BUDGET_GZIP {
+    let mut over_budget = Vec::new();
+    for (_, served) in guests {
+        let gz = report(&format!("{served}.wasm"), &dist.join(format!("{served}.wasm")))?;
+        if gz > GUEST_BUDGET_GZIP {
+            over_budget.push(format!("{served} is {} gzipped", human(gz)));
+        }
+    }
+    if !over_budget.is_empty() {
         bail!(
-            "file-browser.wasm is {} gzipped, over the {} budget",
-            human(guest_gz),
-            human(GUEST_BUDGET_GZIP)
+            "over the {} per-app budget: {}",
+            human(GUEST_BUDGET_GZIP),
+            over_budget.join(", ")
         );
     }
 

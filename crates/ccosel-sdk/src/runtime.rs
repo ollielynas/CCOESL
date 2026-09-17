@@ -52,7 +52,8 @@ impl<A: App> Runtime<A> {
         self.rec.set_responses(core::mem::take(&mut self.responses));
 
         {
-            let mut ui = Ui::root(&mut self.rec);
+            let ctx = crate::FrameCtx::from_input(&input);
+            let mut ui = Ui::root(&mut self.rec, ctx);
             self.app.update(&mut ui);
         }
 

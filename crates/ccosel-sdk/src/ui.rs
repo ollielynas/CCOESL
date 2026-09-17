@@ -1,10 +1,43 @@
 //! The egui-shaped recording facade.
 
 use alloc::string::String;
-use ccosel_abi::{id as ids, Align, Cmd, Layout, ScopeKind, Vec2, MAX_SCOPE_DEPTH};
+use ccosel_abi::{id as ids, Align, Cmd, FrameInput, Layout, ScopeKind, Vec2, MAX_SCOPE_DEPTH};
 
 use crate::recorder::Recorder;
 use crate::response::Response;
+
+/// Per-frame facts from the shell.
+///
+/// Carried by value through every nested [`Ui`], so an app can read the clock or the theme
+/// without a host call. `low_bandwidth` is the one apps are expected to *act* on: when the
+/// shell sets it, degrade (icons instead of thumbnails, summaries instead of full output)
+/// rather than queueing more requests onto a link that is already struggling.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FrameCtx {
+    pub time_ms: f64,
+    pub dt_ms: f32,
+    pub screen_size: Vec2,
+    pub flags: u32,
+}
+
+impl FrameCtx {
+    pub fn from_input(input: &FrameInput) -> Self {
+        Self {
+            time_ms: input.time_ms,
+            dt_ms: input.dt_ms,
+            screen_size: Vec2::new(input.screen_size[0], input.screen_size[1]),
+            flags: input.flags,
+        }
+    }
+
+    pub fn dark_mode(&self) -> bool {
+        self.flags & ccosel_abi::frame::input_flags::DARK_MODE != 0
+    }
+
+    pub fn low_bandwidth(&self) -> bool {
+        self.flags & ccosel_abi::frame::input_flags::LOW_BANDWIDTH != 0
+    }
+}
 
 /// A handle for emitting widgets into a scope.
 ///
@@ -20,11 +53,12 @@ pub struct Ui<'a> {
     depth: u32,
     /// The most recently emitted widget, so [`Ui::tooltip`] can attach to it.
     last_id: u64,
+    ctx: FrameCtx,
 }
 
 impl<'a> Ui<'a> {
     /// Begin a frame. The shell calls this; apps receive the `Ui` already built.
-    pub fn root(rec: &'a mut Recorder) -> Self {
+    pub fn root(rec: &'a mut Recorder, ctx: FrameCtx) -> Self {
         rec.begin_frame();
         Self {
             rec,
@@ -32,7 +66,13 @@ impl<'a> Ui<'a> {
             next_salt: 0,
             depth: 0,
             last_id: ids::ROOT,
+            ctx,
         }
+    }
+
+    /// This frame's context: clock, theme, link quality.
+    pub fn ctx(&self) -> FrameCtx {
+        self.ctx
     }
 
     fn auto_id(&mut self) -> u64 {
@@ -58,6 +98,7 @@ impl<'a> Ui<'a> {
             next_salt: 0,
             depth: self.depth,
             last_id: id,
+            ctx: self.ctx,
         };
         add(&mut child)
     }
@@ -88,6 +129,7 @@ impl<'a> Ui<'a> {
                 next_salt: 0,
                 depth: self.depth + 1,
                 last_id: id,
+                ctx: self.ctx,
             };
             add(&mut child)
         };
@@ -128,6 +170,7 @@ impl<'a> Ui<'a> {
                 next_salt: 0,
                 depth: self.depth + 1,
                 last_id: id,
+                ctx: self.ctx,
             };
             add(&mut child)
         };

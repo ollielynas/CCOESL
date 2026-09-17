@@ -5,7 +5,7 @@
 # speed. They cannot share a profile table.
 [workspace]
 resolver = "3"
-members = ["file-browser"]
+members = ["file-browser", "clock"]
 
 [workspace.package]
 version = "0.1.0"

@@ -18,14 +18,14 @@ crates/
   ccosel-host/            decode + replay into egui::Ui. NO wasm runtime dep. [BUILT]
   ccosel-host-wasmtime/   dev/test backend only, never ships                  [BUILT]
   ccosel-host-web/        browser backend - THE shipping path                  [BUILT]
-  ccosel-shell/           the thing the browser loads                          [BUILT]
+  ccosel-shell/           desktop: wallpaper, windows, taskbar, launcher       [BUILT]
   xtask/                  build pipeline + size budgets                        [BUILT]
   ccosel-proto/           client<->server RPC types (serde/postcard)
   ccosel-transport/       WS codec, pending-call table, reconnect/resume, coalescing
   ccosel-cas/             content-defined chunking + hashing (client and server)
   ccosel-server/          axum binary
 apps/                     SEPARATE cargo workspace
-  file-browser/  compiler/
+  file-browser/  clock/
 web/      hand-written loader page
 docker/
 ```
@@ -120,6 +120,28 @@ mutable globals and table entries, and is too fragile to rely on.
 The **shell** owns the pending-RPC table, not the guest, so a call survives its caller being
 evicted; results are delivered via `ccosel_on_event` in order before the next frame.
 
+## The desktop
+
+`ccosel-shell` owns the desktop. Apps never position their own window; they fill one the
+desktop gives them, and the shell keeps the geometry, z-order and focus. Window *instances* are
+numbered separately from app ids, so two Files windows get independent egui state instead of
+fighting over scroll position and focus.
+
+Compiled `WebAssembly.Module`s are cached per app id, so a second window of the same app skips
+the fetch and the compile — the expensive half of a launch. That cache is where IndexedDB will
+slot in to make it free across sessions too.
+
+Closing a window drops the instance. That is the only way to reclaim a guest's memory: wasm
+linear memory cannot shrink, so a live instance holds its high-water mark forever.
+
+### Verified in a real browser
+
+Driven through headless Chrome over CDP: two apps launched from the taskbar, a window dragged,
+the stopwatch run to 7.3s **with no input at all** (proving `wants_repaint_after_ms` drives
+re-runs), a lap recorded, a second Files window opened with independent state and an
+auto-numbered title, a buried window raised from the taskbar, and a window closed — with the
+byte counter halving from 1124 to 562 B/frame as its app went away. No console errors.
+
 ## Replay, concretely
 
 `validate` proves the buffer is balanced and within the depth limit **before** anything is
@@ -142,8 +164,11 @@ nothing despite responses being a frame stale.
 - [x] `ccosel-host-web` — the shipping backend, tested under a real WebAssembly engine in node
 - [x] `ccosel-shell` + hand-written loader — **the File Browser runs in a browser tab, and
       clicking a file updates it**, verified end-to-end in headless Chrome
-- [ ] Window manager, taskbar, launcher (the shell is currently one full-screen app)
-- [ ] `ccosel-server` + `ccosel-transport`; IndexedDB module cache; CAS upload/download
+- [x] Desktop environment — wallpaper, draggable/resizable/closable windows, taskbar with
+      click-to-raise, app launcher, live per-frame byte counter
+- [x] Multiple concurrent apps, and multiple instances of the same app with independent state
+- [ ] `ccosel-server` + `ccosel-transport` (apps still serve stub data)
+- [ ] IndexedDB module cache; CAS upload/download; app eviction under memory pressure
 
 ## Running it
 
