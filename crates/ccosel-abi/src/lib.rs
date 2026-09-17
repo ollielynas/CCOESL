@@ -18,6 +18,7 @@
 extern crate alloc;
 
 pub mod decode;
+pub mod event;
 pub mod encode;
 pub mod frame;
 pub mod geom;
@@ -25,6 +26,7 @@ pub mod id;
 pub mod opcode;
 
 pub use decode::{Cmd, DecodeError, Decoder, validate};
+pub use event::{decode_batch, encode_batch, Event, EventBatch, EventError, EventHeader};
 pub use encode::Encoder;
 pub use frame::{FrameInput, FrameOutput, RespRecord, ResponseFlags, Slice};
 pub use geom::{Align, Color32, Layout, Pos2, Rect, ScopeKind, Vec2};
@@ -34,7 +36,7 @@ pub use opcode::OpCode;
 /// Bumped on any incompatible change to the command stream, the frame structs, or the
 /// guest export list. The shell refuses to instantiate a module whose
 /// `ccosel_abi_version()` does not match.
-pub const ABI_VERSION: u32 = 1;
+pub const ABI_VERSION: u32 = 2;
 
 /// Maximum scope nesting a guest may emit. Bounds the host's `Vec<egui::Ui>` stack so a
 /// malicious or buggy guest cannot drive it into unbounded recursion.

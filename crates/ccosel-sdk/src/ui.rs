@@ -4,6 +4,7 @@ use alloc::string::String;
 use ccosel_abi::{id as ids, Align, Cmd, FrameInput, Layout, ScopeKind, Vec2, MAX_SCOPE_DEPTH};
 
 use crate::recorder::Recorder;
+use crate::rpc::RpcCtx;
 use crate::response::Response;
 
 /// Per-frame facts from the shell.
@@ -54,11 +55,12 @@ pub struct Ui<'a> {
     /// The most recently emitted widget, so [`Ui::tooltip`] can attach to it.
     last_id: u64,
     ctx: FrameCtx,
+    rpc: &'a RpcCtx,
 }
 
 impl<'a> Ui<'a> {
     /// Begin a frame. The shell calls this; apps receive the `Ui` already built.
-    pub fn root(rec: &'a mut Recorder, ctx: FrameCtx) -> Self {
+    pub fn root(rec: &'a mut Recorder, ctx: FrameCtx, rpc: &'a RpcCtx) -> Self {
         rec.begin_frame();
         Self {
             rec,
@@ -67,7 +69,16 @@ impl<'a> Ui<'a> {
             depth: 0,
             last_id: ids::ROOT,
             ctx,
+            rpc,
         }
+    }
+
+    /// Talk to the server.
+    ///
+    /// Returns a shared reference deliberately: `ui.rpc().get(..)` must not borrow `ui`, or
+    /// the result could not be drawn while the borrow is live.
+    pub fn rpc(&self) -> &'a RpcCtx {
+        self.rpc
     }
 
     /// This frame's context: clock, theme, link quality.
@@ -99,6 +110,7 @@ impl<'a> Ui<'a> {
             depth: self.depth,
             last_id: id,
             ctx: self.ctx,
+            rpc: self.rpc,
         };
         add(&mut child)
     }
@@ -130,6 +142,7 @@ impl<'a> Ui<'a> {
                 depth: self.depth + 1,
                 last_id: id,
                 ctx: self.ctx,
+                rpc: self.rpc,
             };
             add(&mut child)
         };
@@ -171,6 +184,7 @@ impl<'a> Ui<'a> {
                 depth: self.depth + 1,
                 last_id: id,
                 ctx: self.ctx,
+                rpc: self.rpc,
             };
             add(&mut child)
         };

@@ -7,3 +7,6 @@ description = "What a CCOSEL app links against: an egui-shaped API that records 
 
 [dependencies]
 ccosel-abi = { workspace = true }
+ccosel-proto = { workspace = true }
+postcard = { workspace = true }
+serde = { workspace = true }

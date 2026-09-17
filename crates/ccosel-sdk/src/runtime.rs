@@ -9,6 +9,7 @@ use alloc::vec::Vec;
 use ccosel_abi::{FrameInput, FrameOutput, RespRecord, ABI_VERSION};
 
 use crate::recorder::Recorder;
+use crate::rpc::RpcCtx;
 use crate::ui::Ui;
 use crate::App;
 
@@ -19,6 +20,7 @@ pub struct Runtime<A: App> {
     out: FrameOutput,
     saved: ccosel_abi::Slice,
     responses: Vec<RespRecord>,
+    rpc: RpcCtx,
 }
 
 impl<A: App> Runtime<A> {
@@ -29,6 +31,7 @@ impl<A: App> Runtime<A> {
             out: FrameOutput::default(),
             saved: ccosel_abi::Slice::default(),
             responses: Vec::new(),
+            rpc: RpcCtx::new(),
         }
     }
 
@@ -51,11 +54,17 @@ impl<A: App> Runtime<A> {
         }
         self.rec.set_responses(core::mem::take(&mut self.responses));
 
+        // Age the request cache before the app runs, so anything it asks for this frame is
+        // marked fresh and survives the sweep.
+        self.rpc.begin_frame();
         {
             let ctx = crate::FrameCtx::from_input(&input);
-            let mut ui = Ui::root(&mut self.rec, ctx);
+            let mut ui = Ui::root(&mut self.rec, ctx, &self.rpc);
             self.app.update(&mut ui);
         }
+        // Hand the shell anything the app asked for. Fire-and-forget: the replies come back
+        // through `on_event` before some later frame, and wake the app then.
+        self.flush_rpc();
 
         let cmds = self.rec.commands();
         self.out = FrameOutput {
@@ -71,6 +80,38 @@ impl<A: App> Runtime<A> {
 
     pub fn abi_version(&self) -> u32 {
         ABI_VERSION
+    }
+
+    fn flush_rpc(&mut self) {
+        for call in self.rpc.take_outbox() {
+            host::rpc_call(call.call_id, call.method, &call.args);
+        }
+        for call_id in self.rpc.take_cancels() {
+            host::rpc_cancel(call_id);
+        }
+    }
+
+    /// Deliver a batch of events from the shell.
+    ///
+    /// # Safety
+    /// `ptr`/`len` must describe a valid event batch written into this module's memory.
+    pub unsafe fn on_event(&mut self, ptr: u32, len: u32) {
+        if len == 0 {
+            return;
+        }
+        let bytes = unsafe { core::slice::from_raw_parts(ptr as usize as *const u8, len as usize) };
+        // A malformed batch is dropped whole rather than partially applied: half-applied
+        // replies would leave slots in flight forever, and the app has no way to recover.
+        if let Ok(events) = ccosel_abi::event::decode_batch(bytes) {
+            for event in &events {
+                self.rpc.deliver(event);
+            }
+        }
+    }
+
+    /// Access for tests: what the app has queued for the shell.
+    pub fn rpc(&self) -> &RpcCtx {
+        &self.rpc
     }
 
     /// Serialize the app's state for eviction. Stubbed until eviction lands, but the export
@@ -164,7 +205,10 @@ macro_rules! ccosel_app {
             }
 
             #[unsafe(no_mangle)]
-            pub extern "C" fn ccosel_on_event(_ptr: u32, _len: u32) {}
+            pub extern "C" fn ccosel_on_event(ptr: u32, len: u32) {
+                // SAFETY: the shell wrote a valid event batch at this address.
+                unsafe { runtime().on_event(ptr, len) }
+            }
 
             // Declared in v0 and stubbed. Adding exports later would break every module the
             // shell has already cached, so the shape is fixed now even though eviction and
@@ -211,4 +255,37 @@ pub fn guest_dealloc(ptr: u32, len: u32, align: u32) {
     // SAFETY: the host only passes back pointers it received from `guest_alloc` with the same
     // layout.
     unsafe { alloc::alloc::dealloc(ptr as usize as *mut u8, layout) }
+}
+
+/// The host imports, and their stand-ins off-wasm.
+///
+/// Splitting here is what lets the whole RPC client be tested natively — the SDK's tests drive
+/// a real app through real cache logic and simply record what would have crossed the boundary.
+mod host {
+    #[cfg(target_arch = "wasm32")]
+    #[link(wasm_import_module = "ccosel")]
+    unsafe extern "C" {
+        #[link_name = "rpc_call"]
+        fn host_rpc_call(call_id: u32, method: u32, arg_ptr: u32, arg_len: u32);
+        #[link_name = "rpc_cancel"]
+        fn host_rpc_cancel(call_id: u32);
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub fn rpc_call(call_id: u32, method: u32, args: &[u8]) {
+        // The host copies the arguments out synchronously inside the import, so this pointer
+        // only has to stay valid for the duration of the call.
+        unsafe { host_rpc_call(call_id, method, args.as_ptr() as usize as u32, args.len() as u32) }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub fn rpc_cancel(call_id: u32) {
+        unsafe { host_rpc_cancel(call_id) }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn rpc_call(_call_id: u32, _method: u32, _args: &[u8]) {}
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn rpc_cancel(_call_id: u32) {}
 }

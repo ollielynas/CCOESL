@@ -20,6 +20,7 @@
 extern crate alloc;
 
 mod recorder;
+pub mod rpc;
 pub mod runtime;
 mod response;
 mod ui;
@@ -27,6 +28,7 @@ mod ui;
 pub use ccosel_abi::{Align, Color32, Pos2, Rect, ScopeKind, Vec2};
 pub use ccosel_abi::{ABI_VERSION, REPAINT_ON_INPUT_ONLY};
 pub use recorder::Recorder;
+pub use rpc::{Poll, RpcCtx, RpcError};
 pub use response::Response;
 pub use ui::{FrameCtx, Text, Ui};
 

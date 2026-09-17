@@ -657,10 +657,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "ccosel-proto"
+version = "0.1.0"
+dependencies = [
+ "postcard",
+ "serde",
+]
+
+[[package]]
 name = "ccosel-sdk"
 version = "0.1.0"
 dependencies = [
  "ccosel-abi",
+ "ccosel-proto",
+ "postcard",
+ "serde",
 ]
 
 [[package]]

@@ -38,10 +38,21 @@ fn js_err(e: JsValue) -> HostError {
 }
 
 /// Shared between the instance and the closures it hands to the guest as imports.
+/// A call the guest issued this frame. Mirrors `ccosel_host_wasmtime::OutboundCall`; the two
+/// backends must agree on the import shapes exactly, and this pair has diverged before.
+#[derive(Clone, Debug)]
+pub struct OutboundCall {
+    pub call_id: u32,
+    pub method: u32,
+    pub args: Vec<u8>,
+}
+
 #[derive(Default)]
 struct Shared {
     memory: Option<WebAssembly::Memory>,
     log: Vec<(u32, String)>,
+    outbox: Vec<OutboundCall>,
+    cancels: Vec<u32>,
 }
 
 impl Shared {
@@ -185,9 +196,30 @@ fn build_imports(shared: &Rc<RefCell<Shared>>) -> (Object, Vec<Box<dyn Any>>) {
     });
     let _ = Reflect::set(&ccosel, &"random".into(), random.as_ref());
 
-    // Placeholders until `ccosel-transport` lands.
-    let rpc = Closure::<dyn FnMut(u32, u32, u32) -> f64>::new(|_: u32, _: u32, _: u32| 0.0);
+    // Fire-and-forget: queue the call and return. Returning a value here would be a mistake —
+    // a Worker-hosted guest could only read it via `Atomics.wait`, which needs cross-origin
+    // isolation, which needs HTTPS, which a plain-HTTP LAN does not have. Guest-allocated call
+    // ids are what let this return nothing.
+    let rpc_shared = shared.clone();
+    let rpc = Closure::<dyn FnMut(u32, u32, u32, u32)>::new(
+        move |call_id: u32, method: u32, ptr: u32, len: u32| {
+            let args = rpc_shared.borrow().read(ptr, len).unwrap_or_default();
+            rpc_shared.borrow_mut().outbox.push(OutboundCall {
+                call_id,
+                method,
+                args,
+            });
+        },
+    );
     let _ = Reflect::set(&ccosel, &"rpc_call".into(), rpc.as_ref());
+
+    let cancel_shared = shared.clone();
+    let cancel = Closure::<dyn FnMut(u32)>::new(move |call_id: u32| {
+        cancel_shared.borrow_mut().cancels.push(call_id);
+    });
+    let _ = Reflect::set(&ccosel, &"rpc_cancel".into(), cancel.as_ref());
+
+    // Still a placeholder: incremental command flushing is not implemented.
     let flush = Closure::<dyn FnMut(u32, u32)>::new(|_: u32, _: u32| {});
     let _ = Reflect::set(&ccosel, &"cmd_flush".into(), flush.as_ref());
 
@@ -199,6 +231,7 @@ fn build_imports(shared: &Rc<RefCell<Shared>>) -> (Object, Vec<Box<dyn Any>>) {
         Box::new(now),
         Box::new(random),
         Box::new(rpc),
+        Box::new(cancel),
         Box::new(flush),
     ];
 
@@ -256,6 +289,16 @@ pub struct WebInstance {
 impl WebInstance {
     pub fn take_log(&mut self) -> Vec<(u32, String)> {
         std::mem::take(&mut self.shared.borrow_mut().log)
+    }
+
+    /// Calls the guest issued during the last `frame()`, drained.
+    pub fn take_outbox(&mut self) -> Vec<OutboundCall> {
+        std::mem::take(&mut self.shared.borrow_mut().outbox)
+    }
+
+    /// Calls the guest abandoned during the last `frame()`, drained.
+    pub fn take_cancels(&mut self) -> Vec<u32> {
+        std::mem::take(&mut self.shared.borrow_mut().cancels)
     }
 
     fn alloc(&self, len: u32, align: u32) -> Result<u32, HostError> {

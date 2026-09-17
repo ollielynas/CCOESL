@@ -21,11 +21,30 @@ fn trap(e: impl std::fmt::Display) -> HostError {
     HostError::Trap(e.to_string())
 }
 
+/// A call the guest issued this frame.
+///
+/// The guest chooses `call_id` itself. That is what keeps `rpc_call` fire-and-forget: if the
+/// *shell* allocated the id, the guest would need a synchronous answer to learn it — and a
+/// guest running in a Web Worker could only obtain one via `Atomics.wait`, which needs
+/// cross-origin isolation, which needs HTTPS, which a plain-HTTP LAN does not have.
+/// Guest-allocated ids are the only shape that keeps the Worker option open.
+#[derive(Clone, Debug)]
+pub struct OutboundCall {
+    pub call_id: u32,
+    pub method: u32,
+    pub args: Vec<u8>,
+}
+
 /// Host-side state reachable from imported functions.
 #[derive(Default)]
 pub struct HostState {
     /// Lines the guest logged this frame, for the shell to surface.
     pub log: Vec<(u32, String)>,
+    /// Calls issued this frame, drained by the shell after `frame()` returns.
+    pub outbox: Vec<OutboundCall>,
+    /// Calls the guest abandoned. Without these the shell's pending table accumulates entries
+    /// the guest no longer tracks, and the app becomes permanently unevictable.
+    pub cancels: Vec<u32>,
 }
 
 pub struct WasmtimeHost {
@@ -144,11 +163,33 @@ fn define_imports(linker: &mut Linker<HostState>) -> Result<(), HostError> {
         )
         .map_err(trap)?;
 
-    // Placeholders so guests compiled against the full import list still link. Real behaviour
-    // arrives with `ccosel-transport`.
+    // Fire-and-forget: queue the call and return. Never blocks, never answers synchronously,
+    // because a synchronous answer is exactly what a Worker-hosted guest could not obtain.
     linker
-        .func_wrap("ccosel", "rpc_call", |_: u32, _: u32, _: u32| -> u64 { 0 })
+        .func_wrap(
+            "ccosel",
+            "rpc_call",
+            |mut caller: Caller<'_, HostState>, call_id: u32, method: u32, ptr: u32, len: u32| {
+                let Some(wasmtime::Extern::Memory(mem)) = caller.get_export("memory") else {
+                    return;
+                };
+                let mut args = vec![0u8; len as usize];
+                if mem.read(&mut caller, ptr as usize, &mut args).is_ok() {
+                    caller.data_mut().outbox.push(OutboundCall { call_id, method, args });
+                }
+            },
+        )
         .map_err(trap)?;
+    linker
+        .func_wrap(
+            "ccosel",
+            "rpc_cancel",
+            |mut caller: Caller<'_, HostState>, call_id: u32| {
+                caller.data_mut().cancels.push(call_id);
+            },
+        )
+        .map_err(trap)?;
+    // Still a placeholder: incremental command flushing is not implemented.
     linker
         .func_wrap("ccosel", "cmd_flush", |_: u32, _: u32| {})
         .map_err(trap)?;
@@ -204,6 +245,16 @@ impl WasmtimeInstance {
     /// Log lines the guest emitted, drained.
     pub fn take_log(&mut self) -> Vec<(u32, String)> {
         std::mem::take(&mut self.store.data_mut().log)
+    }
+
+    /// Calls the guest issued during the last `frame()`, drained.
+    pub fn take_outbox(&mut self) -> Vec<OutboundCall> {
+        std::mem::take(&mut self.store.data_mut().outbox)
+    }
+
+    /// Calls the guest abandoned during the last `frame()`, drained.
+    pub fn take_cancels(&mut self) -> Vec<u32> {
+        std::mem::take(&mut self.store.data_mut().cancels)
     }
 
     fn read_bytes(&mut self, ptr: u32, len: u32) -> Result<Vec<u8>, HostError> {
