@@ -1,0 +1,3 @@
+# Notes
+
+CCOSEL scratch notes.

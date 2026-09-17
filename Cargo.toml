@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/ccosel-abi",
     "crates/ccosel-proto",
+    "crates/ccosel-server",
     "crates/ccosel-sdk",
     "crates/ccosel-host",
     "crates/ccosel-host-wasmtime",

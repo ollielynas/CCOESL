@@ -161,11 +161,19 @@ fn build_web() -> Result<()> {
     Ok(())
 }
 
+/// Serves the shell, the app modules and `/rpc` from one origin.
+///
+/// It has to be one origin: split them and every RPC becomes a CORS preflight, which is an
+/// extra round trip per call on a link that is already the bottleneck.
 fn serve() -> Result<()> {
-    println!("http://127.0.0.1:8777/");
+    let root = root();
     run(
-        &root().join("web"),
-        "python3",
-        &["-m", "http.server", "8777", "--bind", "127.0.0.1"],
+        &root,
+        "cargo",
+        &[
+            "run", "--release", "-p", "ccosel-server", "--",
+            "--root", root.join("data/shared").to_str().unwrap(),
+            "--web", root.join("web").to_str().unwrap(),
+        ],
     )
 }

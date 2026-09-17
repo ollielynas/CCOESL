@@ -1,0 +1,18 @@
+[package]
+name = "ccosel-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The CCOSEL server: hosts the shell, serves app modules, answers RPC."
+
+[dependencies]
+ccosel-proto = { workspace = true, features = ["std"] }
+anyhow = { workspace = true }
+axum = "0.8"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
+tower-http = { version = "0.6", features = ["fs", "compression-br", "compression-gzip"] }
+postcard = { workspace = true, features = ["use-std"] }
+serde = { workspace = true, features = ["std"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time"] }
