@@ -1,0 +1,35 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/ccosel-abi",
+    "crates/ccosel-sdk",
+    "crates/ccosel-host",
+    # Added as each lands; see ARCHITECTURE.md for the target layout.
+]
+# `apps/` is deliberately a SEPARATE workspace: guest modules need
+# opt-level="z" / lto="fat" / panic="abort", and [profile] is workspace-global.
+exclude = ["apps"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+ccosel-abi = { path = "crates/ccosel-abi" }
+ccosel-proto = { path = "crates/ccosel-proto" }
+ccosel-host = { path = "crates/ccosel-host" }
+ccosel-cas = { path = "crates/ccosel-cas" }
+ccosel-transport = { path = "crates/ccosel-transport" }
+
+egui = "0.36"
+eframe = "0.36"
+serde = { version = "1", default-features = false, features = ["derive"] }
+postcard = { version = "1.1", default-features = false, features = ["alloc"] }
+bytemuck = { version = "1", features = ["derive"] }
+anyhow = "1"
+log = "0.4"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
