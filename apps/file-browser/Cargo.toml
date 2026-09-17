@@ -9,3 +9,4 @@ crate-type = ["cdylib"]
 
 [dependencies]
 ccosel-sdk = { workspace = true }
+ccosel-proto = { workspace = true }

@@ -89,11 +89,30 @@ pub struct FrameResult {
     pub status: u32,
 }
 
+/// A call a guest issued during its last frame.
+///
+/// The guest chooses `call_id` itself, which is what lets `rpc_call` be fire-and-forget: a
+/// shell-allocated id would have to be returned synchronously, and a Worker-hosted guest could
+/// only read that via `Atomics.wait` — unavailable without cross-origin isolation, which needs
+/// HTTPS, which a plain-HTTP LAN does not have.
+#[derive(Clone, Debug)]
+pub struct OutboundCall {
+    pub call_id: u32,
+    pub method: u32,
+    pub args: Vec<u8>,
+}
+
 /// A loaded, running app.
 pub trait AppInstance {
     fn frame(&mut self, args: &FrameArgs<'_>) -> Result<FrameResult, HostError>;
     fn on_event(&mut self, bytes: &[u8]) -> Result<(), HostError>;
     fn save_state(&mut self) -> Result<Vec<u8>, HostError>;
+
+    /// RPC calls the guest issued during the last `frame()`, drained.
+    fn take_outbox(&mut self) -> Vec<OutboundCall>;
+
+    /// RPC calls the guest abandoned during the last `frame()`, drained.
+    fn take_cancels(&mut self) -> Vec<u32>;
 }
 
 /// Compiles and instantiates app modules.

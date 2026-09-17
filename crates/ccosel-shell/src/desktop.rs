@@ -10,7 +10,10 @@ use std::rc::Rc;
 
 use ccosel_host::AppHost;
 use ccosel_host_web::{WebHost, WebInstance};
+use ccosel_transport::{PendingKey, Transport};
 use js_sys::WebAssembly;
+
+use crate::http_wire::{HttpWire, Inbox};
 
 use crate::app_window::AppWindow;
 use crate::fetch;
@@ -35,10 +38,18 @@ pub struct Desktop {
     next_instance_id: Rc<RefCell<u64>>,
     errors: Vec<String>,
     egui_ctx: egui::Context,
+    /// The shell owns the pending-call table, not the guests. An app can be closed or
+    /// suspended with calls outstanding without the shell losing track of them.
+    transport: Transport,
+    /// Replies land here from `fetch` callbacks and are applied at the top of the next frame.
+    replies: Inbox,
 }
 
 impl Desktop {
     pub fn new(egui_ctx: egui::Context) -> Self {
+        let replies: Inbox = Rc::new(RefCell::new(Vec::new()));
+        let wire = HttpWire::new("/rpc", replies.clone(), egui_ctx.clone());
+
         let mut desktop = Self {
             registry: catalog(),
             windows: Vec::new(),
@@ -48,6 +59,8 @@ impl Desktop {
             next_instance_id: Rc::new(RefCell::new(1)),
             errors: Vec::new(),
             egui_ctx,
+            transport: Transport::new(Box::new(wire)),
+            replies,
         };
         // Open something on first boot: an empty desktop with no affordance is a worse first
         // impression than a window the user can close.
@@ -105,6 +118,16 @@ impl Desktop {
     pub fn ui(&mut self, ui: &mut egui::Ui) {
         self.drain_inbox();
         let ctx = ui.ctx().clone();
+        let now_ms = ctx.input(|i| i.time) * 1000.0;
+
+        // Apply anything that arrived since the last frame, so guests see replies before they
+        // render this frame.
+        let replies: Vec<_> = self.replies.borrow_mut().drain(..).collect();
+        if !replies.is_empty() {
+            self.transport.on_replies(replies);
+        }
+        // Expire deadlines and reap calls belonging to windows that have gone.
+        self.transport.tick(now_ms);
 
         self.taskbar(ui);
         self.wallpaper(ui);
@@ -119,7 +142,39 @@ impl Desktop {
                 .default_size(window.default_size)
                 .open(&mut open)
                 .show(&ctx, |ui| window.ui(ui));
-            window.open = open;
+
+            // Anything the guest asked for during that frame.
+            let sink = window.sink();
+            for call in window.take_outbox() {
+                self.transport.enqueue(
+                    PendingKey {
+                        instance: window.instance_id,
+                        call: call.call_id,
+                    },
+                    call.method as u16,
+                    call.args,
+                    sink.clone(),
+                    now_ms,
+                );
+            }
+            for call_id in window.take_cancels() {
+                self.transport.cancel(PendingKey {
+                    instance: window.instance_id,
+                    call: call_id,
+                });
+            }
+
+            if !open {
+                window.close();
+            }
+        }
+
+        // One flush per frame: calls made during a frame share a single request, which is the
+        // coalescing window, with no timer to arm and nothing to poll.
+        self.transport.flush();
+
+        for window in self.windows.iter().filter(|w| !w.open) {
+            self.transport.forget_instance(window.instance_id);
         }
         self.windows.retain(|w| w.open);
     }

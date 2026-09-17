@@ -14,6 +14,7 @@ license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
 ccosel-sdk = { path = "../crates/ccosel-sdk" }
+ccosel-proto = { path = "../crates/ccosel-proto" }
 
 [profile.release]
 opt-level = "z"

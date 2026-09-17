@@ -13,6 +13,7 @@
 mod app_window;
 mod desktop;
 mod fetch;
+mod http_wire;
 mod registry;
 
 use wasm_bindgen::prelude::*;

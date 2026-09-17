@@ -85,6 +85,24 @@ fn button_id(buf: &[u8], want: &str) -> u64 {
         .unwrap_or_else(|| panic!("no button labelled {want:?}"))
 }
 
+/// Build the reply the server would have sent for a `list_dir`.
+fn listing_reply(names: &[(&str, bool)]) -> Vec<u8> {
+    use ccosel_proto::fs::{DirEntry, DirListing, EntryKind};
+    let listing = DirListing {
+        entries: names
+            .iter()
+            .map(|(n, is_dir)| DirEntry {
+                name: (*n).to_owned(),
+                kind: if *is_dir { EntryKind::Dir } else { EntryKind::File },
+                size: 12,
+                mtime_s: 0,
+            })
+            .collect(),
+        truncated: false,
+    };
+    postcard::to_allocvec(&listing).unwrap()
+}
+
 #[test]
 fn drives_a_real_guest_module_end_to_end() {
     let host = WasmtimeHost::new();
@@ -94,24 +112,49 @@ fn drives_a_real_guest_module_end_to_end() {
     let ctx = egui::Context::default();
     let mut replayer = Replayer::new();
 
-    // --- Frame 1: the guest renders its initial state.
+    // --- Frame 1: nothing is known yet, so the app asks the server and says so.
     let f1 = app.frame(&FrameArgs::default()).expect("frame 1");
-    assert!(!f1.commands.is_empty(), "guest produced no commands");
     ccosel_abi::validate(&f1.commands).expect("guest emitted an invalid buffer");
-    assert!(labels(&f1.commands).contains(&"nothing selected".to_owned()));
+    assert!(
+        labels(&f1.commands).contains(&"Loading…".to_owned()),
+        "expected a loading state, got {:?}",
+        labels(&f1.commands)
+    );
 
-    // An idle app must not ask to be re-run; that is what keeps a dozen open windows from
-    // costing a dozen wasm invocations per display frame.
+    let calls = app.take_outbox();
+    assert_eq!(calls.len(), 1, "exactly one request for the initial listing");
+    assert_eq!(calls[0].method, ccosel_proto::Method::ListDir as u32);
+
+    // Waiting is not animating: an app blocked on the network must not be re-run every frame.
     assert_eq!(f1.wants_repaint_after_ms, ccosel_abi::REPAINT_ON_INPUT_ONLY);
 
-    // egui's first pass runs with a cold font/galley cache, so widget rects are not settled
-    // until a second pass. Warm up before measuring, exactly as a continuously-repainting
-    // shell would.
-    render(&ctx, &mut replayer, &f1.commands, raw_input());
-    let responses = render(&ctx, &mut replayer, &f1.commands, raw_input());
+    // --- Frame 2: nothing has arrived, so it must not ask again.
+    let f2 = app
+        .frame(&FrameArgs { frame_index: 1, ..Default::default() })
+        .expect("frame 2");
+    assert!(app.take_outbox().is_empty(), "must not re-request while in flight");
+    assert_eq!(f2.commands, f1.commands);
 
-    // --- Frame 2: click "notes.md" for real, through egui hit-testing.
-    let target_id = button_id(&f1.commands, "notes.md");
+    // --- The reply arrives, the way the transport would deliver it.
+    let payload = listing_reply(&[("Projects", true), ("notes.md", false)]);
+    let batch = ccosel_abi::event::encode_batch(&[(
+        ccosel_abi::event::event_kind::RPC_OK,
+        calls[0].call_id,
+        &payload,
+    )]);
+    app.on_event(&batch).expect("deliver reply");
+
+    let f3 = app
+        .frame(&FrameArgs { frame_index: 2, ..Default::default() })
+        .expect("frame 3");
+    assert!(!labels(&f3.commands).contains(&"Loading…".to_owned()));
+    assert!(labels(&f3.commands).contains(&"nothing selected".to_owned()));
+
+    // --- Click "notes.md" for real, through egui hit-testing.
+    render(&ctx, &mut replayer, &f3.commands, raw_input());
+    let responses = render(&ctx, &mut replayer, &f3.commands, raw_input());
+
+    let target_id = button_id(&f3.commands, "notes.md");
     let rect = responses
         .iter()
         .find(|r| r.local_id == target_id)
@@ -135,31 +178,77 @@ fn drives_a_real_guest_module_end_to_end() {
             modifiers: Default::default(),
         },
     ];
-    let responses = render(&ctx, &mut replayer, &f1.commands, input);
-    assert!(
-        responses
-            .iter()
-            .find(|r| r.local_id == target_id)
-            .unwrap()
-            .clicked(),
-        "egui did not register the click"
-    );
+    let responses = render(&ctx, &mut replayer, &f3.commands, input);
+    assert!(responses.iter().find(|r| r.local_id == target_id).unwrap().clicked());
 
-    // --- Frame 3: hand the responses back across the boundary; the guest reacts.
-    let f3 = app
-        .frame(&FrameArgs {
-            frame_index: 2,
-            responses: &responses,
-            ..Default::default()
-        })
-        .expect("frame 3");
-
-    let labels = labels(&f3.commands);
-    assert!(
-        labels.contains(&"notes.md".to_owned()),
-        "guest did not record the selection; labels were {labels:?}"
-    );
+    // --- The selection crosses back into the guest.
+    let f4 = app
+        .frame(&FrameArgs { frame_index: 3, responses: &responses, ..Default::default() })
+        .expect("frame 4");
+    let labels = labels(&f4.commands);
+    assert!(labels.contains(&"notes.md".to_owned()), "got {labels:?}");
     assert!(!labels.contains(&"nothing selected".to_owned()));
+}
+
+#[test]
+fn entering_a_directory_issues_a_new_request_for_the_new_path() {
+    // Navigation *is* the re-request: the app changes its path and the cache key moves with
+    // it. Nothing in the app tracks whether a request is outstanding.
+    let host = WasmtimeHost::new();
+    let module = pollster::block_on(host.compile(&guest_wasm())).expect("compile");
+    let mut app = host.instantiate(&module).expect("instantiate");
+
+    let ctx = egui::Context::default();
+    let mut replayer = Replayer::new();
+
+    app.frame(&FrameArgs::default()).expect("frame");
+    let first = app.take_outbox();
+    let payload = listing_reply(&[("Projects", true)]);
+    let batch = ccosel_abi::event::encode_batch(&[(
+        ccosel_abi::event::event_kind::RPC_OK,
+        first[0].call_id,
+        &payload,
+    )]);
+    app.on_event(&batch).expect("deliver");
+
+    let f = app
+        .frame(&FrameArgs { frame_index: 1, ..Default::default() })
+        .expect("frame");
+    assert!(app.take_outbox().is_empty());
+
+    render(&ctx, &mut replayer, &f.commands, raw_input());
+    let responses = render(&ctx, &mut replayer, &f.commands, raw_input());
+    let dir_id = button_id(&f.commands, "Projects");
+    let rect = responses.iter().find(|r| r.local_id == dir_id).unwrap().rect;
+    let target = egui::pos2((rect[0] + rect[2]) / 2.0, (rect[1] + rect[3]) / 2.0);
+
+    let mut input = raw_input();
+    input.events = vec![
+        egui::Event::PointerMoved(target),
+        egui::Event::PointerButton {
+            pos: target, button: egui::PointerButton::Primary,
+            pressed: true, modifiers: Default::default(),
+        },
+        egui::Event::PointerButton {
+            pos: target, button: egui::PointerButton::Primary,
+            pressed: false, modifiers: Default::default(),
+        },
+    ];
+    let responses = render(&ctx, &mut replayer, &f.commands, input);
+
+    // The click is applied at the end of the frame that observes it, so the request for the
+    // new path goes out on the frame after. One extra frame, not one extra round trip.
+    app.frame(&FrameArgs { frame_index: 2, responses: &responses, ..Default::default() })
+        .expect("frame");
+    assert!(app.take_outbox().is_empty(), "path changes at the end of this frame");
+
+    app.frame(&FrameArgs { frame_index: 3, ..Default::default() })
+        .expect("frame");
+
+    let second = app.take_outbox();
+    assert_eq!(second.len(), 1, "entering a directory requests it");
+    let req: ccosel_proto::fs::ListDirReq = postcard::from_bytes(&second[0].args).unwrap();
+    assert_eq!(req.path, "/Projects");
 }
 
 #[test]
@@ -172,6 +261,7 @@ fn guest_state_persists_across_frames_and_staging_buffers_are_reused() {
     let mut app = host.instantiate(&module).expect("instantiate");
 
     let steady = app.frame(&FrameArgs::default()).expect("frame");
+    let _ = app.take_outbox();
     for i in 1..200 {
         let f = app
             .frame(&FrameArgs {

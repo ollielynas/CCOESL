@@ -15,3 +15,5 @@ js-sys = { workspace = true }
 
 [dev-dependencies]
 wasm-bindgen-test = "0.3"
+ccosel-proto = { workspace = true }
+postcard = { workspace = true }

@@ -20,10 +20,10 @@ crates/
   ccosel-host-web/        browser backend - THE shipping path                  [BUILT]
   ccosel-shell/           desktop: wallpaper, windows, taskbar, launcher       [BUILT]
   xtask/                  build pipeline + size budgets                        [BUILT]
-  ccosel-proto/           client<->server RPC types (serde/postcard)
-  ccosel-transport/       WS codec, pending-call table, reconnect/resume, coalescing
+  ccosel-proto/           client<->server RPC types (serde/postcard)          [BUILT]
+  ccosel-transport/       pending-call table, coalescing, deadlines            [BUILT]
+  ccosel-server/          axum: hosts the shell and answers /rpc               [BUILT]
   ccosel-cas/             content-defined chunking + hashing (client and server)
-  ccosel-server/          axum binary
 apps/                     SEPARATE cargo workspace
   file-browser/  clock/
 web/      hand-written loader page
@@ -147,6 +147,55 @@ re-runs), a lap recorded, a second Files window opened with independent state an
 auto-numbered title, a buried window raised from the taskbar, and a window closed — with the
 byte counter halving from 1124 to 562 B/frame as its app went away. No console errors.
 
+## Talking to the server
+
+Apps are synchronous and batch-only; RPC is not. The bridge is a **request cache keyed by the
+request itself**, which suits immediate mode: an app already re-declares its whole UI every
+frame, so it re-declares its data dependencies the same way.
+
+```rust
+match ui.rpc().get::<ListDir>(&ListDirReq { path: &self.path }) {
+    Poll::Pending     => ui.label("Loading…"),
+    Poll::Failed(e)   => ui.label(e.message()),
+    Poll::Ready(list) => { /* draw it */ }
+}
+```
+
+An app writes no call ids, no "have I asked yet" flag, no `on_event` handler, no cancellation,
+and no stale-reply check. Changing `self.path` *is* the re-request, because it changes the key.
+That is the point: navigate `/a → /b` while `list_dir(/a)` is in flight and it resolves second,
+and a hand-rolled state machine shows the wrong directory unless the author remembered to
+compare ids. Here the key already moved on, so **the app cannot express the bug.**
+
+Three rules hold the rest together:
+
+- **Guests allocate their own call ids**, and `rpc_call` returns nothing. A shell-allocated id
+  would have to come back synchronously, and a Worker-hosted guest could only read it via
+  `Atomics.wait` — which needs cross-origin isolation, hence HTTPS, which the LAN does not
+  have. Fire-and-forget is the only shape that keeps guests movable off the main thread.
+- **The shell owns the pending-call table.** A window can close or suspend with calls
+  outstanding without losing track of them; guests only *name* their calls.
+- **Exactly one terminal event per call** — success, error, timeout or supersede, unless
+  cancelled, which delivers nothing. So no app needs a "might wait forever" branch, which is
+  the branch app authors forget to write.
+
+`ccosel-abi` carries RPC payloads as **opaque bytes** and does not depend on `ccosel-proto`, so
+adding a method never bumps `ABI_VERSION` and never invalidates a module a client has cached.
+
+### HTTP, not a WebSocket — for now
+
+The plan called for two WebSockets. That is premature while every call is request/response:
+a socket would carry nothing a POST does not, while costing reconnect, resume-from-cursor, an
+app-level heartbeat (browsers cannot observe ping/pong) and a pre-open queue. `POST /rpc` takes
+a *batch*, so coalescing still pays, and the envelope is unchanged when a socket does arrive.
+It earns its place with the first real push: compile progress, or filesystem change events.
+
+### Verified against the real server
+
+Headless Chrome against `ccosel-server`: the File Browser lists `data/shared`, entering
+`Documents` shows its contents, and going back **costs no request at all** — boot 1 POST,
+navigate 2, return 2. Three windows (two File Browsers plus the Clock) totalled 2 posts.
+
 ## Replay, concretely
 
 `validate` proves the buffer is balanced and within the depth limit **before** anything is
@@ -172,8 +221,10 @@ nothing despite responses being a frame stale.
 - [x] Desktop environment — wallpaper, draggable/resizable/closable windows, taskbar with
       click-to-raise, app launcher, live per-frame byte counter
 - [x] Multiple concurrent apps, and multiple instances of the same app with independent state
-- [ ] `ccosel-server` + `ccosel-transport` (apps still serve stub data)
-- [ ] IndexedDB module cache; CAS upload/download; app eviction under memory pressure
+- [x] Async RPC end to end — the File Browser lists a **real server directory** in a browser
+- [ ] Per-app repaint gating (see the note under "How apps render" — currently every guest
+      re-runs every egui frame)
+- [ ] Upload/download with content-defined chunking; IndexedDB module cache; app eviction
 
 ## Running it
 

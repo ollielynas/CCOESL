@@ -10,7 +10,7 @@
 //! detach the moment the guest grew its heap.
 
 use ccosel_abi::{FrameInput, FrameOutput, RespRecord, Slice, ABI_VERSION};
-use ccosel_host::{AppHost, AppInstance, FrameArgs, FrameResult, HostError};
+use ccosel_host::{AppHost, AppInstance, FrameArgs, FrameResult, HostError, OutboundCall};
 use wasmtime::{Caller, Engine, Instance, Linker, Memory, Module, Store, TypedFunc};
 
 const FRAME_INPUT_SIZE: u32 = size_of::<FrameInput>() as u32;
@@ -19,20 +19,6 @@ const STAGING_ALIGN: u32 = 8;
 
 fn trap(e: impl std::fmt::Display) -> HostError {
     HostError::Trap(e.to_string())
-}
-
-/// A call the guest issued this frame.
-///
-/// The guest chooses `call_id` itself. That is what keeps `rpc_call` fire-and-forget: if the
-/// *shell* allocated the id, the guest would need a synchronous answer to learn it — and a
-/// guest running in a Web Worker could only obtain one via `Atomics.wait`, which needs
-/// cross-origin isolation, which needs HTTPS, which a plain-HTTP LAN does not have.
-/// Guest-allocated ids are the only shape that keeps the Worker option open.
-#[derive(Clone, Debug)]
-pub struct OutboundCall {
-    pub call_id: u32,
-    pub method: u32,
-    pub args: Vec<u8>,
 }
 
 /// Host-side state reachable from imported functions.
@@ -247,15 +233,7 @@ impl WasmtimeInstance {
         std::mem::take(&mut self.store.data_mut().log)
     }
 
-    /// Calls the guest issued during the last `frame()`, drained.
-    pub fn take_outbox(&mut self) -> Vec<OutboundCall> {
-        std::mem::take(&mut self.store.data_mut().outbox)
-    }
 
-    /// Calls the guest abandoned during the last `frame()`, drained.
-    pub fn take_cancels(&mut self) -> Vec<u32> {
-        std::mem::take(&mut self.store.data_mut().cancels)
-    }
 
     fn read_bytes(&mut self, ptr: u32, len: u32) -> Result<Vec<u8>, HostError> {
         let mut buf = vec![0u8; len as usize];
@@ -363,6 +341,14 @@ impl AppInstance for WasmtimeInstance {
             .call(&mut self.store, (ptr, len, 1))
             .map_err(trap)?;
         Ok(())
+    }
+
+    fn take_outbox(&mut self) -> Vec<OutboundCall> {
+        std::mem::take(&mut self.store.data_mut().outbox)
+    }
+
+    fn take_cancels(&mut self) -> Vec<u32> {
+        std::mem::take(&mut self.store.data_mut().cancels)
     }
 
     fn save_state(&mut self) -> Result<Vec<u8>, HostError> {

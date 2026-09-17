@@ -737,9 +737,11 @@ dependencies = [
  "bytemuck",
  "ccosel-abi",
  "ccosel-host",
+ "ccosel-proto",
  "eframe",
  "egui",
  "pollster 0.4.0",
+ "postcard",
  "wasmtime",
 ]
 
@@ -750,7 +752,9 @@ dependencies = [
  "bytemuck",
  "ccosel-abi",
  "ccosel-host",
+ "ccosel-proto",
  "js-sys",
+ "postcard",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-bindgen-test",
@@ -794,14 +798,26 @@ dependencies = [
  "ccosel-abi",
  "ccosel-host",
  "ccosel-host-web",
+ "ccosel-proto",
+ "ccosel-transport",
  "console_error_panic_hook",
  "eframe",
  "egui",
  "js-sys",
  "log",
+ "postcard",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
+]
+
+[[package]]
+name = "ccosel-transport"
+version = "0.1.0"
+dependencies = [
+ "ccosel-abi",
+ "ccosel-proto",
+ "postcard",
 ]
 
 [[package]]

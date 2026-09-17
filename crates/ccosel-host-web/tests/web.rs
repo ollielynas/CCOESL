@@ -68,33 +68,86 @@ async fn frames_round_trip_through_guest_memory() {
     }
 }
 
+/// Build the reply the server would have sent for a `list_dir`.
+fn listing_reply(names: &[(&str, bool)]) -> Vec<u8> {
+    use ccosel_proto::fs::{DirEntry, DirListing, EntryKind};
+    let listing = DirListing {
+        entries: names
+            .iter()
+            .map(|(n, is_dir)| DirEntry {
+                name: (*n).to_owned(),
+                kind: if *is_dir { EntryKind::Dir } else { EntryKind::File },
+                size: 3,
+                mtime_s: 0,
+            })
+            .collect(),
+        truncated: false,
+    };
+    postcard::to_allocvec(&listing).unwrap()
+}
+
 #[wasm_bindgen_test]
-async fn responses_cross_the_boundary_and_change_guest_state() {
+async fn rpc_round_trips_through_the_real_wasm_engine() {
+    // The full guest-side RPC path under a genuine WebAssembly engine: the app asks, the
+    // request crosses the import boundary, the reply crosses back through `on_event`, and the
+    // next frame renders it. Only the network itself is simulated.
     let host = WebHost::new();
     let module = host.compile(GUEST).await.expect("compile");
     let mut app = host.instantiate(&module).expect("instantiate");
 
     let f1 = app.frame(&FrameArgs::default()).expect("frame");
-    let target = button_id(&f1.commands, "notes.md");
+    assert!(labels(&f1.commands).contains(&"Loading…".to_owned()));
 
-    // Synthesise what the replayer would have reported for a click.
-    let responses = vec![RespRecord {
-        local_id: target,
-        flags: ResponseFlags::ENABLED | ResponseFlags::HOVERED | ResponseFlags::CLICKED,
-        ..Default::default()
-    }];
+    let calls = app.take_outbox();
+    assert_eq!(calls.len(), 1, "one request for the initial listing");
+    assert_eq!(calls[0].method, ccosel_proto::Method::ListDir as u32);
+    let req: ccosel_proto::fs::ListDirReq = postcard::from_bytes(&calls[0].args).unwrap();
+    assert_eq!(req.path, "/");
+
+    let payload = listing_reply(&[("Projects", true), ("notes.md", false)]);
+    let batch = ccosel_abi::event::encode_batch(&[(
+        ccosel_abi::event::event_kind::RPC_OK,
+        calls[0].call_id,
+        &payload,
+    )]);
+    app.on_event(&batch).expect("deliver reply");
 
     let f2 = app
-        .frame(&FrameArgs {
-            frame_index: 1,
-            responses: &responses,
-            ..Default::default()
-        })
+        .frame(&FrameArgs { frame_index: 1, ..Default::default() })
         .expect("frame");
+    assert!(!labels(&f2.commands).contains(&"Loading…".to_owned()));
+    let _ = button_id(&f2.commands, "notes.md");
+    let _ = button_id(&f2.commands, "Projects");
+}
 
-    let labels = labels(&f2.commands);
-    assert!(labels.contains(&"notes.md".to_owned()), "got {labels:?}");
-    assert!(!labels.contains(&"nothing selected".to_owned()));
+#[wasm_bindgen_test]
+async fn a_server_error_renders_without_a_decoder() {
+    let host = WebHost::new();
+    let module = host.compile(GUEST).await.expect("compile");
+    let mut app = host.instantiate(&module).expect("instantiate");
+
+    app.frame(&FrameArgs::default()).expect("frame");
+    let calls = app.take_outbox();
+
+    let payload = ccosel_abi::event::encode_error(
+        ccosel_abi::event::rpc_error::DENIED,
+        "outside the jail",
+    );
+    let batch = ccosel_abi::event::encode_batch(&[(
+        ccosel_abi::event::event_kind::RPC_ERR,
+        calls[0].call_id,
+        &payload,
+    )]);
+    app.on_event(&batch).expect("deliver error");
+
+    let f = app
+        .frame(&FrameArgs { frame_index: 1, ..Default::default() })
+        .expect("frame");
+    assert!(
+        labels(&f.commands).contains(&"permission denied".to_owned()),
+        "got {:?}",
+        labels(&f.commands)
+    );
 }
 
 #[wasm_bindgen_test]
@@ -107,6 +160,7 @@ async fn survives_a_large_response_table() {
     let mut app = host.instantiate(&module).expect("instantiate");
 
     let baseline = app.frame(&FrameArgs::default()).expect("frame");
+    let _ = app.take_outbox();
 
     let junk: Vec<RespRecord> = (0..20_000)
         .map(|i| RespRecord {

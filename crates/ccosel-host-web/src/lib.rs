@@ -17,7 +17,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use ccosel_abi::{FrameInput, FrameOutput, RespRecord, Slice, ABI_VERSION};
-use ccosel_host::{AppHost, AppInstance, FrameArgs, FrameResult, HostError};
+use ccosel_host::{AppHost, AppInstance, FrameArgs, FrameResult, HostError, OutboundCall};
 use js_sys::{Function, Object, Reflect, Uint8Array, WebAssembly};
 use wasm_bindgen::prelude::*;
 
@@ -38,15 +38,6 @@ fn js_err(e: JsValue) -> HostError {
 }
 
 /// Shared between the instance and the closures it hands to the guest as imports.
-/// A call the guest issued this frame. Mirrors `ccosel_host_wasmtime::OutboundCall`; the two
-/// backends must agree on the import shapes exactly, and this pair has diverged before.
-#[derive(Clone, Debug)]
-pub struct OutboundCall {
-    pub call_id: u32,
-    pub method: u32,
-    pub args: Vec<u8>,
-}
-
 #[derive(Default)]
 struct Shared {
     memory: Option<WebAssembly::Memory>,
@@ -291,15 +282,7 @@ impl WebInstance {
         std::mem::take(&mut self.shared.borrow_mut().log)
     }
 
-    /// Calls the guest issued during the last `frame()`, drained.
-    pub fn take_outbox(&mut self) -> Vec<OutboundCall> {
-        std::mem::take(&mut self.shared.borrow_mut().outbox)
-    }
 
-    /// Calls the guest abandoned during the last `frame()`, drained.
-    pub fn take_cancels(&mut self) -> Vec<u32> {
-        std::mem::take(&mut self.shared.borrow_mut().cancels)
-    }
 
     fn alloc(&self, len: u32, align: u32) -> Result<u32, HostError> {
         self.exports
@@ -395,6 +378,14 @@ impl AppInstance for WebInstance {
             .call2(&JsValue::NULL, &ptr.into(), &len.into())
             .map_err(js_err)?;
         self.dealloc(ptr, len, 1)
+    }
+
+    fn take_outbox(&mut self) -> Vec<OutboundCall> {
+        std::mem::take(&mut self.shared.borrow_mut().outbox)
+    }
+
+    fn take_cancels(&mut self) -> Vec<u32> {
+        std::mem::take(&mut self.shared.borrow_mut().cancels)
     }
 
     fn save_state(&mut self) -> Result<Vec<u8>, HostError> {
