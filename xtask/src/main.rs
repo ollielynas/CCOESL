@@ -17,11 +17,31 @@ fn main() -> Result<()> {
     match std::env::args().nth(1).unwrap_or_else(|| "help".into()).as_str() {
         "build-web" => build_web(),
         "serve" => serve(),
+        "dev" => {
+            build_web()?;
+            serve()
+        }
         _ => {
-            eprintln!("usage: cargo xtask <build-web|serve>");
+            help();
             Ok(())
         }
     }
+}
+
+/// Printed by a bare `cargo run` too, since xtask is the workspace's only binary — so it has
+/// to answer "what do I type to see the thing?" rather than just list flags.
+fn help() {
+    println!(
+        "\nCCOSEL — a browser-hosted desktop environment.\n\n\
+         The product runs in a browser; there is no native binary to run.\n\n\
+         \x20 cargo xtask dev         build everything and serve on :8777  <- start here\n\
+         \x20 cargo xtask build-web   build only, and report wire sizes\n\
+         \x20 cargo xtask serve       serve web/ on :8777\n\n\
+         Other useful commands:\n\n\
+         \x20 cargo test                                                    native tests\n\
+         \x20 cargo test -p ccosel-host-web --target wasm32-unknown-unknown browser backend, in node\n\
+         \x20 cargo run -p ccosel-host-wasmtime --example dev_shell         native dev loop\n"
+    );
 }
 
 fn root() -> PathBuf {

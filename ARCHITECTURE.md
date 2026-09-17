@@ -51,8 +51,13 @@ already does internally.
 
 Apps are **strictly batch-only**: a frame is emitted in full, with no blocking call back into
 the shell. That costs a one-frame delay on widget responses and buys two things: apps can move
-to Web Workers later (so a runaway app can't wedge the desktop), and the shell can re-tessellate
-a *cached* command buffer at display rate while only re-running guests that need it.
+to Web Workers later (so a runaway app can't wedge the desktop).
+
+It is *intended* to also let the shell re-tessellate a cached command buffer at display rate
+while only re-running guests that need it. **That gate is not implemented yet** — see
+`AppWindow::ui` in `crates/ccosel-shell/src/app_window.rs`, which calls `instance.frame()`
+unconditionally. Today `wants_repaint_after_ms` controls whether egui repaints at all, not
+which guests run, so one animating app re-runs every other app at its rate.
 
 **The one-frame delay is invisible because the shell owns all egui state** — hover, focus, drag,
 scroll offsets, text buffers, window geometry, textures. The guest owns only its model. It is
