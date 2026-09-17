@@ -1,0 +1,26 @@
+[package]
+name = "ccosel-shell"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The CCOSEL desktop shell, running in the browser."
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+ccosel-abi = { workspace = true }
+ccosel-host = { workspace = true }
+egui = { workspace = true }
+# Not inherited from the workspace: the web build wants none of eframe's defaults (wgpu,
+# accesskit, winit, x11, wayland). glow is the lighter of the two web renderers.
+eframe = { version = "0.36", default-features = false, features = ["glow", "default_fonts"] }
+log = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+ccosel-host-web = { path = "../ccosel-host-web" }
+wasm-bindgen = { workspace = true }
+wasm-bindgen-futures = { workspace = true }
+web-sys = { workspace = true, features = ["Window", "Document", "HtmlCanvasElement", "Request", "RequestInit", "Response", "console"] }
+js-sys = { workspace = true }
+console_error_panic_hook = "0.1"

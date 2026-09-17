@@ -14,3 +14,4 @@ wasmtime = { version = "48", default-features = false, features = ["runtime", "c
 [dev-dependencies]
 egui = { workspace = true }
 eframe = { workspace = true }
+pollster = "0.4"

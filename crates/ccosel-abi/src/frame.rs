@@ -52,6 +52,18 @@ pub struct FrameOutput {
     pub status: u32,
 }
 
+/// A pointer/length pair in guest memory.
+///
+/// Used instead of packing both halves into a `u64` return value: wasm `i64` surfaces in JS as
+/// a `BigInt`, which makes the browser backend's glue fiddly for no benefit. Returning a
+/// pointer to one of these keeps every export's return type a plain `u32`.
+#[derive(Clone, Copy, Debug, Default, Pod, Zeroable)]
+#[repr(C)]
+pub struct Slice {
+    pub ptr: u32,
+    pub len: u32,
+}
+
 /// `FrameOutput::status` values.
 pub mod status {
     pub const OK: u32 = 0;

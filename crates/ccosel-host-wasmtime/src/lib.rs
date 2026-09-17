@@ -9,7 +9,7 @@
 //! guest call — on wasmtime that would deadlock the store borrow, and on web the buffer would
 //! detach the moment the guest grew its heap.
 
-use ccosel_abi::{FrameInput, FrameOutput, RespRecord, ABI_VERSION};
+use ccosel_abi::{FrameInput, FrameOutput, RespRecord, Slice, ABI_VERSION};
 use ccosel_host::{AppHost, AppInstance, FrameArgs, FrameResult, HostError};
 use wasmtime::{Caller, Engine, Instance, Linker, Memory, Module, Store, TypedFunc};
 
@@ -50,7 +50,9 @@ impl AppHost for WasmtimeHost {
     type Module = Module;
     type Instance = WasmtimeInstance;
 
-    fn compile(&self, wasm: &[u8]) -> Result<Module, HostError> {
+    /// Cranelift compiles synchronously, so this future is ready on first poll. The signature
+    /// is async only because the browser backend has no choice.
+    async fn compile(&self, wasm: &[u8]) -> Result<Module, HostError> {
         Module::new(&self.engine, wasm).map_err(trap)
     }
 
@@ -160,7 +162,7 @@ struct Exports {
     init: TypedFunc<(u32, u32), u32>,
     frame: TypedFunc<u32, u32>,
     on_event: TypedFunc<(u32, u32), ()>,
-    save_state: TypedFunc<(), u64>,
+    save_state: TypedFunc<(), u32>,
     abi_version: TypedFunc<(), u32>,
 }
 
@@ -313,12 +315,15 @@ impl AppInstance for WasmtimeInstance {
     }
 
     fn save_state(&mut self) -> Result<Vec<u8>, HostError> {
-        let packed = self.exports.save_state.call(&mut self.store, ()).map_err(trap)?;
-        let ptr = (packed >> 32) as u32;
-        let len = packed as u32;
-        if ptr == 0 || len == 0 {
+        let slice_ptr = self.exports.save_state.call(&mut self.store, ()).map_err(trap)?;
+        if slice_ptr == 0 {
             return Ok(Vec::new());
         }
-        self.read_bytes(ptr, len)
+        let raw = self.read_bytes(slice_ptr, size_of::<Slice>() as u32)?;
+        let slice: Slice = *bytemuck::from_bytes(&raw);
+        if slice.ptr == 0 || slice.len == 0 {
+            return Ok(Vec::new());
+        }
+        self.read_bytes(slice.ptr, slice.len)
     }
 }

@@ -5,6 +5,9 @@ members = [
     "crates/ccosel-sdk",
     "crates/ccosel-host",
     "crates/ccosel-host-wasmtime",
+    "crates/ccosel-host-web",
+    "crates/ccosel-shell",
+    "xtask",
     # Added as each lands; see ARCHITECTURE.md for the target layout.
 ]
 # `apps/` is deliberately a SEPARATE workspace: guest modules need
@@ -30,7 +33,24 @@ postcard = { version = "1.1", default-features = false, features = ["alloc"] }
 bytemuck = { version = "1", features = ["derive"] }
 anyhow = "1"
 log = "0.4"
+# Pinned to the installed `wasm-bindgen` CLI: the crate and the CLI share a schema version and
+# a mismatch fails the build outright.
+wasm-bindgen = "=0.2.127"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = "0.3"
 
 [profile.release]
 opt-level = 3
 lto = "thin"
+
+# The shell is the single largest download in the system, so it gets its own profile: size
+# over speed, symbols stripped. The native dev build keeps `release` (opt-level 3, symbols)
+# because that is what gets debugged.
+[profile.web-release]
+inherits = "release"
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true

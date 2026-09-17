@@ -1,0 +1,8 @@
+# Lets `cargo test --target wasm32-unknown-unknown` execute wasm-bindgen tests under node,
+# so the browser backend is exercised against a real WebAssembly engine rather than only
+# type-checked.
+[target.wasm32-unknown-unknown]
+runner = "wasm-bindgen-test-runner"
+
+[alias]
+xtask = "run --package xtask --"

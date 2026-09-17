@@ -50,7 +50,7 @@ impl DevShell {
         })?;
 
         let host = WasmtimeHost::new();
-        let module = host.compile(&wasm)?;
+        let module = pollster::block_on(host.compile(&wasm))?;
         let app = host.instantiate(&module)?;
 
         Ok(Self {

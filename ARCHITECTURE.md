@@ -16,16 +16,18 @@ crates/
   ccosel-abi/             the guest<->shell contract. no_std, bytemuck only.   [BUILT]
   ccosel-sdk/             guest side: Ui facade, encoder, response lookup     [BUILT]
   ccosel-host/            decode + replay into egui::Ui. NO wasm runtime dep. [BUILT]
-  ccosel-host-wasmtime/   native/server backend                               [BUILT]
+  ccosel-host-wasmtime/   dev/test backend only, never ships                  [BUILT]
+  ccosel-host-web/        browser backend - THE shipping path                  [BUILT]
+  ccosel-shell/           the thing the browser loads                          [BUILT]
+  xtask/                  build pipeline + size budgets                        [BUILT]
   ccosel-proto/           client<->server RPC types (serde/postcard)
-  ccosel-host-web/        wasm-bindgen + web-sys backend
   ccosel-transport/       WS codec, pending-call table, reconnect/resume, coalescing
   ccosel-cas/             content-defined chunking + hashing (client and server)
-  ccosel-shell/           window manager, taskbar, launcher, app lifecycle
   ccosel-server/          axum binary
 apps/                     SEPARATE cargo workspace
   file-browser/  compiler/
-web/  docker/  xtask/
+web/      hand-written loader page
+docker/
 ```
 
 Three structural choices worth not undoing:
@@ -136,19 +138,39 @@ nothing despite responses being a frame stale.
 - [x] `ccosel-host` — decode + replay into `egui::Ui`, tested against an offscreen context
 - [x] `cargo run -p ccosel-host --example replay_demo` — SDK -> bytes -> egui, natively
 - [x] `ccosel-host-wasmtime` — real modules over a real memory boundary, response write-back
-- [x] File Browser v0 as an actual `.wasm` guest: **27.7 KB raw, 11.8 KB gzipped**
-- [ ] `ccosel-server` skeleton, `ccosel-transport`
-- [ ] `ccosel-host-web`, then CAS upload/download, then `xtask`
+- [x] File Browser v0 as an actual `.wasm` guest
+- [x] `ccosel-host-web` — the shipping backend, tested under a real WebAssembly engine in node
+- [x] `ccosel-shell` + hand-written loader — **the File Browser runs in a browser tab, and
+      clicking a file updates it**, verified end-to-end in headless Chrome
+- [ ] Window manager, taskbar, launcher (the shell is currently one full-screen app)
+- [ ] `ccosel-server` + `ccosel-transport`; IndexedDB module cache; CAS upload/download
 
 ## Running it
 
 ```
-cargo test                                            # 28 tests, both workspaces
-cargo run -p ccosel-host-wasmtime --example dev_shell  # the native dev loop
-cd apps && cargo build --release --target wasm32-unknown-unknown
+cargo xtask build-web      # both workspaces + wasm-bindgen, reports wire sizes
+cargo xtask serve          # http://127.0.0.1:8777/
+
+cargo test                                             # 32 native tests
+cargo test -p ccosel-host-web --target wasm32-unknown-unknown   # 4, under node
+cargo run -p ccosel-host-wasmtime --example dev_shell   # native dev loop
 ```
 
-`dev_shell` loads the same `.wasm` the browser will fetch — no `wasm-bindgen`, no JS glue — so
-a bug reproduced there is the bug that would happen in the browser, with a real debugger.
+`dev_shell` loads the same `.wasm` the browser fetches — no `wasm-bindgen`, no JS glue — so a
+bug reproduced there is the bug that would happen in the browser, with a real debugger.
+
+### Measured wire sizes
+
+|  | raw | gzip |
+|---|---|---|
+| shell.wasm | 5.7 MB | 1.8 MB |
+| shell.js | 82 KB | 11 KB |
+| **file-browser.wasm** | **27 KB** | **11 KB** |
+
+The app number is the one that matters: it is paid per app, repeatedly, whereas the shell is
+fetched once and cached. An app that linked its own eframe would be ~1 MB compressed instead of
+11 KB — that ratio is the entire justification for the command-stream design. `xtask` fails the
+build if an app module exceeds 100 KB gzipped. `wasm-opt -Oz` is not yet installed and is the
+remaining lever on shell size.
 
 Build order and rationale: see the plan at `~/.claude/plans/read-through-teh-readme-mellow-pond.md`.

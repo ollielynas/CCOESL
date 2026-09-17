@@ -88,7 +88,7 @@ fn button_id(buf: &[u8], want: &str) -> u64 {
 #[test]
 fn drives_a_real_guest_module_end_to_end() {
     let host = WasmtimeHost::new();
-    let module = host.compile(&guest_wasm()).expect("compile");
+    let module = pollster::block_on(host.compile(&guest_wasm())).expect("compile");
     let mut app = host.instantiate(&module).expect("instantiate");
 
     let ctx = egui::Context::default();
@@ -168,7 +168,7 @@ fn guest_state_persists_across_frames_and_staging_buffers_are_reused() {
     // leaked, guest memory would grow without bound — and wasm memory cannot shrink, so the
     // app could never be brought back down without being destroyed outright.
     let host = WasmtimeHost::new();
-    let module = host.compile(&guest_wasm()).expect("compile");
+    let module = pollster::block_on(host.compile(&guest_wasm())).expect("compile");
     let mut app = host.instantiate(&module).expect("instantiate");
 
     let steady = app.frame(&FrameArgs::default()).expect("frame");
@@ -187,7 +187,7 @@ fn guest_state_persists_across_frames_and_staging_buffers_are_reused() {
 fn a_hostile_response_table_cannot_corrupt_the_guest() {
     // The host is trusted by the guest, but ids it does not recognise must simply miss.
     let host = WasmtimeHost::new();
-    let module = host.compile(&guest_wasm()).expect("compile");
+    let module = pollster::block_on(host.compile(&guest_wasm())).expect("compile");
     let mut app = host.instantiate(&module).expect("instantiate");
 
     let baseline = app.frame(&FrameArgs::default()).expect("frame");

@@ -17,6 +17,7 @@ pub struct Runtime<A: App> {
     app: A,
     rec: Recorder,
     out: FrameOutput,
+    saved: ccosel_abi::Slice,
     responses: Vec<RespRecord>,
 }
 
@@ -26,6 +27,7 @@ impl<A: App> Runtime<A> {
             app,
             rec: Recorder::new(),
             out: FrameOutput::default(),
+            saved: ccosel_abi::Slice::default(),
             responses: Vec::new(),
         }
     }
@@ -68,6 +70,14 @@ impl<A: App> Runtime<A> {
 
     pub fn abi_version(&self) -> u32 {
         ABI_VERSION
+    }
+
+    /// Serialize the app's state for eviction. Stubbed until eviction lands, but the export
+    /// exists in v0 because adding one later would break every module already cached by a
+    /// client.
+    pub fn save_state(&mut self) -> u32 {
+        self.saved = ccosel_abi::Slice { ptr: 0, len: 0 };
+        &self.saved as *const ccosel_abi::Slice as usize as u32
     }
 }
 
@@ -159,8 +169,8 @@ macro_rules! ccosel_app {
             // shell has already cached, so the shape is fixed now even though eviction and
             // state restore are not implemented yet.
             #[unsafe(no_mangle)]
-            pub extern "C" fn ccosel_save_state() -> u64 {
-                0
+            pub extern "C" fn ccosel_save_state() -> u32 {
+                runtime().save_state()
             }
 
             #[unsafe(no_mangle)]

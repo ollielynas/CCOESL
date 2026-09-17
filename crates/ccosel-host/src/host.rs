@@ -4,10 +4,13 @@
 //! (browser, via `WebAssembly.instantiate`). Everything above this trait is identical on both,
 //! which is what lets the shell be developed natively and shipped to the web.
 //!
-//! Note the async/sync split: **compilation is async, instantiation is not.** Making the whole
-//! trait async would poison the render loop, and it is unnecessary — both
-//! `new WebAssembly.Instance(module, ..)` and `wasmtime::Instance::new` are synchronous once a
-//! module is compiled.
+//! Note the async/sync split: **compilation is async, instantiation is not.**
+//!
+//! Compilation has to be async because browsers refuse synchronous `new WebAssembly.Module` on
+//! the main thread for anything over 4 KB, and every real app module is bigger than that.
+//! Instantiation is deliberately *not* async — both `new WebAssembly.Instance(module, ..)` and
+//! `wasmtime::Instance::new` are synchronous once a module is compiled, and making the whole
+//! trait async would poison the render loop for no reason.
 
 use ccosel_abi::{DecodeError, RespRecord};
 
@@ -98,6 +101,10 @@ pub trait AppHost {
     type Module;
     type Instance: AppInstance;
 
-    fn compile(&self, wasm: &[u8]) -> Result<Self::Module, HostError>;
+    fn compile(
+        &self,
+        wasm: &[u8],
+    ) -> impl std::future::Future<Output = Result<Self::Module, HostError>>;
+
     fn instantiate(&self, module: &Self::Module) -> Result<Self::Instance, HostError>;
 }
