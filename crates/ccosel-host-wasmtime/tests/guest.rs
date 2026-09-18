@@ -148,7 +148,9 @@ fn drives_a_real_guest_module_end_to_end() {
         .frame(&FrameArgs { frame_index: 2, ..Default::default() })
         .expect("frame 3");
     assert!(!labels(&f3.commands).contains(&"Loading…".to_owned()));
-    assert!(labels(&f3.commands).contains(&"nothing selected".to_owned()));
+    // Nothing is selected yet, but there are entries, so the status bar reports the count
+    // rather than the empty-selection placeholder.
+    assert!(labels(&f3.commands).contains(&"2 of 2 items".to_owned()));
 
     // --- Click "notes.md" for real, through egui hit-testing.
     render(&ctx, &mut replayer, &f3.commands, raw_input());

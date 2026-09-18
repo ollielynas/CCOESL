@@ -9,7 +9,7 @@
 //! request cache keys on the request itself — so changing `self.path` *is* the re-request.
 
 use ccosel_proto::fs::{EntryKind, ListDir, ListDirReq};
-use ccosel_sdk::{App, Poll, Text, Ui, Vec2};
+use ccosel_sdk::{App, Poll, Text, Ui};
 
 pub struct FileBrowser {
     path: String,
@@ -29,11 +29,13 @@ impl Default for FileBrowser {
     }
 }
 
+/// A single glyph per kind, drawn from the same "stand-in until the icon pipeline exists"
+/// convention the shell already uses for app icons (see `registry.rs`).
 fn icon_for(kind: EntryKind) -> &'static str {
     match kind {
-        EntryKind::Dir => "[dir]",
-        EntryKind::Symlink => "[lnk]",
-        _ => "     ",
+        EntryKind::Dir => "📁",
+        EntryKind::Symlink => "🔗",
+        EntryKind::File | EntryKind::Other => "📄",
     }
 }
 
@@ -86,6 +88,18 @@ impl FileBrowser {
         self.path.push_str(name);
         self.selected = None;
     }
+
+    /// The path as a chain of `(label, full path)` breadcrumbs, root first.
+    fn crumbs(&self) -> Vec<(String, String)> {
+        let mut out = vec![("🏠".to_owned(), "/".to_owned())];
+        let mut acc = String::new();
+        for seg in self.path.split('/').filter(|s| !s.is_empty()) {
+            acc.push('/');
+            acc.push_str(seg);
+            out.push((seg.to_owned(), acc.clone()));
+        }
+        out
+    }
 }
 
 impl App for FileBrowser {
@@ -94,27 +108,48 @@ impl App for FileBrowser {
         // `self.path`, and navigation mutates it.
         let mut go_up = false;
         let mut refresh = false;
+        let mut go_to: Option<String> = None;
 
         ui.horizontal(|ui| {
-            if ui.button("Up").clicked() {
+            if ui.button("⬆ Up").clicked() {
                 go_up = true;
             }
             ui.tooltip("Go to parent directory");
-            if ui.button("Refresh").clicked() {
+            if ui.button("⟳ Refresh").clicked() {
                 refresh = true;
             }
-            ui.label(&self.path);
+        });
+
+        // A clickable trail, not just a path label: jumping to an ancestor is one click instead
+        // of several "Up"s.
+        let crumbs = self.crumbs();
+        ui.horizontal(|ui| {
+            let last = crumbs.len() - 1;
+            for (i, (label, path)) in crumbs.iter().enumerate() {
+                ui.push_id(path.as_str(), |ui| {
+                    if ui.button(label.as_str()).clicked() {
+                        go_to = Some(path.clone());
+                    }
+                });
+                if i != last {
+                    ui.label("›");
+                }
+            }
         });
 
         if go_up {
             self.go_up();
+        }
+        if let Some(path) = go_to {
+            self.path = path;
+            self.selected = None;
         }
         if refresh {
             ui.rpc().invalidate::<ListDir>(&ListDirReq { path: &self.path });
         }
 
         ui.horizontal(|ui| {
-            ui.label("Filter");
+            ui.label("🔍 Filter");
             ui.text_edit(&mut self.filter);
         });
         ui.separator();
@@ -122,6 +157,8 @@ impl App for FileBrowser {
         // Deferred so the borrow of `self` inside the match does not collide with mutating it.
         let mut enter: Option<String> = None;
         let mut retry = false;
+        let mut total = 0usize;
+        let mut shown = 0usize;
 
         // Bound to a local so the borrow of `self.path` ends before the arms run.
         let listing = ui.rpc().get::<ListDir>(&ListDirReq { path: &self.path });
@@ -139,8 +176,16 @@ impl App for FileBrowser {
                 }
             }
             Poll::Ready(listing) => {
+                total = listing.entries.len();
                 let needle = self.filter.as_str().to_ascii_lowercase();
-                let mut shown = 0usize;
+
+                if total > 0 {
+                    ui.horizontal(|ui| {
+                        ui.label("Name");
+                        ui.label("Size");
+                    });
+                    ui.separator();
+                }
 
                 for entry in &listing.entries {
                     if !needle.is_empty() && !entry.name.to_ascii_lowercase().contains(&needle) {
@@ -151,24 +196,36 @@ impl App for FileBrowser {
                     // position-derived ids would land a click on whichever row moved into the
                     // slot.
                     ui.push_id(&entry.name, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.image("/cas/icon", Vec2::new(16.0, 16.0));
-                            ui.label(icon_for(entry.kind));
-                            if ui.button(&entry.name).clicked() {
-                                if entry.is_dir() {
-                                    enter = Some(entry.name.clone());
+                        // A `group` per row, not just a `horizontal`: it's what gives the host
+                        // something to key an alternating background off, so the list reads as
+                        // a zebra-striped table instead of a wall of same-colored text.
+                        ui.group(|ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(icon_for(entry.kind));
+
+                                let selected =
+                                    self.selected.as_deref() == Some(entry.name.as_str());
+                                let label = if selected {
+                                    format!("▸ {}", entry.name)
                                 } else {
-                                    self.selected = Some(entry.name.clone());
+                                    entry.name.clone()
+                                };
+                                if ui.button(&label).clicked() {
+                                    if entry.is_dir() {
+                                        enter = Some(entry.name.clone());
+                                    } else {
+                                        self.selected = Some(entry.name.clone());
+                                    }
                                 }
-                            }
-                            if !entry.is_dir() {
-                                ui.label(human_size(entry.size).as_str());
-                            }
+                                if !entry.is_dir() {
+                                    ui.label(format!("· {}", human_size(entry.size)).as_str());
+                                }
+                            });
                         });
                     });
                 }
 
-                if listing.entries.is_empty() {
+                if total == 0 {
                     ui.label("(empty directory)");
                 } else if shown == 0 {
                     ui.label("(nothing matches the filter)");
@@ -187,7 +244,22 @@ impl App for FileBrowser {
         }
 
         ui.separator();
-        ui.label(self.selected.as_deref().unwrap_or("nothing selected"));
+        match &self.selected {
+            // Two labels, not one interpolated string: keeps the file's own name as its own
+            // widget rather than burying it inside "Selected: notes.md" prose.
+            Some(name) => {
+                ui.horizontal(|ui| {
+                    ui.label("Selected:");
+                    ui.label(name.as_str());
+                });
+            }
+            None if total > 0 => {
+                ui.label(format!("{shown} of {total} items").as_str());
+            }
+            None => {
+                ui.label("nothing selected");
+            }
+        }
     }
 }
 

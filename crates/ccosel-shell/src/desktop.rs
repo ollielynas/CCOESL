@@ -47,6 +47,8 @@ pub struct Desktop {
 
 impl Desktop {
     pub fn new(egui_ctx: egui::Context) -> Self {
+        apply_style(&egui_ctx);
+
         let replies: Inbox = Rc::new(RefCell::new(Vec::new()));
         let wire = HttpWire::new("/rpc", replies.clone(), egui_ctx.clone());
 
@@ -141,7 +143,15 @@ impl Desktop {
                 .id(egui::Id::new(("app-window", window.instance_id)))
                 .default_size(window.default_size)
                 .open(&mut open)
-                .show(&ctx, |ui| window.ui(ui));
+                .show(&ctx, |ui| {
+                    // `auto_shrink(false)` claims the whole window body regardless of how much
+                    // the app actually drew, so dragging the window bigger than its content
+                    // leaves blank space rather than the window snapping back to fit. It also
+                    // means a long listing scrolls instead of growing the window without bound.
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| window.ui(ui));
+                });
 
             // Anything the guest asked for during that frame.
             let sink = window.sink();
@@ -315,6 +325,29 @@ async fn launch_inner(
         entry.icon,
         entry.default_size,
     ))
+}
+
+/// Rounder corners and more breathing room than egui's defaults. Every app in the system
+/// draws through this one shared `egui::Ui`, so a single style pass here is what keeps
+/// windows, buttons and menus looking like one coherent product instead of a widget gallery.
+fn apply_style(ctx: &egui::Context) {
+    ctx.all_styles_mut(|style| {
+        style.spacing.item_spacing = egui::vec2(8.0, 8.0);
+        style.spacing.button_padding = egui::vec2(10.0, 6.0);
+        style.spacing.window_margin = egui::Margin::same(10);
+        style.spacing.menu_margin = egui::Margin::same(6);
+
+        let window_radius = egui::CornerRadius::same(10);
+        style.visuals.window_corner_radius = window_radius;
+        style.visuals.menu_corner_radius = window_radius;
+
+        let widget_radius = egui::CornerRadius::same(6);
+        style.visuals.widgets.noninteractive.corner_radius = widget_radius;
+        style.visuals.widgets.inactive.corner_radius = widget_radius;
+        style.visuals.widgets.hovered.corner_radius = widget_radius;
+        style.visuals.widgets.active.corner_radius = widget_radius;
+        style.visuals.widgets.open.corner_radius = widget_radius;
+    });
 }
 
 fn lerp_color(a: egui::Color32, b: egui::Color32, t: f32) -> egui::Color32 {

@@ -153,6 +153,10 @@ impl Cx<'_> {
         range: Range<usize>,
     ) {
         let mut i = range.start;
+        // Counts `Frame`-kind children seen so far at *this* nesting level, so consecutive rows
+        // (e.g. a file list) alternate background without the guest ever naming a color. Local
+        // to one call, so it naturally resets per sibling list instead of per whole frame.
+        let mut frame_row: u32 = 0;
         while i < range.end {
             match cmds[i] {
                 Cmd::Nop | Cmd::Tooltip { .. } => {}
@@ -163,7 +167,9 @@ impl Cx<'_> {
                 }
 
                 Cmd::Button { id, text } => {
-                    let r = ui.add(egui::Button::new(text));
+                    // Flat at rest, framed on hover/press: modern toolbars and list rows read
+                    // as buttons without every one of them drawing a permanent box outline.
+                    let r = ui.add(egui::Button::new(text).frame_when_inactive(false));
                     self.finish(id, r);
                 }
 
@@ -247,9 +253,26 @@ impl Cx<'_> {
                             ui.vertical(|ui| self.render(ui, cmds, closes, inner.clone()));
                         }
                         (ScopeKind::Frame, _) => {
-                            egui::Frame::group(ui.style()).show(ui, |ui| {
-                                self.render(ui, cmds, closes, inner.clone())
-                            });
+                            // Flat alternating fill rather than a bordered box: this is what
+                            // gives a list of `Frame`-wrapped rows (e.g. file entries) a
+                            // zebra-striped look, the same purpose `visuals.faint_bg_color`
+                            // serves for `Grid::striped`.
+                            let fill = if frame_row % 2 == 1 {
+                                ui.visuals().faint_bg_color
+                            } else {
+                                egui::Color32::TRANSPARENT
+                            };
+                            frame_row += 1;
+                            egui::Frame::new()
+                                .fill(fill)
+                                .corner_radius(4)
+                                .inner_margin(egui::Margin::symmetric(6, 3))
+                                .show(ui, |ui| {
+                                    // A row's stripe should span the whole list, not just hug
+                                    // its own content's width.
+                                    ui.set_min_width(ui.available_width());
+                                    self.render(ui, cmds, closes, inner.clone())
+                                });
                         }
                         (ScopeKind::Group, _) => {
                             ui.scope(|ui| self.render(ui, cmds, closes, inner.clone()));
