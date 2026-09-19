@@ -1,0 +1,139 @@
+# Every job here is one `cargo xtask <name>` — the same command a developer or agent runs locally,
+# so CI and `cargo xtask ci` cannot drift apart. The Rust version comes from rust-toolchain.toml.
+#
+# Branch protection requires exactly one check, `ci-ok`, which fails unless every job above it
+# succeeded. Add or rename jobs freely; just keep them in `ci-ok`'s `needs`.
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+# A newer push to the same PR makes the older run pointless. Never cancel a run on `main`
+# itself: that is the record of whether main is green.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  fmt:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo xtask fmt
+
+  clippy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            apps
+      - run: cargo xtask clippy
+
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            apps
+      - run: cargo xtask test
+
+  # The browser backend's tests only exist on wasm32 (native `cargo test` reports 0 for them).
+  test-wasm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            apps
+      # The CLI and the `wasm-bindgen` crate share a schema version and a mismatch fails the
+      # build, so the version is read from the pin in Cargo.toml rather than repeated here.
+      - name: Install wasm-bindgen-cli at the pinned version
+        run: |
+          version="$(sed -n 's/^wasm-bindgen = "=\(.*\)"/\1/p' Cargo.toml)"
+          test -n "$version"
+          cargo install wasm-bindgen-cli --version "$version" --locked
+      - run: cargo xtask test-wasm
+
+  # Every app must reach the line-coverage bar (APP_COVERAGE_MIN_LINES in xtask/src/main.rs).
+  # Apps are discovered by scanning apps/, so a new app is gated with no change here.
+  apps-coverage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov@0.9.1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps
+      - run: cargo xtask coverage
+
+  # Builds the shipped artifacts and enforces the per-app wire-size budget.
+  build-web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            apps
+      - name: Install wasm-bindgen-cli at the pinned version
+        run: |
+          version="$(sed -n 's/^wasm-bindgen = "=\(.*\)"/\1/p' Cargo.toml)"
+          test -n "$version"
+          cargo install wasm-bindgen-cli --version "$version" --locked
+      - run: cargo xtask build-web
+
+  # The single required check. `if: always()` matters: without it a failed job would leave this
+  # one *skipped*, and a skipped required check can read as passing.
+  ci-ok:
+    if: always()
+    needs: [fmt, clippy, test, test-wasm, apps-coverage, build-web]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every job must have succeeded
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "job results: $RESULTS"
+          for result in $RESULTS; do
+            [ "$result" = "success" ] || { echo "a required job did not succeed"; exit 1; }
+          done
