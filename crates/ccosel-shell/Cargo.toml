@@ -20,6 +20,7 @@ ccosel-proto = { workspace = true }
 ccosel-transport = { workspace = true }
 postcard = { workspace = true }
 egui = { workspace = true }
+egui-phosphor = "0.14"
 # Not inherited from the workspace: the web build wants none of eframe's defaults (wgpu,
 # accesskit, winit, x11, wayland). glow is the lighter of the two web renderers.
 eframe = { version = "0.36", default-features = false, features = ["glow", "default_fonts"] }
