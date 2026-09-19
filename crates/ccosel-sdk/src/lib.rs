@@ -23,6 +23,8 @@ mod recorder;
 mod response;
 pub mod rpc;
 pub mod runtime;
+#[cfg(feature = "testing")]
+pub mod testing;
 mod ui;
 
 pub use ccosel_abi::{ABI_VERSION, REPAINT_ON_INPUT_ONLY};
