@@ -30,7 +30,7 @@ use alloc::vec::Vec;
 use core::any::Any;
 use core::cell::RefCell;
 
-use ccosel_abi::event::{decode_error, event_kind, rpc_error, Event};
+use ccosel_abi::event::{Event, decode_error, event_kind, rpc_error};
 use ccosel_proto::{Method, Query, Rpc};
 
 /// Entries untouched for this many frames are dropped, cancelling them if still in flight.

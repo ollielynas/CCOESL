@@ -6,12 +6,12 @@
 //! `wasmtime` on the server and under `WebAssembly.instantiate` in a browser.
 
 use alloc::vec::Vec;
-use ccosel_abi::{FrameInput, FrameOutput, RespRecord, ABI_VERSION};
+use ccosel_abi::{ABI_VERSION, FrameInput, FrameOutput, RespRecord};
 
+use crate::App;
 use crate::recorder::Recorder;
 use crate::rpc::RpcCtx;
 use crate::ui::Ui;
-use crate::App;
 
 /// Holds an app and its recording state for the lifetime of the module.
 pub struct Runtime<A: App> {
@@ -275,7 +275,14 @@ mod host {
     pub fn rpc_call(call_id: u32, method: u32, args: &[u8]) {
         // The host copies the arguments out synchronously inside the import, so this pointer
         // only has to stay valid for the duration of the call.
-        unsafe { host_rpc_call(call_id, method, args.as_ptr() as usize as u32, args.len() as u32) }
+        unsafe {
+            host_rpc_call(
+                call_id,
+                method,
+                args.as_ptr() as usize as u32,
+                args.len() as u32,
+            )
+        }
     }
 
     #[cfg(target_arch = "wasm32")]

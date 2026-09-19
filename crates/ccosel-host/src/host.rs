@@ -18,7 +18,10 @@ use ccosel_abi::{DecodeError, RespRecord};
 pub enum HostError {
     /// The module was built against a different ABI. The shell must refuse it rather than
     /// guess — a cached module from an older build is the expected way to hit this.
-    AbiMismatch { expected: u32, found: u32 },
+    AbiMismatch {
+        expected: u32,
+        found: u32,
+    },
     MissingExport(&'static str),
     /// The guest trapped: panic, unreachable, out-of-bounds.
     Trap(String),

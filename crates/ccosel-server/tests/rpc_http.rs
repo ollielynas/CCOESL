@@ -4,7 +4,7 @@ use std::fs;
 use std::net::SocketAddr;
 
 use ccosel_proto::fs::{DirListing, ListDirReq};
-use ccosel_proto::{server_error, Method, WireReply, WireRequest, WireResult};
+use ccosel_proto::{Method, WireReply, WireRequest, WireResult, server_error};
 use ccosel_server::fs_api::Jail;
 
 async fn spawn() -> SocketAddr {
@@ -84,7 +84,11 @@ async fn lists_a_real_directory_over_http() {
 async fn a_batch_returns_one_reply_per_call_and_one_failure_does_not_sink_the_rest() {
     // Coalesced calls share a request, so a single bad path must fail only its own entry.
     let addr = spawn().await;
-    let reply = post_rpc(addr, encode(&[(7, "/"), (8, "/../escape"), (9, "/Projects")])).await;
+    let reply = post_rpc(
+        addr,
+        encode(&[(7, "/"), (8, "/../escape"), (9, "/Projects")]),
+    )
+    .await;
     let replies: Vec<WireReply> = postcard::from_bytes(&reply).unwrap();
 
     assert_eq!(replies.len(), 3);

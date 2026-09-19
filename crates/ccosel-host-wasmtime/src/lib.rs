@@ -9,7 +9,7 @@
 //! guest call — on wasmtime that would deadlock the store borrow, and on web the buffer would
 //! detach the moment the guest grew its heap.
 
-use ccosel_abi::{FrameInput, FrameOutput, RespRecord, Slice, ABI_VERSION};
+use ccosel_abi::{ABI_VERSION, FrameInput, FrameOutput, RespRecord, Slice};
 use ccosel_host::{AppHost, AppInstance, FrameArgs, FrameResult, HostError, OutboundCall};
 use wasmtime::{Caller, Engine, Instance, Linker, Memory, Module, Store, TypedFunc};
 
@@ -161,7 +161,11 @@ fn define_imports(linker: &mut Linker<HostState>) -> Result<(), HostError> {
                 };
                 let mut args = vec![0u8; len as usize];
                 if mem.read(&mut caller, ptr as usize, &mut args).is_ok() {
-                    caller.data_mut().outbox.push(OutboundCall { call_id, method, args });
+                    caller.data_mut().outbox.push(OutboundCall {
+                        call_id,
+                        method,
+                        args,
+                    });
                 }
             },
         )
@@ -233,8 +237,6 @@ impl WasmtimeInstance {
         std::mem::take(&mut self.store.data_mut().log)
     }
 
-
-
     fn read_bytes(&mut self, ptr: u32, len: u32) -> Result<Vec<u8>, HostError> {
         let mut buf = vec![0u8; len as usize];
         self.memory
@@ -285,7 +287,12 @@ impl AppInstance for WasmtimeInstance {
                 .map_err(|_| HostError::BadPointer)
         };
 
-        write(&self.memory, &mut self.store, base, bytemuck::bytes_of(&input))?;
+        write(
+            &self.memory,
+            &mut self.store,
+            base,
+            bytemuck::bytes_of(&input),
+        )?;
         if resp_bytes > 0 {
             write(
                 &self.memory,
@@ -298,7 +305,11 @@ impl AppInstance for WasmtimeInstance {
             write(&self.memory, &mut self.store, event_ptr, args.events)?;
         }
 
-        let out_ptr = self.exports.frame.call(&mut self.store, base).map_err(trap)?;
+        let out_ptr = self
+            .exports
+            .frame
+            .call(&mut self.store, base)
+            .map_err(trap)?;
 
         let out_bytes = self.read_bytes(out_ptr, size_of::<FrameOutput>() as u32)?;
         let out: FrameOutput = *bytemuck::from_bytes(&out_bytes);
@@ -352,7 +363,11 @@ impl AppInstance for WasmtimeInstance {
     }
 
     fn save_state(&mut self) -> Result<Vec<u8>, HostError> {
-        let slice_ptr = self.exports.save_state.call(&mut self.store, ()).map_err(trap)?;
+        let slice_ptr = self
+            .exports
+            .save_state
+            .call(&mut self.store, ())
+            .map_err(trap)?;
         if slice_ptr == 0 {
             return Ok(Vec::new());
         }

@@ -10,8 +10,8 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use axum::routing::post;
 use axum::Router;
+use axum::routing::post;
 use tower_http::services::ServeDir;
 
 use fs_api::Jail;

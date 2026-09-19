@@ -7,14 +7,18 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 
 /// App modules are the recurring download, so they get a hard budget. The shell is fetched
 /// once and cached forever, so it is reported but not gated.
 const GUEST_BUDGET_GZIP: u64 = 100 * 1024;
 
 fn main() -> Result<()> {
-    match std::env::args().nth(1).unwrap_or_else(|| "help".into()).as_str() {
+    match std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "help".into())
+        .as_str()
+    {
         "build-web" => build_web(),
         "serve" => serve(),
         "dev" => {
@@ -68,7 +72,10 @@ fn gzip_size(path: &Path) -> Result<u64> {
         .arg("-c")
         .arg(format!("gzip -9 -c '{}' | wc -c", path.display()))
         .output()?;
-    Ok(String::from_utf8_lossy(&out.stdout).trim().parse().unwrap_or(0))
+    Ok(String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .parse()
+        .unwrap_or(0))
 }
 
 fn human(n: u64) -> String {
@@ -105,8 +112,13 @@ fn build_web() -> Result<()> {
         &root,
         "cargo",
         &[
-            "build", "--profile", "web-release", "-p", "ccosel-shell",
-            "--target", "wasm32-unknown-unknown",
+            "build",
+            "--profile",
+            "web-release",
+            "-p",
+            "ccosel-shell",
+            "--target",
+            "wasm32-unknown-unknown",
         ],
     )?;
 
@@ -116,9 +128,13 @@ fn build_web() -> Result<()> {
         &root,
         "wasm-bindgen",
         &[
-            "--target", "web", "--no-typescript",
-            "--out-dir", dist.to_str().unwrap(),
-            "--out-name", "ccosel-shell",
+            "--target",
+            "web",
+            "--no-typescript",
+            "--out-dir",
+            dist.to_str().unwrap(),
+            "--out-name",
+            "ccosel-shell",
             shell_wasm.to_str().unwrap(),
         ],
     )?;
@@ -141,7 +157,10 @@ fn build_web() -> Result<()> {
 
     let mut over_budget = Vec::new();
     for (_, served) in guests {
-        let gz = report(&format!("{served}.wasm"), &dist.join(format!("{served}.wasm")))?;
+        let gz = report(
+            &format!("{served}.wasm"),
+            &dist.join(format!("{served}.wasm")),
+        )?;
         if gz > GUEST_BUDGET_GZIP {
             over_budget.push(format!("{served} is {} gzipped", human(gz)));
         }
@@ -171,9 +190,15 @@ fn serve() -> Result<()> {
         &root,
         "cargo",
         &[
-            "run", "--release", "-p", "ccosel-server", "--",
-            "--root", root.join("data/shared").to_str().unwrap(),
-            "--web", root.join("web").to_str().unwrap(),
+            "run",
+            "--release",
+            "-p",
+            "ccosel-server",
+            "--",
+            "--root",
+            root.join("data/shared").to_str().unwrap(),
+            "--web",
+            root.join("web").to_str().unwrap(),
         ],
     )
 }

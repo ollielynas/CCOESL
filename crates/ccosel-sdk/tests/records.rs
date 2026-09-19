@@ -60,7 +60,13 @@ fn records_a_well_formed_frame() {
     assert!(matches!(cmds[4], Cmd::Tooltip { .. }));
     assert!(matches!(cmds[5], Cmd::TextEditSingle { .. }));
     assert!(matches!(cmds[6], Cmd::EndScope { .. }));
-    assert!(matches!(cmds[7], Cmd::Image { src: "/cas/abc123", .. }));
+    assert!(matches!(
+        cmds[7],
+        Cmd::Image {
+            src: "/cas/abc123",
+            ..
+        }
+    ));
 }
 
 #[test]

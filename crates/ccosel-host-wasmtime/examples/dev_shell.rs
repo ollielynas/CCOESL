@@ -11,7 +11,7 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
-use ccosel_abi::{RespRecord, REPAINT_ON_INPUT_ONLY};
+use ccosel_abi::{REPAINT_ON_INPUT_ONLY, RespRecord};
 use ccosel_host::{AppHost, AppInstance, FrameArgs, Replayer};
 use ccosel_host_wasmtime::{WasmtimeHost, WasmtimeInstance};
 

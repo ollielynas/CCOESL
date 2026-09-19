@@ -5,7 +5,7 @@
 //! produces a panic.
 
 use ccosel_abi::event::{
-    decode_batch, decode_error, encode_batch, encode_error, event_kind, rpc_error, EventError,
+    EventError, decode_batch, decode_error, encode_batch, encode_error, event_kind, rpc_error,
 };
 
 #[test]
@@ -23,7 +23,10 @@ fn round_trips_a_batch() {
     assert_eq!(events.len(), 3);
     assert_eq!((events[0].call_id, events[0].payload), (7, a));
     assert_eq!((events[1].call_id, events[1].payload), (8, b));
-    assert_eq!((events[2].kind, events[2].call_id), (event_kind::RPC_ERR, 9));
+    assert_eq!(
+        (events[2].kind, events[2].call_id),
+        (event_kind::RPC_ERR, 9)
+    );
     assert_eq!(events[2].payload, c);
 }
 

@@ -26,8 +26,7 @@ fn repo_root() -> PathBuf {
 /// demand rather than relying on the caller having done it.
 fn guest_wasm() -> Vec<u8> {
     let root = repo_root();
-    let artifact = root
-        .join("apps/target/wasm32-unknown-unknown/release/file_browser.wasm");
+    let artifact = root.join("apps/target/wasm32-unknown-unknown/release/file_browser.wasm");
 
     // Always build, never just check for the artifact: cargo is incremental so this is nearly
     // free when up to date, and testing against a stale module silently validates the wrong
@@ -61,7 +60,9 @@ fn render(
 ) -> Vec<RespRecord> {
     let mut out = Vec::new();
     let mut full = ctx.run_ui(input, |ui| {
-        out = replayer.replay(ui, APP, buf).expect("guest emitted a bad buffer");
+        out = replayer
+            .replay(ui, APP, buf)
+            .expect("guest emitted a bad buffer");
     });
     full.textures_delta.clear();
     out
@@ -93,7 +94,11 @@ fn listing_reply(names: &[(&str, bool)]) -> Vec<u8> {
             .iter()
             .map(|(n, is_dir)| DirEntry {
                 name: (*n).to_owned(),
-                kind: if *is_dir { EntryKind::Dir } else { EntryKind::File },
+                kind: if *is_dir {
+                    EntryKind::Dir
+                } else {
+                    EntryKind::File
+                },
                 size: 12,
                 mtime_s: 0,
             })
@@ -122,7 +127,11 @@ fn drives_a_real_guest_module_end_to_end() {
     );
 
     let calls = app.take_outbox();
-    assert_eq!(calls.len(), 1, "exactly one request for the initial listing");
+    assert_eq!(
+        calls.len(),
+        1,
+        "exactly one request for the initial listing"
+    );
     assert_eq!(calls[0].method, ccosel_proto::Method::ListDir as u32);
 
     // Waiting is not animating: an app blocked on the network must not be re-run every frame.
@@ -130,9 +139,15 @@ fn drives_a_real_guest_module_end_to_end() {
 
     // --- Frame 2: nothing has arrived, so it must not ask again.
     let f2 = app
-        .frame(&FrameArgs { frame_index: 1, ..Default::default() })
+        .frame(&FrameArgs {
+            frame_index: 1,
+            ..Default::default()
+        })
         .expect("frame 2");
-    assert!(app.take_outbox().is_empty(), "must not re-request while in flight");
+    assert!(
+        app.take_outbox().is_empty(),
+        "must not re-request while in flight"
+    );
     assert_eq!(f2.commands, f1.commands);
 
     // --- The reply arrives, the way the transport would deliver it.
@@ -145,7 +160,10 @@ fn drives_a_real_guest_module_end_to_end() {
     app.on_event(&batch).expect("deliver reply");
 
     let f3 = app
-        .frame(&FrameArgs { frame_index: 2, ..Default::default() })
+        .frame(&FrameArgs {
+            frame_index: 2,
+            ..Default::default()
+        })
         .expect("frame 3");
     assert!(!labels(&f3.commands).contains(&"Loading…".to_owned()));
     // Nothing is selected yet, but there are entries, so the status bar reports the count
@@ -181,11 +199,21 @@ fn drives_a_real_guest_module_end_to_end() {
         },
     ];
     let responses = render(&ctx, &mut replayer, &f3.commands, input);
-    assert!(responses.iter().find(|r| r.local_id == target_id).unwrap().clicked());
+    assert!(
+        responses
+            .iter()
+            .find(|r| r.local_id == target_id)
+            .unwrap()
+            .clicked()
+    );
 
     // --- The selection crosses back into the guest.
     let f4 = app
-        .frame(&FrameArgs { frame_index: 3, responses: &responses, ..Default::default() })
+        .frame(&FrameArgs {
+            frame_index: 3,
+            responses: &responses,
+            ..Default::default()
+        })
         .expect("frame 4");
     let labels = labels(&f4.commands);
     assert!(labels.contains(&"notes.md".to_owned()), "got {labels:?}");
@@ -214,38 +242,59 @@ fn entering_a_directory_issues_a_new_request_for_the_new_path() {
     app.on_event(&batch).expect("deliver");
 
     let f = app
-        .frame(&FrameArgs { frame_index: 1, ..Default::default() })
+        .frame(&FrameArgs {
+            frame_index: 1,
+            ..Default::default()
+        })
         .expect("frame");
     assert!(app.take_outbox().is_empty());
 
     render(&ctx, &mut replayer, &f.commands, raw_input());
     let responses = render(&ctx, &mut replayer, &f.commands, raw_input());
     let dir_id = button_id(&f.commands, "Projects");
-    let rect = responses.iter().find(|r| r.local_id == dir_id).unwrap().rect;
+    let rect = responses
+        .iter()
+        .find(|r| r.local_id == dir_id)
+        .unwrap()
+        .rect;
     let target = egui::pos2((rect[0] + rect[2]) / 2.0, (rect[1] + rect[3]) / 2.0);
 
     let mut input = raw_input();
     input.events = vec![
         egui::Event::PointerMoved(target),
         egui::Event::PointerButton {
-            pos: target, button: egui::PointerButton::Primary,
-            pressed: true, modifiers: Default::default(),
+            pos: target,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: Default::default(),
         },
         egui::Event::PointerButton {
-            pos: target, button: egui::PointerButton::Primary,
-            pressed: false, modifiers: Default::default(),
+            pos: target,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: Default::default(),
         },
     ];
     let responses = render(&ctx, &mut replayer, &f.commands, input);
 
     // The click is applied at the end of the frame that observes it, so the request for the
     // new path goes out on the frame after. One extra frame, not one extra round trip.
-    app.frame(&FrameArgs { frame_index: 2, responses: &responses, ..Default::default() })
-        .expect("frame");
-    assert!(app.take_outbox().is_empty(), "path changes at the end of this frame");
+    app.frame(&FrameArgs {
+        frame_index: 2,
+        responses: &responses,
+        ..Default::default()
+    })
+    .expect("frame");
+    assert!(
+        app.take_outbox().is_empty(),
+        "path changes at the end of this frame"
+    );
 
-    app.frame(&FrameArgs { frame_index: 3, ..Default::default() })
-        .expect("frame");
+    app.frame(&FrameArgs {
+        frame_index: 3,
+        ..Default::default()
+    })
+    .expect("frame");
 
     let second = app.take_outbox();
     assert_eq!(second.len(), 1, "entering a directory requests it");

@@ -1,11 +1,11 @@
 //! The egui-shaped recording facade.
 
 use alloc::string::String;
-use ccosel_abi::{id as ids, Align, Cmd, FrameInput, Layout, ScopeKind, Vec2, MAX_SCOPE_DEPTH};
+use ccosel_abi::{Align, Cmd, FrameInput, Layout, MAX_SCOPE_DEPTH, ScopeKind, Vec2, id as ids};
 
 use crate::recorder::Recorder;
-use crate::rpc::RpcCtx;
 use crate::response::Response;
+use crate::rpc::RpcCtx;
 
 /// Per-frame facts from the shell.
 ///

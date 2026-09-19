@@ -52,14 +52,23 @@ fn find(recs: &[RespRecord], id: u64) -> RespRecord {
 #[test]
 fn renders_a_nested_tree_and_reports_every_widget() {
     let buf = encode(&[
-        Cmd::Label { id: 10, text: "Files" },
+        Cmd::Label {
+            id: 10,
+            text: "Files",
+        },
         Cmd::Separator,
         Cmd::BeginScope {
             id: 20,
-            layout: ccosel_abi::Layout::new(ccosel_abi::ScopeKind::Horizontal, ccosel_abi::Align::Center),
+            layout: ccosel_abi::Layout::new(
+                ccosel_abi::ScopeKind::Horizontal,
+                ccosel_abi::Align::Center,
+            ),
         },
         Cmd::Button { id: 21, text: "Up" },
-        Cmd::Button { id: 22, text: "Home" },
+        Cmd::Button {
+            id: 22,
+            text: "Home",
+        },
         Cmd::EndScope { id: 20 },
     ]);
 
@@ -81,7 +90,10 @@ fn renders_a_nested_tree_and_reports_every_widget() {
 fn a_click_lands_on_the_right_widget() {
     let buf = encode(&[
         Cmd::Button { id: 21, text: "Up" },
-        Cmd::Button { id: 22, text: "Home" },
+        Cmd::Button {
+            id: 22,
+            text: "Home",
+        },
     ]);
 
     let ctx = egui::Context::default();
@@ -168,9 +180,12 @@ fn malformed_buffers_are_rejected_before_anything_is_drawn() {
     let mut r = Replayer::new();
 
     for bad in [
-        vec![0xEE],                                    // unknown opcode
-        encode(&[Cmd::EndScope { id: 1 }]),            // close with no open
-        encode(&[Cmd::BeginScope { id: 1, layout: Default::default() }]), // never closed
+        vec![0xEE],                         // unknown opcode
+        encode(&[Cmd::EndScope { id: 1 }]), // close with no open
+        encode(&[Cmd::BeginScope {
+            id: 1,
+            layout: Default::default(),
+        }]), // never closed
     ] {
         let out = frame(&ctx, &mut r, &bad, raw_input());
         assert!(out.is_err(), "expected rejection for {bad:?}");
