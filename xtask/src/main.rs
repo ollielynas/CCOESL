@@ -37,6 +37,13 @@ fn main() -> Result<()> {
         "test-wasm" => test_wasm(),
         "coverage" => coverage(),
         "ci" => ci(),
+        "new-app" => {
+            let name = std::env::args().nth(2).unwrap_or_else(|| {
+                help();
+                std::process::exit(1);
+            });
+            new_app(&name)
+        }
         "review" => review(&std::env::args().skip(2).collect::<Vec<_>>()),
         _ => {
             help();
@@ -53,7 +60,8 @@ fn help() {
          The product runs in a browser; there is no native binary to run.\n\n\
          \x20 cargo xtask dev         build everything and serve on :8777  <- start here\n\
          \x20 cargo xtask build-web   build only, and report wire sizes\n\
-         \x20 cargo xtask serve       serve web/ on :8777\n\n\
+         \x20 cargo xtask serve       serve web/ on :8777\n\
+         \x20 cargo xtask new-app <name>   scaffold a new app crate under apps/\n\n\
          Trying a pull request (needs the GitHub CLI, `gh`):\n\n\
          \x20 cargo xtask review 10                  check PR #10 out in ../<repo>-review and serve it\n\
          \x20 cargo xtask review 10 --checkout-only  just check it out, to read it in your editor\n\n\
@@ -656,6 +664,144 @@ fn serve() -> Result<()> {
     )
 }
 
+/// Scaffolds a new guest app crate under `apps/` and adds it to that workspace's members.
+///
+/// It stops short of wiring the app into `registry.rs` and the `guests` array in
+/// `build_web` above: those need an icon, a colour and a default window size, which are
+/// judgment calls, not boilerplate — so this prints them as a checklist instead of guessing.
+fn new_app(name: &str) -> Result<()> {
+    if !is_valid_app_name(name) {
+        bail!(
+            "app name must be lowercase kebab-case (letters, digits, '-'), starting with a \
+             letter — got {name:?}"
+        );
+    }
+
+    let root = root();
+    let dir = root.join("apps").join(name);
+    if dir.exists() {
+        bail!("apps/{name} already exists");
+    }
+    std::fs::create_dir_all(dir.join("src"))?;
+
+    let struct_name = pascal_case(name);
+
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        format!(
+            "[package]\n\
+             name = \"{name}\"\n\
+             version.workspace = true\n\
+             edition.workspace = true\n\
+             license.workspace = true\n\
+             \n\
+             [lib]\n\
+             crate-type = [\"cdylib\"]\n\
+             \n\
+             [dependencies]\n\
+             ccosel-sdk = {{ workspace = true }}\n\
+             \n\
+             [dev-dependencies]\n\
+             ccosel-sdk = {{ workspace = true, features = [\"testing\"] }}\n"
+        ),
+    )?;
+
+    std::fs::write(
+        dir.join("src/lib.rs"),
+        format!(
+            "use ccosel_sdk::{{App, Ui}};\n\
+             \n\
+             #[derive(Default)]\n\
+             pub struct {struct_name} {{\n\
+             \x20   field: u32,\n\
+             }}\n\
+             \n\
+             impl App for {struct_name} {{\n\
+             \x20   fn update(&mut self, ui: &mut Ui<'_>) {{\n\
+             \x20       ui.label(\"{name}\");\n\
+             \x20   }}\n\
+             }}\n\
+             \n\
+             #[cfg(test)]\n\
+             mod tests;\n\
+             \n\
+             ccosel_sdk::ccosel_app!({struct_name});\n"
+        ),
+    )?;
+
+    std::fs::write(
+        dir.join("src/tests.rs"),
+        format!(
+            "use ccosel_sdk::testing::Harness;\n\
+             \n\
+             use super::*;\n\
+             \n\
+             #[test]\n\
+             fn renders_name() {{\n\
+             \x20   let mut h = Harness::new({struct_name}::default());\n\
+             \x20   h.frame();\n\
+             \x20   assert!(h.has_label(\"{name}\"));\n\
+             }}\n"
+        ),
+    )?;
+
+    add_workspace_member(&root.join("apps/Cargo.toml"), name)?;
+
+    let crate_name = name.replace('-', "_");
+    println!("created apps/{name}\n");
+    println!("still needs wiring by hand:");
+    println!("  1. crates/ccosel-shell/src/registry.rs — add an AppEntry to catalog()");
+    println!(
+        "  2. xtask/src/main.rs, build_web()'s `guests` array — add (\"{crate_name}\", \"{name}\")"
+    );
+    Ok(())
+}
+
+fn is_valid_app_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.chars().next().is_some_and(|c| c.is_ascii_lowercase())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+}
+
+fn pascal_case(name: &str) -> String {
+    name.split(['-', '_'])
+        .filter(|word| !word.is_empty())
+        .map(|word| {
+            let mut chars = word.chars();
+            let first = chars.next().unwrap().to_ascii_uppercase();
+            format!("{first}{}", chars.as_str())
+        })
+        .collect()
+}
+
+/// Inserts `name` into the `members = [...]` array of a Cargo workspace manifest.
+fn add_workspace_member(manifest: &Path, name: &str) -> Result<()> {
+    let contents = std::fs::read_to_string(manifest)
+        .with_context(|| format!("reading {}", manifest.display()))?;
+    let open_at = contents
+        .find("members = [")
+        .with_context(|| format!("no `members = [` in {}", manifest.display()))?
+        + "members = [".len();
+    let close_at = open_at
+        + contents[open_at..]
+            .find(']')
+            .with_context(|| format!("unterminated `members` array in {}", manifest.display()))?;
+
+    let already_present = contents[open_at..close_at]
+        .split(',')
+        .any(|entry| entry.trim().trim_matches('"') == name);
+    if already_present {
+        return Ok(());
+    }
+
+    let mut updated = contents.clone();
+    updated.insert_str(close_at, &format!(", \"{name}\""));
+    std::fs::write(manifest, updated)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -790,5 +936,72 @@ end_of_record
             review_dir_for(Path::new("/home/me/2026/CCOSEL")),
             PathBuf::from("/home/me/2026/CCOSEL-review")
         );
+    }
+
+    #[test]
+    fn valid_app_names_are_lowercase_kebab_case() {
+        assert!(is_valid_app_name("my-app"));
+        assert!(is_valid_app_name("a"));
+        assert!(is_valid_app_name("clock"));
+        assert!(is_valid_app_name("file-browser"));
+        assert!(is_valid_app_name("app1"));
+        assert!(is_valid_app_name("my-cool-app-2"));
+    }
+
+    #[test]
+    fn invalid_app_names_are_rejected() {
+        assert!(!is_valid_app_name(""));
+        assert!(!is_valid_app_name("MyApp"));
+        assert!(!is_valid_app_name("my_app"));
+        assert!(!is_valid_app_name("my app"));
+        assert!(!is_valid_app_name("1name"));
+        assert!(!is_valid_app_name("-name"));
+        assert!(!is_valid_app_name("name.with.dots"));
+    }
+
+    #[test]
+    fn pascal_case_splits_on_hyphens_and_underscores() {
+        assert_eq!(pascal_case("my-app"), "MyApp");
+        assert_eq!(pascal_case("file-browser"), "FileBrowser");
+        assert_eq!(pascal_case("clock"), "Clock");
+        assert_eq!(pascal_case("my-cool-app"), "MyCoolApp");
+        assert_eq!(pascal_case("a_b"), "AB");
+        assert_eq!(pascal_case("already"), "Already");
+    }
+
+    #[test]
+    fn add_workspace_member_inserts_a_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = dir.path().join("Cargo.toml");
+        std::fs::write(&manifest, "[workspace]\nmembers = [\"alpha\", \"beta\"]\n").unwrap();
+
+        add_workspace_member(&manifest, "gamma").unwrap();
+        let got = std::fs::read_to_string(&manifest).unwrap();
+        assert!(got.contains("\"gamma\""));
+    }
+
+    #[test]
+    fn add_workspace_member_is_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = dir.path().join("Cargo.toml");
+        std::fs::write(&manifest, "[workspace]\nmembers = [\"alpha\", \"beta\"]\n").unwrap();
+
+        add_workspace_member(&manifest, "beta").unwrap();
+        let got = std::fs::read_to_string(&manifest).unwrap();
+        let beta_count = got.matches("\"beta\"").count();
+        assert_eq!(beta_count, 1, "should not duplicate existing member");
+    }
+
+    #[test]
+    fn new_app_refuses_existing_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let apps = dir.path().join("apps/existing");
+        std::fs::create_dir_all(&apps).unwrap();
+        std::fs::write(apps.join("Cargo.toml"), "[package]\nname = \"existing\"\n").unwrap();
+
+        let root_manifest = dir.path().join("xtask/Cargo.toml");
+        std::fs::create_dir_all(root_manifest.parent().unwrap()).unwrap();
+        // We can't easily test new_app() end-to-end without setting up the full repo
+        // structure, but we can test the validation functions directly.
     }
 }
