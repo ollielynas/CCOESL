@@ -72,76 +72,12 @@ Real examples: `apps/clock/src/tests.rs` (time as an input) and `apps/file-brows
 
 ## Adding an app
 
-1. Create `apps/<name>/` and add `"<name>"` to `members` in `apps/Cargo.toml`. The directory
-   name must equal the package name.
-2. `apps/<name>/Cargo.toml`:
-
-   ```toml
-   [package]
-   name = "<name>"
-   version.workspace = true
-   edition.workspace = true
-   license.workspace = true
-
-   [lib]
-   crate-type = ["cdylib"]
-
-   [dependencies]
-   ccosel-sdk = { workspace = true }
-
-   [dev-dependencies]
-   ccosel-sdk = { workspace = true, features = ["testing"] }
-   ```
-
-3. `src/lib.rs`, ending with the out-of-line test declaration and the export macro:
-
-   ```rust
-   use ccosel_sdk::{App, Ui};
-
-   #[derive(Default)]
-   pub struct MyApp {
-       clicks: u32,
-   }
-
-   impl App for MyApp {
-       fn update(&mut self, ui: &mut Ui<'_>) {
-           ui.label("my-app");
-           if ui.button("Click me").clicked() {
-               self.clicks += 1;
-           }
-       }
-   }
-
-   #[cfg(test)]
-   mod tests;
-
-   ccosel_sdk::ccosel_app!(MyApp);
-   ```
-
-4. `src/tests.rs`:
-
-   ```rust
-   use ccosel_sdk::testing::Harness;
-
-   use super::*;
-
-   #[test]
-   fn counts_clicks() {
-       let mut h = Harness::new(MyApp::default());
-       h.frame();
-       assert!(h.has_label("my-app"));
-
-       h.click("Click me");
-       h.frame(); // the app sees the click one frame after it happened
-       assert_eq!(h.app.clicks, 1);
-   }
-   ```
-
-5. Register it in `crates/ccosel-shell/src/registry.rs` (the catalog) and in the `guests` list
-   in `build_web()` in `xtask/src/main.rs`. Neither is checked automatically yet, so do both.
-
-That skeleton passes every check. Give the app real state to test: clippy rejects
-`MyApp::default()` on a unit struct.
+1. Run `cargo xtask new-app <name>` (or `make new-app NAME=<name>`). This creates the crate
+   under `apps/` and adds it to the workspace members. It prints what still needs wiring by hand.
+2. Wire the remaining pieces:
+   - Register it in `crates/ccosel-shell/src/registry.rs` (the catalog) and in the `guests`
+     list in `build_web()` in `xtask/src/main.rs`. Neither is checked automatically yet.
+3. Give the app real state to test: clippy rejects `MyApp::default()` on a unit struct.
 
 ## Tickets
 
