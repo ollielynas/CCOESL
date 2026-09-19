@@ -4,7 +4,7 @@ use std::cell::Cell;
 use std::collections::VecDeque;
 use std::rc::Rc;
 
-use ccosel_abi::{RespRecord, REPAINT_ON_INPUT_ONLY};
+use ccosel_abi::{REPAINT_ON_INPUT_ONLY, RespRecord};
 use ccosel_host::{AppInstance, FrameArgs, Replayer};
 use ccosel_transport::EventSink;
 
@@ -32,6 +32,7 @@ use std::cell::RefCell;
 pub struct AppWindow<I: AppInstance> {
     pub title: String,
     pub icon: &'static str,
+    pub color: egui::Color32,
     pub app_id: &'static str,
     /// Distinct per *instance*, not per app: two Files windows must not share egui state, or
     /// they would fight over scroll position and focus.
@@ -60,11 +61,13 @@ impl<I: AppInstance> AppWindow<I> {
         app_id: &'static str,
         title: String,
         icon: &'static str,
+        color: egui::Color32,
         default_size: [f32; 2],
     ) -> Self {
         Self {
             title,
             icon,
+            color,
             app_id,
             instance_id,
             open: true,
@@ -144,9 +147,10 @@ impl<I: AppInstance> AppWindow<I> {
                 self.error = None;
                 self.last_commands = result.commands;
                 if result.wants_repaint_after_ms != REPAINT_ON_INPUT_ONLY {
-                    ui.ctx().request_repaint_after(std::time::Duration::from_millis(
-                        result.wants_repaint_after_ms as u64,
-                    ));
+                    ui.ctx()
+                        .request_repaint_after(std::time::Duration::from_millis(
+                            result.wants_repaint_after_ms as u64,
+                        ));
                 }
             }
             Err(e) => self.error = Some(e.to_string()),
@@ -157,7 +161,10 @@ impl<I: AppInstance> AppWindow<I> {
         }
 
         if !self.last_commands.is_empty() {
-            match self.replayer.replay(ui, self.instance_id, &self.last_commands) {
+            match self
+                .replayer
+                .replay(ui, self.instance_id, &self.last_commands)
+            {
                 Ok(responses) => self.responses = responses,
                 Err(e) => {
                     // A malformed frame is dropped whole; the previous one stays up.
@@ -165,5 +172,43 @@ impl<I: AppInstance> AppWindow<I> {
                 }
             }
         }
+    }
+
+    /// Check if any upload-folder button was clicked this frame. Returns the widget id if so.
+    /// The desktop calls this after `ui()` to trigger the file picker.
+    pub fn check_upload_click(&self) -> Option<u64> {
+        let upload_ids = self.replayer.upload_ids();
+        if upload_ids.is_empty() {
+            return None;
+        }
+        for &id in upload_ids {
+            if self
+                .responses
+                .iter()
+                .any(|r| r.local_id == id && r.flags & ccosel_abi::ResponseFlags::CLICKED != 0)
+            {
+                return Some(id);
+            }
+        }
+        None
+    }
+
+    /// Check if any open-url button was clicked this frame. Returns the URL if so.
+    /// The desktop calls this after `ui()` to open the URL in a new tab.
+    pub fn check_open_url_click(&self) -> Option<String> {
+        let url_ids = self.replayer.open_url_ids();
+        if url_ids.is_empty() {
+            return None;
+        }
+        for (id, url) in url_ids {
+            if self
+                .responses
+                .iter()
+                .any(|r| r.local_id == *id && r.flags & ccosel_abi::ResponseFlags::CLICKED != 0)
+            {
+                return Some(url.clone());
+            }
+        }
+        None
     }
 }

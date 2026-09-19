@@ -228,6 +228,24 @@ impl<'a> Ui<'a> {
         self.response(id)
     }
 
+    /// A progress bar.
+    ///
+    /// `fraction` is clamped to 0..=1. Pass [`Ui::PROGRESS_UNKNOWN`] for work that is running
+    /// but cannot yet say how far along it is — the shell animates that rather than showing a
+    /// number the app had to invent.
+    pub fn progress_bar(&mut self, fraction: f32, text: &str) {
+        let id = self.auto_id();
+        let fraction = if fraction < 0.0 {
+            Self::PROGRESS_UNKNOWN
+        } else {
+            fraction.min(1.0)
+        };
+        self.rec.push(&Cmd::ProgressBar { id, fraction, text });
+    }
+
+    /// Running, with no meaningful denominator yet.
+    pub const PROGRESS_UNKNOWN: f32 = -1.0;
+
     /// A single-line text field. See [`Text`] for why the buffer usually isn't sent.
     pub fn text_edit(&mut self, text: &mut Text) -> Response {
         let id = self.auto_id();
@@ -242,6 +260,28 @@ impl<'a> Ui<'a> {
             set,
         });
         text.push_pending = false;
+        self.response(id)
+    }
+
+    /// Trigger a folder upload from the user's local machine. The shell opens a native file
+    /// picker (or accepts drag-and-drop on the canvas), uploads the selected files to the
+    /// server, and delivers the server-side path as a response one or more frames later.
+    ///
+    /// The response `aux` field carries the upload status:
+    /// - `0` = idle / not yet triggered
+    /// - `1` = upload in progress
+    /// - `2` = upload complete (path is in the response's text, accessible via the RPC context)
+    pub fn upload_folder(&mut self) -> Response {
+        let id = self.auto_id();
+        self.rec.push(&Cmd::UploadFolder { id });
+        self.response(id)
+    }
+
+    /// Open a URL in a new browser tab. Useful for downloads: point `url` at
+    /// `/files/{path}` to stream a file out of the jail.
+    pub fn open_url(&mut self, url: &str) -> Response {
+        let id = self.auto_id();
+        self.rec.push(&Cmd::OpenUrl { id, url });
         self.response(id)
     }
 }

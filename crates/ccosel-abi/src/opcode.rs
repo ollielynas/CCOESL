@@ -19,6 +19,16 @@ pub enum OpCode {
     /// Emitted unconditionally alongside a widget. The *shell* decides hover and draws it, so
     /// there is no one-frame delay. Guests must never branch on `hovered()` in order to draw.
     Tooltip = 0x0A,
+    /// A determinate bar when `fraction` is in 0..=1, an indeterminate one when it is negative
+    /// — long work often cannot know its own denominator until it is underway.
+    ProgressBar = 0x0B,
+    /// Ask the shell to open a folder picker (or accept drag-and-drop). The shell handles
+    /// the actual file selection and upload; the app sees the result as a response record
+    /// containing the server-side path of the uploaded directory.
+    UploadFolder = 0x0C,
+    /// Ask the shell to open a URL in a new browser tab. Used for downloads: the URL points
+    /// to `/files/{path}` which streams the file out of the jail.
+    OpenUrl = 0x0D,
 
     // 0x40..0x4F reserved for subtree caching (BeginCached / EndCached / CachedRef).
     // Not implemented yet, but the space is reserved so adding it is not an ABI break.
@@ -38,6 +48,9 @@ impl OpCode {
             0x08 => Some(Self::TextEditSingle),
             0x09 => Some(Self::Image),
             0x0A => Some(Self::Tooltip),
+            0x0B => Some(Self::ProgressBar),
+            0x0C => Some(Self::UploadFolder),
+            0x0D => Some(Self::OpenUrl),
             _ => None,
         }
     }

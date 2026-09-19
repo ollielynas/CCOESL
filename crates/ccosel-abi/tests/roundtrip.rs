@@ -58,6 +58,18 @@ fn sample() -> Vec<Cmd<'static>> {
             src: "/cas/abc123",
             size: Vec2::new(64.0, 64.0),
         },
+        Cmd::ProgressBar {
+            id: id::hash_str(win, "build"),
+            fraction: 0.25,
+            text: "12 / 48 crates",
+        },
+        // Negative is the "running, denominator unknown" sentinel, and has to survive the
+        // round trip intact rather than being clamped on the way out.
+        Cmd::ProgressBar {
+            id: id::hash_str(win, "resolving"),
+            fraction: -1.0,
+            text: "",
+        },
         Cmd::EndWindow { id: win },
     ]
 }

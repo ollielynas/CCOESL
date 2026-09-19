@@ -30,7 +30,7 @@ use alloc::vec::Vec;
 use core::any::Any;
 use core::cell::RefCell;
 
-use ccosel_abi::event::{decode_error, event_kind, rpc_error, Event};
+use ccosel_abi::event::{Event, decode_error, event_kind, rpc_error};
 use ccosel_proto::{Method, Query, Rpc};
 
 /// Entries untouched for this many frames are dropped, cancelling them if still in flight.
@@ -276,6 +276,7 @@ pub fn method_name(method: u32) -> String {
     let name = match Method::from_u16(method as u16) {
         Some(Method::ListDir) => "list_dir",
         Some(Method::Stat) => "stat",
+        Some(Method::Compile) => "compile",
         None => "unknown",
     };
     String::from(name)

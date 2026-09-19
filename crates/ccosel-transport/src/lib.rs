@@ -73,6 +73,10 @@ fn policy(method: u16) -> (Coalesce, u32) {
     match Method::from_u16(method) {
         Some(Method::ListDir) => (Coalesce::ByArgs, 8_000),
         Some(Method::Stat) => (Coalesce::ByArgs, 4_000),
+        // Matches `Compile::DEADLINE_MS` in `ccosel-proto` — kept in sync by hand, since this
+        // table is the one a guest cannot see or influence. A normal deadline, because a
+        // `Compile` call polls a job rather than waiting for a build.
+        Some(Method::Compile) => (Coalesce::ByArgs, 8_000),
         None => (Coalesce::None, 4_000),
     }
 }
@@ -283,8 +287,11 @@ fn map_server_error(code: u32) -> u32 {
     use ccosel_proto::server_error as se;
     match code {
         se::DENIED => rpc_error::DENIED,
-        se::NOT_FOUND | se::NOT_A_DIRECTORY | se::IO => rpc_error::SERVER,
+        se::NOT_FOUND | se::NOT_A_DIRECTORY | se::NOT_A_CARGO_PROJECT | se::IO => {
+            rpc_error::SERVER
+        }
         se::UNKNOWN_METHOD | se::MALFORMED => rpc_error::DECODE,
+        se::TIMEOUT => rpc_error::TIMEOUT,
         _ => rpc_error::SERVER,
     }
 }

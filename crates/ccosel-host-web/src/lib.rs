@@ -16,7 +16,7 @@ use std::any::Any;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use ccosel_abi::{FrameInput, FrameOutput, RespRecord, Slice, ABI_VERSION};
+use ccosel_abi::{ABI_VERSION, FrameInput, FrameOutput, RespRecord, Slice};
 use ccosel_host::{AppHost, AppInstance, FrameArgs, FrameResult, HostError, OutboundCall};
 use js_sys::{Function, Object, Reflect, Uint8Array, WebAssembly};
 use wasm_bindgen::prelude::*;
@@ -281,8 +281,6 @@ impl WebInstance {
     pub fn take_log(&mut self) -> Vec<(u32, String)> {
         std::mem::take(&mut self.shared.borrow_mut().log)
     }
-
-
 
     fn alloc(&self, len: u32, align: u32) -> Result<u32, HostError> {
         self.exports

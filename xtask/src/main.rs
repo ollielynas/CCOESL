@@ -21,6 +21,12 @@ fn main() -> Result<()> {
             build_web()?;
             serve()
         }
+        "new-app" => {
+            let name = std::env::args()
+                .nth(2)
+                .unwrap_or_else(|| { help(); std::process::exit(1) });
+            new_app(&name)
+        }
         _ => {
             help();
             Ok(())
@@ -37,6 +43,7 @@ fn help() {
          \x20 cargo xtask dev         build everything and serve on :8777  <- start here\n\
          \x20 cargo xtask build-web   build only, and report wire sizes\n\
          \x20 cargo xtask serve       serve web/ on :8777\n\n\
+         \x20 cargo xtask new-app <name>   scaffold a new app crate under apps/\n\n\
          Other useful commands:\n\n\
          \x20 cargo test                                                    native tests\n\
          \x20 cargo test -p ccosel-host-web --target wasm32-unknown-unknown browser backend, in node\n\
@@ -124,7 +131,11 @@ fn build_web() -> Result<()> {
     )?;
 
     // Guest crate names use underscores; the served names use hyphens, matching the registry.
-    let guests = [("file_browser", "file-browser"), ("clock", "clock")];
+    let guests = [
+        ("file_browser", "file-browser"),
+        ("clock", "clock"),
+        ("rust_compiler", "rust-compiler"),
+    ];
     for (crate_name, served) in guests {
         std::fs::copy(
             root.join(format!(
@@ -176,4 +187,110 @@ fn serve() -> Result<()> {
             "--web", root.join("web").to_str().unwrap(),
         ],
     )
+}
+
+/// Scaffolds a new guest app crate under `apps/` and adds it to that workspace's members.
+///
+/// It stops short of wiring the app into `registry.rs` and the `guests` array in
+/// `build_web` above: those need an icon, a colour and a default window size, which are
+/// judgment calls, not boilerplate — so this prints them as a checklist instead of guessing.
+fn new_app(name: &str) -> Result<()> {
+    let valid = !name.is_empty()
+        && name.chars().next().is_some_and(|c| c.is_ascii_lowercase())
+        && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+    if !valid {
+        bail!("app name must be lowercase kebab-case (letters, digits, '-'), starting with a letter — got {name:?}");
+    }
+
+    let root = root();
+    let dir = root.join("apps").join(name);
+    if dir.exists() {
+        bail!("apps/{name} already exists");
+    }
+    std::fs::create_dir_all(dir.join("src"))?;
+
+    let struct_name = pascal_case(name);
+
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        format!(
+            "[package]\n\
+             name = \"{name}\"\n\
+             version.workspace = true\n\
+             edition.workspace = true\n\
+             license.workspace = true\n\
+             \n\
+             [lib]\n\
+             crate-type = [\"cdylib\"]\n\
+             \n\
+             [dependencies]\n\
+             ccosel-sdk = {{ workspace = true }}\n"
+        ),
+    )?;
+
+    std::fs::write(
+        dir.join("src/lib.rs"),
+        format!(
+            "use ccosel_sdk::{{App, Ui}};\n\
+             \n\
+             #[derive(Default)]\n\
+             pub struct {struct_name};\n\
+             \n\
+             impl App for {struct_name} {{\n\
+             \x20   fn update(&mut self, ui: &mut Ui<'_>) {{\n\
+             \x20       ui.label(\"{name}\");\n\
+             \x20   }}\n\
+             }}\n\
+             \n\
+             ccosel_sdk::ccosel_app!({struct_name});\n"
+        ),
+    )?;
+
+    add_workspace_member(&root.join("apps/Cargo.toml"), name)?;
+
+    let crate_name = name.replace('-', "_");
+    println!("created apps/{name}\n");
+    println!("still needs wiring by hand:");
+    println!("  1. crates/ccosel-shell/src/registry.rs — add an AppEntry to catalog()");
+    println!(
+        "  2. xtask/src/main.rs, build_web()'s `guests` array — add (\"{crate_name}\", \"{name}\")"
+    );
+    Ok(())
+}
+
+fn pascal_case(name: &str) -> String {
+    name.split(['-', '_'])
+        .filter(|word| !word.is_empty())
+        .map(|word| {
+            let mut chars = word.chars();
+            let first = chars.next().unwrap().to_ascii_uppercase();
+            format!("{first}{}", chars.as_str())
+        })
+        .collect()
+}
+
+/// Inserts `name` into the `members = [...]` array of a Cargo workspace manifest.
+fn add_workspace_member(manifest: &Path, name: &str) -> Result<()> {
+    let contents = std::fs::read_to_string(manifest)
+        .with_context(|| format!("reading {}", manifest.display()))?;
+    let open_at = contents
+        .find("members = [")
+        .with_context(|| format!("no `members = [` in {}", manifest.display()))?
+        + "members = [".len();
+    let close_at = open_at
+        + contents[open_at..]
+            .find(']')
+            .with_context(|| format!("unterminated `members` array in {}", manifest.display()))?;
+
+    let already_present = contents[open_at..close_at]
+        .split(',')
+        .any(|entry| entry.trim().trim_matches('"') == name);
+    if already_present {
+        return Ok(());
+    }
+
+    let mut updated = contents.clone();
+    updated.insert_str(close_at, &format!(", \"{name}\""));
+    std::fs::write(manifest, updated)?;
+    Ok(())
 }

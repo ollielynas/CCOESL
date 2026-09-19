@@ -5,9 +5,9 @@
 //! here panics on bad input — it returns [`DecodeError`] and the shell re-renders the previous
 //! frame instead.
 
+use crate::MAX_SCOPE_DEPTH;
 use crate::geom::{Align, Layout, ScopeKind, Vec2};
 use crate::opcode::OpCode;
-use crate::MAX_SCOPE_DEPTH;
 
 /// One decoded command, borrowing its strings from the command buffer.
 ///
@@ -57,6 +57,23 @@ pub enum Cmd<'a> {
     Tooltip {
         id: u64,
         text: &'a str,
+    },
+    ProgressBar {
+        id: u64,
+        /// 0..=1 for a determinate bar. Negative means "running, denominator unknown" — the
+        /// shell animates rather than pretending to a number the guest does not have.
+        fraction: f32,
+        text: &'a str,
+    },
+    /// Ask the shell to open a folder upload picker or accept drag-and-drop. The result
+    /// (server-side path) arrives as a response record one or more frames later.
+    UploadFolder {
+        id: u64,
+    },
+    /// Ask the shell to open a URL in a new browser tab (e.g. for downloads).
+    OpenUrl {
+        id: u64,
+        url: &'a str,
     },
 }
 
@@ -199,6 +216,22 @@ impl<'a> Decoder<'a> {
                 id: self.u64()?,
                 text: self.str()?,
             },
+            OpCode::ProgressBar => {
+                let id = self.u64()?;
+                let fraction = self.f32()?;
+                Cmd::ProgressBar {
+                    id,
+                    fraction,
+                    text: self.str()?,
+                }
+            }
+            OpCode::UploadFolder => Cmd::UploadFolder {
+                id: self.u64()?,
+            },
+            OpCode::OpenUrl => Cmd::OpenUrl {
+                id: self.u64()?,
+                url: self.str()?,
+            },
         })
     }
 }
@@ -228,7 +261,8 @@ impl<'a> Iterator for Decoder<'a> {
 /// discarded whole and the previous frame is re-rendered instead.
 pub fn validate(buf: &[u8]) -> Result<(), DecodeError> {
     // Stack of (opening opcode, id) — small and fixed, so no allocation.
-    let mut stack: [(OpCode, u64); MAX_SCOPE_DEPTH as usize] = [(OpCode::Nop, 0); MAX_SCOPE_DEPTH as usize];
+    let mut stack: [(OpCode, u64); MAX_SCOPE_DEPTH as usize] =
+        [(OpCode::Nop, 0); MAX_SCOPE_DEPTH as usize];
     let mut depth: usize = 0;
 
     for cmd in Decoder::new(buf) {

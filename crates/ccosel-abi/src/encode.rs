@@ -145,6 +145,25 @@ impl Encoder {
                 self.u64(id);
                 self.str(text);
             }
+            Cmd::ProgressBar {
+                id,
+                fraction,
+                text,
+            } => {
+                self.u8(OpCode::ProgressBar as u8);
+                self.u64(id);
+                self.f32(fraction);
+                self.str(text);
+            }
+            Cmd::UploadFolder { id } => {
+                self.u8(OpCode::UploadFolder as u8);
+                self.u64(id);
+            }
+            Cmd::OpenUrl { id, url } => {
+                self.u8(OpCode::OpenUrl as u8);
+                self.u64(id);
+                self.str(url);
+            }
         }
     }
 }

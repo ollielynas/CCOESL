@@ -110,16 +110,6 @@ impl App for FileBrowser {
         let mut refresh = false;
         let mut go_to: Option<String> = None;
 
-        ui.horizontal(|ui| {
-            if ui.button("⬆ Up").clicked() {
-                go_up = true;
-            }
-            ui.tooltip("Go to parent directory");
-            if ui.button("⟳ Refresh").clicked() {
-                refresh = true;
-            }
-        });
-
         // A clickable trail, not just a path label: jumping to an ancestor is one click instead
         // of several "Up"s.
         let crumbs = self.crumbs();
@@ -137,18 +127,19 @@ impl App for FileBrowser {
             }
         });
 
-        if go_up {
-            self.go_up();
-        }
         if let Some(path) = go_to {
             self.path = path;
             self.selected = None;
         }
         if refresh {
-            ui.rpc().invalidate::<ListDir>(&ListDirReq { path: &self.path });
+            ui.rpc()
+                .invalidate::<ListDir>(&ListDirReq { path: &self.path });
         }
 
+        // Upload + filter toolbar.
         ui.horizontal(|ui| {
+            ui.upload_folder();
+            ui.separator();
             ui.label("🔍 Filter");
             ui.text_edit(&mut self.filter);
         });
@@ -219,6 +210,15 @@ impl App for FileBrowser {
                                 }
                                 if !entry.is_dir() {
                                     ui.label(format!("· {}", human_size(entry.size)).as_str());
+                                    let dl_url = format!(
+                                        "/files{}",
+                                        if self.path.ends_with('/') {
+                                            format!("{}{}", self.path, entry.name)
+                                        } else {
+                                            format!("{}/{}", self.path, entry.name)
+                                        }
+                                    );
+                                    ui.open_url(&dl_url);
                                 }
                             });
                         });
@@ -237,7 +237,8 @@ impl App for FileBrowser {
         }
 
         if retry {
-            ui.rpc().invalidate::<ListDir>(&ListDirReq { path: &self.path });
+            ui.rpc()
+                .invalidate::<ListDir>(&ListDirReq { path: &self.path });
         }
         if let Some(name) = enter {
             self.enter(&name);

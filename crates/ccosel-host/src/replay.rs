@@ -42,6 +42,12 @@ struct TextState {
 pub struct Replayer {
     /// Keyed by the guest's local id.
     text: HashMap<u64, TextState>,
+    /// Widget ids that were `UploadFolder` commands this frame. The shell checks these for
+    /// clicks to trigger the browser's file picker.
+    upload_ids: Vec<u64>,
+    /// Widget ids and their URLs from `OpenUrl` commands this frame. The shell checks for
+    /// clicks to open URLs in new tabs.
+    open_url_ids: Vec<(u64, String)>,
 }
 
 impl Replayer {
@@ -72,9 +78,17 @@ impl Replayer {
         // resolve them up front and attach on the way past. This is what makes tooltips
         // zero-latency despite responses being a frame stale.
         let mut tooltips: HashMap<u64, &str> = HashMap::new();
+        self.upload_ids.clear();
+        self.open_url_ids.clear();
         for cmd in &cmds {
             if let Cmd::Tooltip { id, text } = *cmd {
                 tooltips.insert(id, text);
+            }
+            if let Cmd::UploadFolder { id } = *cmd {
+                self.upload_ids.push(id);
+            }
+            if let Cmd::OpenUrl { id, url } = *cmd {
+                self.open_url_ids.push((id, url.to_owned()));
             }
         }
 
@@ -94,6 +108,18 @@ impl Replayer {
     /// The authoritative contents of a text field, for the app's delta stream.
     pub fn text(&self, local_id: u64) -> Option<(&str, u32)> {
         self.text.get(&local_id).map(|t| (t.buf.as_str(), t.version))
+    }
+
+    /// Widget ids that are upload-folder buttons this frame. The shell uses this to detect
+    /// clicks and trigger the browser's file picker.
+    pub fn upload_ids(&self) -> &[u64] {
+        &self.upload_ids
+    }
+
+    /// Widget ids and URLs from OpenUrl commands this frame. The shell uses this to detect
+    /// clicks and open URLs in new browser tabs.
+    pub fn open_url_ids(&self) -> &[(u64, String)] {
+        &self.open_url_ids
     }
 }
 
@@ -175,6 +201,40 @@ impl Cx<'_> {
 
                 Cmd::Separator => {
                     ui.separator();
+                }
+
+                Cmd::ProgressBar {
+                    id,
+                    fraction,
+                    text,
+                } => {
+                    // A negative fraction is the guest saying "running, denominator unknown".
+                    // egui animates that case for us, which is exactly the right affordance:
+                    // it reads as "still working" rather than "stuck at 0%".
+                    let bar = if fraction < 0.0 {
+                        egui::ProgressBar::new(0.0).animate(true)
+                    } else {
+                        egui::ProgressBar::new(fraction.clamp(0.0, 1.0))
+                    };
+                    let bar = if text.is_empty() { bar } else { bar.text(text) };
+                    let r = ui.add(bar);
+                    self.finish(id, r);
+                }
+
+                Cmd::UploadFolder { id } => {
+                    let r = ui.add(
+                        egui::Button::new("Upload Folder")
+                            .frame_when_inactive(false),
+                    );
+                    self.finish(id, r);
+                }
+
+                Cmd::OpenUrl { id, url } => {
+                    let r = ui.add(
+                        egui::Button::new(url)
+                            .frame_when_inactive(false),
+                    );
+                    self.finish(id, r);
                 }
 
                 Cmd::Image { id, src, size } => {

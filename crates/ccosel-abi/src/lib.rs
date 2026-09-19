@@ -36,7 +36,7 @@ pub use opcode::OpCode;
 /// Bumped on any incompatible change to the command stream, the frame structs, or the
 /// guest export list. The shell refuses to instantiate a module whose
 /// `ccosel_abi_version()` does not match.
-pub const ABI_VERSION: u32 = 2;
+pub const ABI_VERSION: u32 = 3;
 
 /// Maximum scope nesting a guest may emit. Bounds the host's `Vec<egui::Ui>` stack so a
 /// malicious or buggy guest cannot drive it into unbounded recursion.
