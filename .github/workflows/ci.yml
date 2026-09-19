@@ -3,6 +3,8 @@
 #
 # Branch protection requires exactly one check, `ci-ok`, which fails unless every job above it
 # succeeded. Add or rename jobs freely; just keep them in `ci-ok`'s `needs`.
+# Runners are pinned to a version, not `ubuntu-latest`, for the same reason the Rust toolchain is
+# pinned: a runner image change should arrive as a reviewed PR, not turn `main` red on its own.
 name: CI
 
 on:
@@ -26,7 +28,7 @@ env:
 
 jobs:
   fmt:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
@@ -36,7 +38,7 @@ jobs:
       - run: cargo xtask fmt
 
   clippy:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
@@ -50,7 +52,7 @@ jobs:
       - run: cargo xtask clippy
 
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
@@ -65,7 +67,7 @@ jobs:
 
   # The browser backend's tests only exist on wasm32 (native `cargo test` reports 0 for them).
   test-wasm:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
@@ -88,7 +90,7 @@ jobs:
   # Every app must reach the line-coverage bar (APP_COVERAGE_MIN_LINES in xtask/src/main.rs).
   # Apps are discovered by scanning apps/, so a new app is gated with no change here.
   apps-coverage:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
@@ -104,7 +106,7 @@ jobs:
 
   # Builds the shipped artifacts and enforces the per-app wire-size budget.
   build-web:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6
@@ -127,7 +129,7 @@ jobs:
   ci-ok:
     if: always()
     needs: [fmt, clippy, test, test-wasm, apps-coverage, build-web]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Every job must have succeeded
         env:
