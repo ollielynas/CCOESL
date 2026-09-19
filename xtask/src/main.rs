@@ -37,6 +37,7 @@ fn main() -> Result<()> {
         "test-wasm" => test_wasm(),
         "coverage" => coverage(),
         "ci" => ci(),
+        "review" => review(&std::env::args().skip(2).collect::<Vec<_>>()),
         _ => {
             help();
             Ok(())
@@ -53,6 +54,9 @@ fn help() {
          \x20 cargo xtask dev         build everything and serve on :8777  <- start here\n\
          \x20 cargo xtask build-web   build only, and report wire sizes\n\
          \x20 cargo xtask serve       serve web/ on :8777\n\n\
+         Trying a pull request (needs the GitHub CLI, `gh`):\n\n\
+         \x20 cargo xtask review 10                  check PR #10 out in ../<repo>-review and serve it\n\
+         \x20 cargo xtask review 10 --checkout-only  just check it out, to read it in your editor\n\n\
          Checks — what CI runs, one job each; `ci` runs them all and is the definition of done:\n\n\
          \x20 cargo xtask ci         fmt, clippy, test, test-wasm, coverage, then build-web\n\
          \x20 cargo xtask fmt        rustfmt --check on both workspaces\n\
@@ -197,6 +201,150 @@ fn build_web() -> Result<()> {
     }
     println!("\nserve with: cargo xtask serve");
     Ok(())
+}
+
+/// What `cargo xtask review` was asked to do.
+#[derive(Debug, PartialEq, Eq)]
+struct ReviewArgs {
+    pr: u64,
+    /// Start the dev server once the PR is checked out (the default).
+    serve: bool,
+}
+
+fn parse_review_args(args: &[String]) -> Result<ReviewArgs> {
+    const USAGE: &str = "usage: cargo xtask review <pr-number> [--checkout-only]";
+    let mut pr = None;
+    let mut serve = true;
+    for arg in args {
+        match arg.as_str() {
+            "--checkout-only" => serve = false,
+            flag if flag.starts_with('-') => bail!("unknown option {flag:?}\n{USAGE}"),
+            number => {
+                if pr.is_some() {
+                    bail!("expected exactly one PR number\n{USAGE}");
+                }
+                pr = Some(
+                    number
+                        .trim_start_matches('#')
+                        .parse::<u64>()
+                        .with_context(|| format!("{number:?} is not a PR number\n{USAGE}"))?,
+                );
+            }
+        }
+    }
+    Ok(ReviewArgs {
+        pr: pr.context(USAGE)?,
+        serve,
+    })
+}
+
+/// The disposable checkout PRs are reviewed in: a sibling of the repository, named after it, and
+/// reused for every PR so its `target/` stays warm instead of rebuilding from nothing each time.
+fn review_dir_for(primary: &Path) -> PathBuf {
+    let name = primary
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "repo".into());
+    primary.with_file_name(format!("{name}-review"))
+}
+
+/// The main checkout, even when xtask was started from another worktree (an agent's, or the
+/// review checkout itself), so there is one review directory however it was started.
+fn primary_checkout(from: &Path) -> Result<PathBuf> {
+    let common = capture(
+        from,
+        "git",
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )?;
+    PathBuf::from(common)
+        .parent()
+        .map(Path::to_path_buf)
+        .context("git reported a common dir with no parent")
+}
+
+/// Like [`run`], but returns what the command printed instead of showing it.
+fn capture(dir: &Path, program: &str, args: &[&str]) -> Result<String> {
+    let out = Command::new(program)
+        .current_dir(dir)
+        .args(args)
+        .output()
+        .with_context(|| format!("failed to spawn {program}"))?;
+    if !out.status.success() {
+        bail!(
+            "{program} {} failed:\n{}",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
+}
+
+/// Checks a pull request out in the review checkout and, by default, serves it.
+///
+/// By hand this is five commands (fetch, add a worktree, `gh pr checkout`, cd, `xtask dev`), and
+/// the way to get one subtly wrong is to check a PR out over your own work. This never touches
+/// the checkout it was started from, and refuses to overwrite edits in the review checkout.
+fn review(args: &[String]) -> Result<()> {
+    let ReviewArgs {
+        pr,
+        serve: serve_it,
+    } = parse_review_args(args)?;
+    if Command::new("gh").arg("--version").output().is_err() {
+        bail!("the GitHub CLI (`gh`) is required: https://cli.github.com");
+    }
+    let root = root();
+    let pr_arg = pr.to_string();
+
+    // Ask GitHub first: a wrong number or a missing login fails here, before anything is created.
+    let summary = capture(
+        &root,
+        "gh",
+        &[
+            "pr",
+            "view",
+            &pr_arg,
+            "--json",
+            "title,headRefName,state",
+            "--jq",
+            r#""\(.title)  [\(.headRefName), \(.state)]""#,
+        ],
+    )?;
+    println!("PR #{pr}: {summary}");
+
+    let dir = review_dir_for(&primary_checkout(&root)?);
+    if dir.exists() {
+        // A reused checkout may hold someone's edits, and checking a PR out over them loses them.
+        let dirty = capture(&dir, "git", &["status", "--porcelain"])?;
+        if !dirty.is_empty() {
+            bail!(
+                "{0} has uncommitted changes, so it was left alone. Commit or discard them, or \
+                 remove the checkout with `git worktree remove --force {0}`",
+                dir.display()
+            );
+        }
+    } else {
+        run(&root, "git", &["fetch", "origin", "main"])?;
+        run(
+            &root,
+            "git",
+            &[
+                "worktree",
+                "add",
+                "--detach",
+                dir.to_str().unwrap(),
+                "origin/main",
+            ],
+        )?;
+    }
+    run(&dir, "gh", &["pr", "checkout", &pr_arg, "--detach"])?;
+
+    println!("\nPR #{pr} is checked out in {}", dir.display());
+    if !serve_it {
+        println!("Open that folder in your editor to read it, or run `cargo xtask dev` there.");
+        return Ok(());
+    }
+    println!("Serving on http://localhost:8777 once it has built (Ctrl-C to stop).\n");
+    run(&dir, "cargo", &["xtask", "dev"])
 }
 
 /// Prints a header before each check so a long CI log stays navigable, then runs it.
@@ -592,5 +740,55 @@ end_of_record
         assert!(is_test_file("/r/apps/clock/src/tests/render.rs"));
         assert!(!is_test_file("/r/apps/clock/src/lib.rs"));
         assert!(!is_test_file("/r/apps/clock/src/contests.rs"));
+    }
+
+    fn args(a: &[&str]) -> Vec<String> {
+        a.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn review_takes_a_pr_number_and_serves_by_default() {
+        assert_eq!(
+            parse_review_args(&args(&["10"])).unwrap(),
+            ReviewArgs {
+                pr: 10,
+                serve: true
+            }
+        );
+    }
+
+    #[test]
+    fn review_accepts_a_hash_prefix_and_checkout_only_in_either_order() {
+        let want = ReviewArgs {
+            pr: 7,
+            serve: false,
+        };
+        assert_eq!(
+            parse_review_args(&args(&["#7", "--checkout-only"])).unwrap(),
+            want
+        );
+        assert_eq!(
+            parse_review_args(&args(&["--checkout-only", "7"])).unwrap(),
+            want
+        );
+    }
+
+    #[test]
+    fn review_rejects_bad_input_and_says_how_to_call_it() {
+        for bad in [&[][..], &["abc"], &["1", "2"], &["--nope", "1"], &["-1"]] {
+            let err = parse_review_args(&args(bad)).unwrap_err().to_string();
+            assert!(
+                err.contains("usage: cargo xtask review"),
+                "{bad:?} gave {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_review_checkout_is_a_named_sibling_of_the_repo() {
+        assert_eq!(
+            review_dir_for(Path::new("/home/me/2026/CCOSEL")),
+            PathBuf::from("/home/me/2026/CCOSEL-review")
+        );
     }
 }

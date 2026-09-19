@@ -170,6 +170,29 @@ criteria that a test or a reviewer can check. Write it so someone with no contex
   agent PRs the review is the comments plus the Merge button.
 - From a fork, a maintainer may need to approve your first CI run before it starts.
 
+## Trying a pull request locally
+
+CI shows a change passes; only running it shows what it looks like. With the
+[GitHub CLI](https://cli.github.com) (`gh`) installed and logged in:
+
+```sh
+cargo xtask review 10                    # check PR #10 out and serve it on http://localhost:8777
+cargo xtask review 10 --checkout-only    # just check it out, to read it in your editor
+```
+
+- The PR goes in a separate checkout, `../<repo>-review`, created on first use and reused after,
+  so **the checkout you ran it from is never touched** and its `target/` stays warm. The first
+  build is slow; later ones are not.
+- It refuses to check a PR out over uncommitted changes in that review checkout. Commit or
+  discard them, or delete the checkout with `git worktree remove --force ../<repo>-review`.
+- A wrong PR number or a missing `gh` login fails before anything is created.
+- Comments, resolving conversations and merging still happen on GitHub; editors such as Zed
+  can't review a PR yet. This command is for *running* one.
+- Only one server can use port 8777, so stop the previous one (Ctrl-C) before starting another.
+- **Only run a PR you've read and trust.** Building it executes its code (build scripts, tests),
+  and the dev server listens on all network interfaces, not just localhost. That matters most for
+  PRs from forks.
+
 ## Troubleshooting
 
 | You see | Cause and fix |
@@ -180,3 +203,4 @@ criteria that a test or a reviewer can check. Write it so someone with no contex
 | `has inline #[cfg(test)] code` | Move it to `src/tests.rs` and declare it with `#[cfg(test)] mod tests;` |
 | An app is under the bar | The table printed by `cargo xtask coverage` shows hits/lines per app; add tests for the branches you haven't covered |
 | `use of default to create a unit struct` | Give the app a field, or construct it as `MyApp` rather than `MyApp::default()` |
+| `has uncommitted changes, so it was left alone` (from `cargo xtask review`) | The review checkout holds edits; commit or discard them, or remove it as the message says |
