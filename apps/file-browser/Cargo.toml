@@ -10,3 +10,6 @@ crate-type = ["cdylib"]
 [dependencies]
 ccosel-sdk = { workspace = true }
 ccosel-proto = { workspace = true }
+
+[dev-dependencies]
+ccosel-sdk = { workspace = true, features = ["testing"] }

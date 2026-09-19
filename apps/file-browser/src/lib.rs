@@ -265,4 +265,7 @@ impl App for FileBrowser {
     }
 }
 
+#[cfg(test)]
+mod tests;
+
 ccosel_sdk::ccosel_app!(FileBrowser);
