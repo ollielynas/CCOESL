@@ -1,0 +1,11 @@
+[package]
+name = "ccosel-transport"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Pending-call table, coalescing and deadlines for CCOSEL RPC."
+
+[dependencies]
+ccosel-abi = { workspace = true }
+ccosel-proto = { workspace = true }
+postcard = { workspace = true }

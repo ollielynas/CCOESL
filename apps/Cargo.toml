@@ -1,0 +1,24 @@
+# Deliberately a SEPARATE workspace from the root.
+#
+# [profile] is workspace-global, and guest modules and the shell want opposite things: guests
+# optimise for size (every byte ships to every client over a bad LAN), the shell optimises for
+# speed. They cannot share a profile table.
+[workspace]
+resolver = "3"
+members = ["file-browser", "clock"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+ccosel-sdk = { path = "../crates/ccosel-sdk" }
+ccosel-proto = { path = "../crates/ccosel-proto" }
+
+[profile.release]
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true

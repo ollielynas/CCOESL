@@ -1,0 +1,95 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>CCOSEL</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; height: 100%; background: #14161a; overflow: hidden; }
+  canvas { display: block; width: 100%; height: 100%; }
+  #boot {
+    position: fixed; inset: 0; display: grid; place-content: center; gap: 14px;
+    font: 14px/1.5 system-ui, sans-serif; color: #c9ced6; text-align: center;
+  }
+  #bar { width: 260px; height: 4px; border-radius: 2px; background: #2a2f38; overflow: hidden; }
+  #fill { height: 100%; width: 0; background: #5b9dd9; transition: width .15s linear; }
+  #note { font-size: 12px; color: #767d8a; min-height: 1.4em; }
+  button { font: inherit; padding: 6px 14px; border-radius: 6px;
+           border: 1px solid #3a4150; background: #232833; color: #c9ced6; cursor: pointer; }
+</style>
+
+<canvas id="canvas"></canvas>
+
+<!--
+  Hand-written on purpose. The shell is the largest single download in the system, so the very
+  first thing a user sees on a slow LAN must be honest progress and a way to recover from a
+  failed fetch — not a blank page while several megabytes arrive.
+-->
+<div id="boot">
+  <div id="status">Loading CCOSEL…</div>
+  <div id="bar"><div id="fill"></div></div>
+  <div id="note"></div>
+</div>
+
+<script type="module">
+  const boot = document.getElementById('boot');
+  const statusEl = document.getElementById('status');
+  const fill = document.getElementById('fill');
+  const note = document.getElementById('note');
+
+  const SHELL = './dist/ccosel-shell_bg.wasm';
+
+  function human(n) {
+    return n > 1048576 ? (n / 1048576).toFixed(1) + ' MB' : Math.round(n / 1024) + ' KB';
+  }
+
+  // Streamed so the progress bar reflects real bytes rather than guessing. Falls back to an
+  // indeterminate state when the server does not send Content-Length.
+  async function fetchWithProgress(url) {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`);
+
+    const total = Number(res.headers.get('content-length')) || 0;
+    if (!res.body || !total) return new Uint8Array(await res.arrayBuffer());
+
+    const reader = res.body.getReader();
+    const chunks = [];
+    let done = 0;
+    for (;;) {
+      const { done: finished, value } = await reader.read();
+      if (finished) break;
+      chunks.push(value);
+      done += value.length;
+      fill.style.width = (done / total * 100).toFixed(1) + '%';
+      note.textContent = `${human(done)} of ${human(total)}`;
+    }
+    const out = new Uint8Array(done);
+    let at = 0;
+    for (const c of chunks) { out.set(c, at); at += c.length; }
+    return out;
+  }
+
+  async function boot_() {
+    const bytes = await fetchWithProgress(SHELL);
+    statusEl.textContent = 'Starting…';
+    note.textContent = '';
+
+    const { default: init, start } = await import('./dist/ccosel-shell.js');
+    await init({ module_or_path: bytes });
+
+    boot.remove();
+    // App modules are fetched lazily by the shell, from its own registry - not preloaded here.
+    await start(document.getElementById('canvas'));
+  }
+
+  boot_().catch((err) => {
+    // A dropped connection mid-download is expected on this network, not exceptional. Offer
+    // the retry rather than leaving a dead page.
+    statusEl.textContent = 'Failed to start';
+    note.textContent = String(err && err.message ? err.message : err);
+    fill.style.background = '#d9645b';
+    const retry = document.createElement('button');
+    retry.textContent = 'Retry';
+    retry.onclick = () => location.reload();
+    boot.appendChild(retry);
+  });
+</script>

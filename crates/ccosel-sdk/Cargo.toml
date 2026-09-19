@@ -1,0 +1,23 @@
+[package]
+name = "ccosel-sdk"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "What a CCOSEL app links against: an egui-shaped API that records commands."
+
+[dependencies]
+ccosel-abi = { workspace = true }
+ccosel-proto = { workspace = true }
+postcard = { workspace = true }
+serde = { workspace = true }
+
+[features]
+# A native harness for testing apps (`ccosel_sdk::testing`). Off by default: it is test
+# scaffolding, and this crate's size is a product requirement. Apps turn it on as a
+# dev-dependency, which cargo never applies to a release build of the module.
+testing = []
+
+[dev-dependencies]
+# Compiles the harness whenever the SDK's own tests, clippy or coverage run, without anyone
+# having to remember `--features testing`.
+ccosel-sdk = { path = ".", features = ["testing"] }

@@ -1,0 +1,10 @@
+[package]
+name = "ccosel-host"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Decodes an app's command stream and replays it into a real egui::Ui."
+
+[dependencies]
+ccosel-abi = { workspace = true }
+egui = { workspace = true }

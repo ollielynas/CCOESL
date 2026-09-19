@@ -1,0 +1,31 @@
+[package]
+name = "ccosel-shell"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The CCOSEL desktop shell, running in the browser."
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+# Every dependency is wasm-gated, matching the `#![cfg(target_arch = "wasm32")]` on the crate
+# itself. Without this gate a native workspace build compiles none of this crate's code but
+# still builds its dependency tree — and `eframe` with `default-features = false` leaves winit
+# without an x11 or wayland backend, so it fails to compile for Linux.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+ccosel-abi = { workspace = true }
+ccosel-host = { workspace = true }
+ccosel-host-web = { path = "../ccosel-host-web" }
+ccosel-proto = { workspace = true }
+ccosel-transport = { workspace = true }
+postcard = { workspace = true }
+egui = { workspace = true }
+# Not inherited from the workspace: the web build wants none of eframe's defaults (wgpu,
+# accesskit, winit, x11, wayland). glow is the lighter of the two web renderers.
+eframe = { version = "0.36", default-features = false, features = ["glow", "default_fonts"] }
+log = { workspace = true }
+wasm-bindgen = { workspace = true }
+wasm-bindgen-futures = { workspace = true }
+web-sys = { workspace = true, features = ["Window", "Document", "HtmlCanvasElement", "Request", "RequestInit", "Response", "Headers", "console"] }
+js-sys = { workspace = true }
+console_error_panic_hook = "0.1"
