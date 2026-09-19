@@ -1,0 +1,37 @@
+name: Agent task
+description: A ticket a Claude agent can pick up with `/work-issue <number>`
+title: "[task] "
+labels: ["agent-task"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The agent works from this text alone, on its own branch, and opens a pull request for you
+        to review. Write it so someone with no context could finish it.
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+      description: What should be true when this is done, and why it matters.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Each line something a test or a reviewer can check.
+      placeholder: |
+        - [ ] ...
+        - [ ] ...
+    validations:
+      required: true
+  - type: textarea
+    id: where
+    attributes:
+      label: Where to look
+      description: Files, crates or apps this likely touches. Optional.
+  - type: textarea
+    id: out-of-scope
+    attributes:
+      label: Out of scope
+      description: Things the agent should leave alone. Optional.

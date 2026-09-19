@@ -2,3 +2,5 @@
 /apps/target
 /dist
 /web/dist
+# Per-machine Claude Code permissions; the shared settings.json is committed.
+/.claude/settings.local.json
