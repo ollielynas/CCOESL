@@ -9,7 +9,7 @@
 
 #![cfg(target_arch = "wasm32")]
 
-use ccosel_abi::{Cmd, Decoder, RespRecord, ResponseFlags};
+use ccosel_abi::{Cmd, Decoder, RespRecord};
 use ccosel_host::{AppHost, AppInstance, FrameArgs};
 use ccosel_host_web::WebHost;
 use wasm_bindgen_test::*;
