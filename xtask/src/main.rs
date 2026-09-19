@@ -594,3 +594,6 @@ end_of_record
         assert!(!is_test_file("/r/apps/clock/src/contests.rs"));
     }
 }
+
+#[allow(dead_code)]
+fn   scratch_unformatted( ) {   }
