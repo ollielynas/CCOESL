@@ -13,6 +13,12 @@ use anyhow::{Context, Result, bail};
 /// once and cached forever, so it is reported but not gated.
 const GUEST_BUDGET_GZIP: u64 = 100 * 1024;
 
+/// Line coverage every app must reach. Measured over the app's own `src/` only (not the SDK it
+/// links) and excluding its test code, so neither can inflate the number.
+const APP_COVERAGE_MIN_LINES: u64 = 70;
+
+const WASM: &str = "wasm32-unknown-unknown";
+
 fn main() -> Result<()> {
     match std::env::args()
         .nth(1)
@@ -25,6 +31,12 @@ fn main() -> Result<()> {
             build_web()?;
             serve()
         }
+        "fmt" => fmt(),
+        "clippy" => clippy(),
+        "test" => test(),
+        "test-wasm" => test_wasm(),
+        "coverage" => coverage(),
+        "ci" => ci(),
         _ => {
             help();
             Ok(())
@@ -41,6 +53,13 @@ fn help() {
          \x20 cargo xtask dev         build everything and serve on :8777  <- start here\n\
          \x20 cargo xtask build-web   build only, and report wire sizes\n\
          \x20 cargo xtask serve       serve web/ on :8777\n\n\
+         Checks — what CI runs, one job each; `ci` runs them all and is the definition of done:\n\n\
+         \x20 cargo xtask ci         fmt, clippy, test, test-wasm, coverage, then build-web\n\
+         \x20 cargo xtask fmt        rustfmt --check on both workspaces\n\
+         \x20 cargo xtask clippy     clippy -D warnings, native and wasm32\n\
+         \x20 cargo xtask test       native tests, both workspaces\n\
+         \x20 cargo xtask test-wasm  browser backend, in node (needs wasm-bindgen-cli)\n\
+         \x20 cargo xtask coverage   every app must reach the line-coverage bar (needs cargo-llvm-cov)\n\n\
          Other useful commands:\n\n\
          \x20 cargo test                                                    native tests\n\
          \x20 cargo test -p ccosel-host-web --target wasm32-unknown-unknown browser backend, in node\n\
@@ -180,6 +199,292 @@ fn build_web() -> Result<()> {
     Ok(())
 }
 
+/// Prints a header before each check so a long CI log stays navigable, then runs it.
+fn step(label: &str, dir: &Path, args: &[&str]) -> Result<()> {
+    println!("\n==> {label}");
+    run(dir, "cargo", args)
+}
+
+fn fmt() -> Result<()> {
+    let root = root();
+    step(
+        "rustfmt: root workspace",
+        &root,
+        &["fmt", "--all", "--check"],
+    )?;
+    step(
+        "rustfmt: apps workspace",
+        &root.join("apps"),
+        &["fmt", "--all", "--check"],
+    )
+}
+
+fn clippy() -> Result<()> {
+    let root = root();
+    let apps = root.join("apps");
+    let deny = ["--", "-D", "warnings"];
+
+    step(
+        "clippy: root workspace, native",
+        &root,
+        &[&["clippy", "--workspace", "--all-targets"], &deny[..]].concat(),
+    )?;
+    // The shell's dependencies are gated to wasm32, so native clippy sees none of it, and the
+    // browser backend's tests are `cfg(target_arch = "wasm32")` — native clippy skips those too.
+    step(
+        "clippy: shell + browser backend, wasm32",
+        &root,
+        &[
+            &[
+                "clippy",
+                "-p",
+                "ccosel-shell",
+                "-p",
+                "ccosel-host-web",
+                "--target",
+                WASM,
+                "--all-targets",
+            ],
+            &deny[..],
+        ]
+        .concat(),
+    )?;
+    step(
+        "clippy: apps, native",
+        &apps,
+        &[&["clippy", "--workspace", "--all-targets"], &deny[..]].concat(),
+    )?;
+    step(
+        "clippy: apps, wasm32",
+        &apps,
+        &[&["clippy", "--workspace", "--target", WASM], &deny[..]].concat(),
+    )
+}
+
+fn test() -> Result<()> {
+    let root = root();
+    step("tests: root workspace", &root, &["test", "--workspace"])?;
+    step("tests: apps", &root.join("apps"), &["test", "--workspace"])
+}
+
+/// The browser backend's tests only exist on wasm32 (native `cargo test` reports 0 for them),
+/// and run under node via the runner configured in `.cargo/config.toml`.
+fn test_wasm() -> Result<()> {
+    step(
+        "tests: browser backend, under node",
+        &root(),
+        &["test", "-p", "ccosel-host-web", "--target", WASM],
+    )
+}
+
+/// Everything CI runs, in the order a failure is cheapest to find. Green here means green there.
+fn ci() -> Result<()> {
+    fmt()?;
+    clippy()?;
+    test()?;
+    test_wasm()?;
+    coverage()?;
+    println!("\n==> build-web (wire-size budget)");
+    build_web()?;
+    println!("\nci: all checks passed");
+    Ok(())
+}
+
+/// What one app's own source measured as, in lines.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Measure {
+    found: u64,
+    hit: u64,
+}
+
+impl Measure {
+    fn percent(&self) -> f64 {
+        if self.found == 0 {
+            0.0
+        } else {
+            self.hit as f64 * 100.0 / self.found as f64
+        }
+    }
+
+    /// Exact integer comparison, so 69.9…% can never round its way past the bar. An app with no
+    /// measurable lines fails: a gate that passes on nothing is not a gate.
+    fn meets(&self, min_percent: u64) -> bool {
+        self.found > 0 && self.hit * 100 >= self.found * min_percent
+    }
+}
+
+/// Tests count toward coverage if they live in the file under measurement, because test code is
+/// always executed — a big test module would quietly buy the app its percentage. So test code
+/// belongs in `src/tests.rs` or `tests/`, and is excluded here.
+fn is_test_file(path: &str) -> bool {
+    path.ends_with("/tests.rs") || path.contains("/tests/")
+}
+
+/// Sums line counts from an lcov report for the files under `apps/<app>/src/` that are not test
+/// files. Done by hand rather than with `--fail-under-lines`, which would count the SDK the app
+/// links and the app's own test code.
+fn measure(lcov: &str, app: &str) -> Measure {
+    let needle = format!("/apps/{app}/src/");
+    let mut m = Measure::default();
+    let mut counted = false;
+    for line in lcov.lines() {
+        if let Some(path) = line.strip_prefix("SF:") {
+            counted = path.contains(&needle) && !is_test_file(path);
+        } else if counted {
+            if let Some(n) = line.strip_prefix("LF:") {
+                m.found += n.parse().unwrap_or(0);
+            } else if let Some(n) = line.strip_prefix("LH:") {
+                m.hit += n.parse().unwrap_or(0);
+            }
+        }
+    }
+    m
+}
+
+/// True if `src` holds an inline `#[cfg(test)]` block instead of the out-of-line
+/// `#[cfg(test)] mod tests;` declaration. See [`is_test_file`] for why that matters.
+fn has_inline_test_code(src: &str) -> bool {
+    let mut lines = src.lines().map(str::trim).filter(|l| !l.is_empty());
+    while let Some(line) = lines.next() {
+        if line == "#[cfg(test)]" && !lines.next().is_some_and(|next| next.ends_with(';')) {
+            return true;
+        }
+    }
+    false
+}
+
+fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
+    for entry in std::fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
+        let path = entry?.path();
+        if path.is_dir() {
+            rust_files(&path, out)?;
+        } else if path.extension().is_some_and(|e| e == "rs") {
+            out.push(path);
+        }
+    }
+    Ok(())
+}
+
+/// Every directory under `apps/` with a `Cargo.toml` is an app. Found by scanning rather than
+/// listed anywhere, so a new app is gated the moment it exists with no CI edit to forget.
+fn app_names(apps: &Path) -> Result<Vec<String>> {
+    let mut names = Vec::new();
+    for entry in std::fs::read_dir(apps)? {
+        let entry = entry?;
+        if entry.path().join("Cargo.toml").is_file() {
+            names.push(entry.file_name().to_string_lossy().into_owned());
+        }
+    }
+    names.sort();
+    Ok(names)
+}
+
+/// Fails unless every app reaches [`APP_COVERAGE_MIN_LINES`]. Per app on purpose: a single
+/// workspace-wide number would let one well-tested app hide an untested one.
+fn coverage() -> Result<()> {
+    let apps = root().join("apps");
+    if !Command::new("cargo")
+        .args(["llvm-cov", "--version"])
+        .output()
+        .is_ok_and(|o| o.status.success())
+    {
+        bail!(
+            "cargo-llvm-cov is required for the coverage gate: cargo install cargo-llvm-cov --locked"
+        );
+    }
+
+    let names = app_names(&apps)?;
+    if names.is_empty() {
+        bail!(
+            "no apps found under {} — refusing to pass a coverage gate that measured nothing",
+            apps.display()
+        );
+    }
+
+    let out_dir = apps.join("target/coverage");
+    std::fs::create_dir_all(&out_dir)?;
+
+    let mut rows = Vec::new();
+    for name in &names {
+        let mut sources = Vec::new();
+        rust_files(&apps.join(name).join("src"), &mut sources)?;
+        let inline: Vec<_> = sources
+            .iter()
+            .filter(|p| !is_test_file(&p.to_string_lossy()))
+            .filter(|p| has_inline_test_code(&std::fs::read_to_string(p).unwrap_or_default()))
+            .collect();
+        if let Some(p) = inline.first() {
+            bail!(
+                "{} has inline #[cfg(test)] code, which would count toward {name}'s coverage. \
+                 Move it to src/tests.rs and declare it with `#[cfg(test)] mod tests;`",
+                p.display()
+            );
+        }
+
+        let lcov_path = out_dir.join(format!("{name}.lcov"));
+        step(
+            &format!("coverage: {name} (bar: {APP_COVERAGE_MIN_LINES}% of lines)"),
+            &apps,
+            &[
+                "llvm-cov",
+                "-p",
+                name,
+                "--lcov",
+                "--output-path",
+                lcov_path.to_str().unwrap(),
+            ],
+        )?;
+        let lcov = std::fs::read_to_string(&lcov_path)
+            .with_context(|| format!("reading {}", lcov_path.display()))?;
+        rows.push((name.clone(), measure(&lcov, name)));
+    }
+
+    println!("\napp line coverage (bar: {APP_COVERAGE_MIN_LINES}%):");
+    let mut summary = format!(
+        "### App line coverage (bar: {APP_COVERAGE_MIN_LINES}%)\n\n| app | lines | coverage | |\n|---|---|---|---|\n"
+    );
+    let mut failing = Vec::new();
+    for (name, m) in &rows {
+        let ok = m.meets(APP_COVERAGE_MIN_LINES);
+        let verdict = if ok { "pass" } else { "FAIL" };
+        println!(
+            "  {name:<20} {:>4}/{:<4} lines  {:>5.1}%  {verdict}",
+            m.hit,
+            m.found,
+            m.percent()
+        );
+        summary.push_str(&format!(
+            "| {name} | {}/{} | {:.1}% | {verdict} |\n",
+            m.hit,
+            m.found,
+            m.percent()
+        ));
+        if !ok {
+            failing.push(name.as_str());
+        }
+    }
+
+    // On GitHub Actions this shows the table on the run page without opening the log.
+    if let Some(path) = std::env::var_os("GITHUB_STEP_SUMMARY") {
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(path)
+        {
+            let _ = f.write_all(summary.as_bytes());
+        }
+    }
+
+    if !failing.is_empty() {
+        bail!(
+            "below the {APP_COVERAGE_MIN_LINES}% line-coverage bar: {}",
+            failing.join(", ")
+        );
+    }
+    Ok(())
+}
+
 /// Serves the shell, the app modules and `/rpc` from one origin.
 ///
 /// It has to be one origin: split them and every RPC becomes a CORS preflight, which is an
@@ -201,4 +506,91 @@ fn serve() -> Result<()> {
             root.join("web").to_str().unwrap(),
         ],
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const LCOV: &str = "\
+SF:/r/apps/clock/src/lib.rs
+LF:10
+LH:8
+end_of_record
+SF:/r/apps/clock/src/tests.rs
+LF:50
+LH:50
+end_of_record
+SF:/r/apps/file-browser/src/lib.rs
+LF:100
+LH:1
+end_of_record
+SF:/r/crates/ccosel-sdk/src/ui.rs
+LF:400
+LH:400
+end_of_record
+";
+
+    #[test]
+    fn measures_only_the_apps_own_non_test_source() {
+        // The SDK (400/400), the app's test file (50/50) and another app (1/100) must not leak in.
+        assert_eq!(measure(LCOV, "clock"), Measure { found: 10, hit: 8 });
+        assert_eq!(
+            measure(LCOV, "file-browser"),
+            Measure { found: 100, hit: 1 }
+        );
+    }
+
+    #[test]
+    fn an_app_absent_from_the_report_measures_nothing() {
+        assert_eq!(measure(LCOV, "missing"), Measure::default());
+    }
+
+    #[test]
+    fn the_bar_is_exact_at_the_boundary() {
+        assert!(Measure { found: 10, hit: 7 }.meets(70));
+        assert!(
+            !Measure {
+                found: 100,
+                hit: 69
+            }
+            .meets(70)
+        );
+        // 699/1000 is 69.9%: it must not round up to a pass.
+        assert!(
+            !Measure {
+                found: 1000,
+                hit: 699
+            }
+            .meets(70)
+        );
+    }
+
+    #[test]
+    fn an_app_with_no_measurable_lines_fails() {
+        assert!(!Measure { found: 0, hit: 0 }.meets(70));
+        assert_eq!(Measure { found: 0, hit: 0 }.percent(), 0.0);
+    }
+
+    #[test]
+    fn only_out_of_line_test_modules_are_allowed_in_measured_files() {
+        assert!(!has_inline_test_code("fn f() {}\n"));
+        assert!(!has_inline_test_code(
+            "fn f() {}\n\n#[cfg(test)]\nmod tests;\n"
+        ));
+        assert!(has_inline_test_code(
+            "#[cfg(test)]\nmod tests {\n    fn t() {}\n}\n"
+        ));
+        assert!(has_inline_test_code(
+            "fn f() {}\n#[cfg(test)]\n\nmod t {\n}\n"
+        ));
+    }
+
+    #[test]
+    fn test_files_are_recognised_by_name_and_directory() {
+        assert!(is_test_file("/r/apps/clock/src/tests.rs"));
+        assert!(is_test_file("/r/apps/clock/src/tests/render.rs"));
+        assert!(!is_test_file("/r/apps/clock/src/lib.rs"));
+        assert!(!is_test_file("/r/apps/clock/src/contests.rs"));
+    }
 }
