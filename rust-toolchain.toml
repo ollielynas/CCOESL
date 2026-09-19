@@ -1,0 +1,10 @@
+# Pinned so a new Rust release cannot turn `main` red on its own (new clippy lints, changed
+# rustfmt output). Bumping it is a deliberate PR. CI, `cargo xtask ci`, and local builds all
+# resolve to this file, including the separate `apps/` workspace (rustup searches upward).
+[toolchain]
+channel = "1.97.1"
+# llvm-tools-preview is what `cargo llvm-cov` needs for the per-app coverage gate.
+components = ["clippy", "rustfmt", "llvm-tools-preview"]
+# The shell, the browser backend and every app compile to wasm32.
+targets = ["wasm32-unknown-unknown"]
+profile = "minimal"
