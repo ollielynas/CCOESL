@@ -2,13 +2,23 @@
 
 use std::fs;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use ccosel_proto::fs::{DirListing, ListDirReq};
 use ccosel_proto::{Method, WireReply, WireRequest, WireResult, server_error};
 use ccosel_server::fs_api::Jail;
 
 async fn spawn() -> SocketAddr {
-    let dir = std::env::temp_dir().join(format!("ccosel-rpc-{}", std::process::id()));
+    // One directory per call, not per process: the tests in this file run on parallel threads
+    // of one process, so a pid-only name is shared, and one test's `remove_dir_all` deleted the
+    // directory another was in the middle of `create_dir_all`-ing (NotFound, about 2% of runs).
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    let dir = std::env::temp_dir().join(format!(
+        "ccosel-rpc-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    // Still cleared: a previous run whose pid was reused may have left this name behind.
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(dir.join("Projects")).unwrap();
     fs::write(dir.join("hello.txt"), b"hi").unwrap();
