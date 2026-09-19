@@ -145,7 +145,8 @@ impl App for FileBrowser {
             self.selected = None;
         }
         if refresh {
-            ui.rpc().invalidate::<ListDir>(&ListDirReq { path: &self.path });
+            ui.rpc()
+                .invalidate::<ListDir>(&ListDirReq { path: &self.path });
         }
 
         ui.horizontal(|ui| {
@@ -237,7 +238,8 @@ impl App for FileBrowser {
         }
 
         if retry {
-            ui.rpc().invalidate::<ListDir>(&ListDirReq { path: &self.path });
+            ui.rpc()
+                .invalidate::<ListDir>(&ListDirReq { path: &self.path });
         }
         if let Some(name) = enter {
             self.enter(&name);
@@ -262,5 +264,8 @@ impl App for FileBrowser {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;
 
 ccosel_sdk::ccosel_app!(FileBrowser);

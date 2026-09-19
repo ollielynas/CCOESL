@@ -15,7 +15,10 @@ fn main() {
         .unwrap()
         .join("apps");
 
-    println!("cargo:rerun-if-changed={}", apps.join("file-browser/src").display());
+    println!(
+        "cargo:rerun-if-changed={}",
+        apps.join("file-browser/src").display()
+    );
 
     let artifact = apps.join("target/wasm32-unknown-unknown/release/file_browser.wasm");
 

@@ -5,9 +5,9 @@
 //! here panics on bad input — it returns [`DecodeError`] and the shell re-renders the previous
 //! frame instead.
 
+use crate::MAX_SCOPE_DEPTH;
 use crate::geom::{Align, Layout, ScopeKind, Vec2};
 use crate::opcode::OpCode;
-use crate::MAX_SCOPE_DEPTH;
 
 /// One decoded command, borrowing its strings from the command buffer.
 ///
@@ -228,7 +228,8 @@ impl<'a> Iterator for Decoder<'a> {
 /// discarded whole and the previous frame is re-rendered instead.
 pub fn validate(buf: &[u8]) -> Result<(), DecodeError> {
     // Stack of (opening opcode, id) — small and fixed, so no allocation.
-    let mut stack: [(OpCode, u64); MAX_SCOPE_DEPTH as usize] = [(OpCode::Nop, 0); MAX_SCOPE_DEPTH as usize];
+    let mut stack: [(OpCode, u64); MAX_SCOPE_DEPTH as usize] =
+        [(OpCode::Nop, 0); MAX_SCOPE_DEPTH as usize];
     let mut depth: usize = 0;
 
     for cmd in Decoder::new(buf) {

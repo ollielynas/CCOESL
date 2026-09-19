@@ -4,7 +4,7 @@ use std::cell::Cell;
 use std::collections::VecDeque;
 use std::rc::Rc;
 
-use ccosel_abi::{RespRecord, REPAINT_ON_INPUT_ONLY};
+use ccosel_abi::{REPAINT_ON_INPUT_ONLY, RespRecord};
 use ccosel_host::{AppInstance, FrameArgs, Replayer};
 use ccosel_transport::EventSink;
 
@@ -144,9 +144,10 @@ impl<I: AppInstance> AppWindow<I> {
                 self.error = None;
                 self.last_commands = result.commands;
                 if result.wants_repaint_after_ms != REPAINT_ON_INPUT_ONLY {
-                    ui.ctx().request_repaint_after(std::time::Duration::from_millis(
-                        result.wants_repaint_after_ms as u64,
-                    ));
+                    ui.ctx()
+                        .request_repaint_after(std::time::Duration::from_millis(
+                            result.wants_repaint_after_ms as u64,
+                        ));
                 }
             }
             Err(e) => self.error = Some(e.to_string()),
@@ -157,7 +158,10 @@ impl<I: AppInstance> AppWindow<I> {
         }
 
         if !self.last_commands.is_empty() {
-            match self.replayer.replay(ui, self.instance_id, &self.last_commands) {
+            match self
+                .replayer
+                .replay(ui, self.instance_id, &self.last_commands)
+            {
                 Ok(responses) => self.responses = responses,
                 Err(e) => {
                     // A malformed frame is dropped whole; the previous one stays up.

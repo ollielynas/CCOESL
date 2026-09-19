@@ -114,4 +114,7 @@ impl App for Clock {
     }
 }
 
+#[cfg(test)]
+mod tests;
+
 ccosel_sdk::ccosel_app!(Clock);

@@ -774,6 +774,7 @@ version = "0.1.0"
 dependencies = [
  "ccosel-abi",
  "ccosel-proto",
+ "ccosel-sdk",
  "postcard",
  "serde",
 ]

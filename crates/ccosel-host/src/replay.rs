@@ -3,7 +3,9 @@
 use std::collections::HashMap;
 use std::ops::Range;
 
-use ccosel_abi::{validate, Align, Cmd, DecodeError, Decoder, RespRecord, ResponseFlags, ScopeKind};
+use ccosel_abi::{
+    Align, Cmd, DecodeError, Decoder, RespRecord, ResponseFlags, ScopeKind, validate,
+};
 
 use crate::convert;
 
@@ -93,7 +95,9 @@ impl Replayer {
 
     /// The authoritative contents of a text field, for the app's delta stream.
     pub fn text(&self, local_id: u64) -> Option<(&str, u32)> {
-        self.text.get(&local_id).map(|t| (t.buf.as_str(), t.version))
+        self.text
+            .get(&local_id)
+            .map(|t| (t.buf.as_str(), t.version))
     }
 }
 
@@ -185,11 +189,8 @@ impl Cx<'_> {
                         ui.allocate_exact_size(convert::vec2(size), egui::Sense::click());
                     if ui.is_rect_visible(rect) {
                         let visuals = ui.visuals();
-                        ui.painter().rect_filled(
-                            rect,
-                            4.0,
-                            visuals.extreme_bg_color,
-                        );
+                        ui.painter()
+                            .rect_filled(rect, 4.0, visuals.extreme_bg_color);
                         ui.painter().text(
                             rect.center(),
                             egui::Align2::CENTER_CENTER,
@@ -212,9 +213,10 @@ impl Cx<'_> {
                         state.buf.push_str(new_text);
                         state.version = version;
                     }
-                    let r = ui.add(egui::TextEdit::singleline(&mut state.buf).id(
-                        egui::Id::new((self.app_instance, id)),
-                    ));
+                    let r = ui.add(
+                        egui::TextEdit::singleline(&mut state.buf)
+                            .id(egui::Id::new((self.app_instance, id))),
+                    );
                     if r.changed() {
                         state.version = state.version.wrapping_add(1);
                     }
@@ -237,45 +239,49 @@ impl Cx<'_> {
                     // `with_layout(left_to_right(Center))` hands the child the *full remaining
                     // height* and centres within it — which silently pushes every subsequent
                     // row off the bottom of the viewport.
-                    ui.push_id(self.egui_id(id), |ui| match (layout.kind, layout.cross_align) {
-                        (ScopeKind::Horizontal, Align::Min) => {
-                            ui.horizontal_top(|ui| self.render(ui, cmds, closes, inner.clone()));
-                        }
-                        (ScopeKind::Horizontal, _) => {
-                            ui.horizontal(|ui| self.render(ui, cmds, closes, inner.clone()));
-                        }
-                        (ScopeKind::Vertical, Align::Center) => {
-                            ui.vertical_centered(|ui| {
-                                self.render(ui, cmds, closes, inner.clone())
-                            });
-                        }
-                        (ScopeKind::Vertical, _) => {
-                            ui.vertical(|ui| self.render(ui, cmds, closes, inner.clone()));
-                        }
-                        (ScopeKind::Frame, _) => {
-                            // Flat alternating fill rather than a bordered box: this is what
-                            // gives a list of `Frame`-wrapped rows (e.g. file entries) a
-                            // zebra-striped look, the same purpose `visuals.faint_bg_color`
-                            // serves for `Grid::striped`.
-                            let fill = if frame_row % 2 == 1 {
-                                ui.visuals().faint_bg_color
-                            } else {
-                                egui::Color32::TRANSPARENT
-                            };
-                            frame_row += 1;
-                            egui::Frame::new()
-                                .fill(fill)
-                                .corner_radius(4)
-                                .inner_margin(egui::Margin::symmetric(6, 3))
-                                .show(ui, |ui| {
-                                    // A row's stripe should span the whole list, not just hug
-                                    // its own content's width.
-                                    ui.set_min_width(ui.available_width());
+                    ui.push_id(self.egui_id(id), |ui| {
+                        match (layout.kind, layout.cross_align) {
+                            (ScopeKind::Horizontal, Align::Min) => {
+                                ui.horizontal_top(|ui| {
                                     self.render(ui, cmds, closes, inner.clone())
                                 });
-                        }
-                        (ScopeKind::Group, _) => {
-                            ui.scope(|ui| self.render(ui, cmds, closes, inner.clone()));
+                            }
+                            (ScopeKind::Horizontal, _) => {
+                                ui.horizontal(|ui| self.render(ui, cmds, closes, inner.clone()));
+                            }
+                            (ScopeKind::Vertical, Align::Center) => {
+                                ui.vertical_centered(|ui| {
+                                    self.render(ui, cmds, closes, inner.clone())
+                                });
+                            }
+                            (ScopeKind::Vertical, _) => {
+                                ui.vertical(|ui| self.render(ui, cmds, closes, inner.clone()));
+                            }
+                            (ScopeKind::Frame, _) => {
+                                // Flat alternating fill rather than a bordered box: this is what
+                                // gives a list of `Frame`-wrapped rows (e.g. file entries) a
+                                // zebra-striped look, the same purpose `visuals.faint_bg_color`
+                                // serves for `Grid::striped`.
+                                let fill = if frame_row % 2 == 1 {
+                                    ui.visuals().faint_bg_color
+                                } else {
+                                    egui::Color32::TRANSPARENT
+                                };
+                                frame_row += 1;
+                                egui::Frame::new()
+                                    .fill(fill)
+                                    .corner_radius(4)
+                                    .inner_margin(egui::Margin::symmetric(6, 3))
+                                    .show(ui, |ui| {
+                                        // A row's stripe should span the whole list, not just hug
+                                        // its own content's width.
+                                        ui.set_min_width(ui.available_width());
+                                        self.render(ui, cmds, closes, inner.clone())
+                                    });
+                            }
+                            (ScopeKind::Group, _) => {
+                                ui.scope(|ui| self.render(ui, cmds, closes, inner.clone()));
+                            }
                         }
                     });
 

@@ -4,8 +4,8 @@
 //! "correct buffers decode correctly" but "no buffer, however malformed, panics".
 
 use ccosel_abi::{
-    id, validate, Align, Cmd, DecodeError, Decoder, Encoder, Layout, ScopeKind, Vec2,
-    MAX_SCOPE_DEPTH,
+    Align, Cmd, DecodeError, Decoder, Encoder, Layout, MAX_SCOPE_DEPTH, ScopeKind, Vec2, id,
+    validate,
 };
 
 fn encode(cmds: &[Cmd<'_>]) -> Vec<u8> {
@@ -103,7 +103,9 @@ fn arbitrary_bytes_never_panic() {
         let mut buf = Vec::new();
         let len = (state % 64) as usize;
         for _ in 0..len {
-            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             buf.push((state >> 33) as u8);
         }
         let _ = decode(&buf);

@@ -20,16 +20,18 @@
 extern crate alloc;
 
 mod recorder;
+mod response;
 pub mod rpc;
 pub mod runtime;
-mod response;
+#[cfg(feature = "testing")]
+pub mod testing;
 mod ui;
 
-pub use ccosel_abi::{Align, Color32, Pos2, Rect, ScopeKind, Vec2};
 pub use ccosel_abi::{ABI_VERSION, REPAINT_ON_INPUT_ONLY};
+pub use ccosel_abi::{Align, Color32, Pos2, Rect, ScopeKind, Vec2};
 pub use recorder::Recorder;
-pub use rpc::{Poll, RpcCtx, RpcError};
 pub use response::Response;
+pub use rpc::{Poll, RpcCtx, RpcError};
 pub use ui::{FrameCtx, Text, Ui};
 
 /// Implemented by every CCOSEL app.

@@ -46,7 +46,7 @@ impl Jail {
                 Component::CurDir => {}
                 // Anything that could climb or re-root is refused outright.
                 Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
-                    return Err(server_error::DENIED)
+                    return Err(server_error::DENIED);
                 }
             }
         }

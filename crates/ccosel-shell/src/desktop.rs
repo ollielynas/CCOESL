@@ -17,7 +17,7 @@ use crate::http_wire::{HttpWire, Inbox};
 
 use crate::app_window::AppWindow;
 use crate::fetch;
-use crate::registry::{catalog, AppEntry};
+use crate::registry::{AppEntry, catalog};
 
 /// A launch in flight, or its outcome. Launching is async (fetch + compile); the render loop
 /// is not, so results land here and the next frame picks them up.
@@ -239,7 +239,10 @@ impl Desktop {
                 ui.horizontal_centered(|ui| {
                     ui.menu_button("  Apps  ", |ui| {
                         for entry in &self.registry {
-                            if ui.button(format!("{}  {}", entry.icon, entry.name)).clicked() {
+                            if ui
+                                .button(format!("{}  {}", entry.icon, entry.name))
+                                .clicked()
+                            {
                                 to_launch = Some(entry.clone());
                                 ui.close();
                             }
@@ -282,11 +285,10 @@ impl Desktop {
         }
         if let Some(id) = to_focus {
             // egui tracks z-order per area, so "focus" is just moving that area to the top.
-            ui.ctx()
-                .move_to_top(egui::LayerId::new(
-                    egui::Order::Middle,
-                    egui::Id::new(("app-window", id)),
-                ));
+            ui.ctx().move_to_top(egui::LayerId::new(
+                egui::Order::Middle,
+                egui::Id::new(("app-window", id)),
+            ));
         }
     }
 }
@@ -352,9 +354,5 @@ fn apply_style(ctx: &egui::Context) {
 
 fn lerp_color(a: egui::Color32, b: egui::Color32, t: f32) -> egui::Color32 {
     let l = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t) as u8;
-    egui::Color32::from_rgb(
-        l(a.r(), b.r()),
-        l(a.g(), b.g()),
-        l(a.b(), b.b()),
-    )
+    egui::Color32::from_rgb(l(a.r(), b.r()), l(a.g(), b.g()), l(a.b(), b.b()))
 }

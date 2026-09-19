@@ -18,16 +18,16 @@
 extern crate alloc;
 
 pub mod decode;
-pub mod event;
 pub mod encode;
+pub mod event;
 pub mod frame;
 pub mod geom;
 pub mod id;
 pub mod opcode;
 
 pub use decode::{Cmd, DecodeError, Decoder, validate};
-pub use event::{decode_batch, encode_batch, Event, EventBatch, EventError, EventHeader};
 pub use encode::Encoder;
+pub use event::{Event, EventBatch, EventError, EventHeader, decode_batch, encode_batch};
 pub use frame::{FrameInput, FrameOutput, RespRecord, ResponseFlags, Slice};
 pub use geom::{Align, Color32, Layout, Pos2, Rect, ScopeKind, Vec2};
 pub use id::{hash_bytes, hash_id, hash_str};

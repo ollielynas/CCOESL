@@ -199,10 +199,7 @@ impl Transport {
             .collect();
 
         for key in expired {
-            let dead = self
-                .entries
-                .get(&key)
-                .is_some_and(|e| !e.sink.alive());
+            let dead = self.entries.get(&key).is_some_and(|e| !e.sink.alive());
             if dead {
                 self.cancel(key);
             } else {

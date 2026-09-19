@@ -101,12 +101,15 @@ pub fn decode_batch(buf: &[u8]) -> Result<alloc::vec::Vec<Event<'_>>, EventError
     if buf.len() < BATCH_SIZE {
         return Err(EventError::Truncated);
     }
-    let batch: EventBatch =
-        *bytemuck::from_bytes(&buf[..BATCH_SIZE]);
+    let batch: EventBatch = *bytemuck::from_bytes(&buf[..BATCH_SIZE]);
 
     let count = batch.count as usize;
     let headers_end = BATCH_SIZE
-        .checked_add(count.checked_mul(HEADER_SIZE).ok_or(EventError::OutOfBounds)?)
+        .checked_add(
+            count
+                .checked_mul(HEADER_SIZE)
+                .ok_or(EventError::OutOfBounds)?,
+        )
         .ok_or(EventError::OutOfBounds)?;
     if headers_end > buf.len() {
         return Err(EventError::Truncated);

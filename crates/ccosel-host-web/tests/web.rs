@@ -9,7 +9,7 @@
 
 #![cfg(target_arch = "wasm32")]
 
-use ccosel_abi::{Cmd, Decoder, RespRecord, ResponseFlags};
+use ccosel_abi::{Cmd, Decoder, RespRecord};
 use ccosel_host::{AppHost, AppInstance, FrameArgs};
 use ccosel_host_web::WebHost;
 use wasm_bindgen_test::*;
@@ -76,7 +76,11 @@ fn listing_reply(names: &[(&str, bool)]) -> Vec<u8> {
             .iter()
             .map(|(n, is_dir)| DirEntry {
                 name: (*n).to_owned(),
-                kind: if *is_dir { EntryKind::Dir } else { EntryKind::File },
+                kind: if *is_dir {
+                    EntryKind::Dir
+                } else {
+                    EntryKind::File
+                },
                 size: 3,
                 mtime_s: 0,
             })
@@ -113,7 +117,10 @@ async fn rpc_round_trips_through_the_real_wasm_engine() {
     app.on_event(&batch).expect("deliver reply");
 
     let f2 = app
-        .frame(&FrameArgs { frame_index: 1, ..Default::default() })
+        .frame(&FrameArgs {
+            frame_index: 1,
+            ..Default::default()
+        })
         .expect("frame");
     assert!(!labels(&f2.commands).contains(&"Loading…".to_owned()));
     let _ = button_id(&f2.commands, "notes.md");
@@ -129,10 +136,8 @@ async fn a_server_error_renders_without_a_decoder() {
     app.frame(&FrameArgs::default()).expect("frame");
     let calls = app.take_outbox();
 
-    let payload = ccosel_abi::event::encode_error(
-        ccosel_abi::event::rpc_error::DENIED,
-        "outside the jail",
-    );
+    let payload =
+        ccosel_abi::event::encode_error(ccosel_abi::event::rpc_error::DENIED, "outside the jail");
     let batch = ccosel_abi::event::encode_batch(&[(
         ccosel_abi::event::event_kind::RPC_ERR,
         calls[0].call_id,
@@ -141,7 +146,10 @@ async fn a_server_error_renders_without_a_decoder() {
     app.on_event(&batch).expect("deliver error");
 
     let f = app
-        .frame(&FrameArgs { frame_index: 1, ..Default::default() })
+        .frame(&FrameArgs {
+            frame_index: 1,
+            ..Default::default()
+        })
         .expect("frame");
     assert!(
         labels(&f.commands).contains(&"permission denied".to_owned()),
