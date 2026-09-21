@@ -44,6 +44,8 @@ pub struct Desktop {
     transport: Transport,
     /// Replies land here from `fetch` callbacks and are applied at the top of the next frame.
     replies: Inbox,
+    /// Whether the app menu popup is open.
+    app_menu_open: bool,
 }
 
 impl Desktop {
@@ -64,6 +66,7 @@ impl Desktop {
             egui_ctx,
             transport: Transport::new(Box::new(wire)),
             replies,
+            app_menu_open: false,
         };
         // Open something on first boot: an empty desktop with no affordance is a worse first
         // impression than a window the user can close.
@@ -135,6 +138,7 @@ impl Desktop {
         theme::paint_wallpaper(&ctx);
         self.status_bar(&ctx);
         self.empty_state(ui);
+        self.app_menu(&ctx);
         self.dock(&ctx);
 
         // Closing a window drops the instance, which is the only way to reclaim a guest's
@@ -236,7 +240,7 @@ impl Desktop {
                             // organised around, so it stays on screen rather than behind a menu.
                             let bytes: usize = self.windows.iter().map(|w| w.command_bytes()).sum();
                             ui.label(status_text(format!("{bytes} B/frame"), p));
-                            ui.label(status_text("·".to_owned(), p));
+                            ui.label(status_text("\u{00b7}".to_owned(), p));
                             ui.label(status_text(format!("{} running", self.windows.len()), p));
                         });
                     });
@@ -268,14 +272,73 @@ impl Desktop {
             });
     }
 
-    /// The dock: every installed app, then every open window. Clicking an app opens a new
-    /// window of it; clicking a window raises that one.
+    /// The app menu: a popup above the dock listing every installed app with its icon and
+    /// name. Clicking one launches it and closes the menu.
+    fn app_menu(&mut self, ctx: &egui::Context) {
+        if !self.app_menu_open {
+            return;
+        }
+        let p = theme::palette(ctx);
+        let mut to_launch: Option<AppEntry> = None;
+
+        let frame = egui::Frame::NONE
+            .fill(theme::glass(p))
+            .stroke(egui::Stroke::new(1.0, theme::glass_border(p)))
+            .corner_radius(egui::CornerRadius::same(14))
+            .inner_margin(egui::Margin::same(10))
+            .shadow(egui::Shadow {
+                offset: [0, 8],
+                blur: 24,
+                spread: 0,
+                color: p.shadow,
+            });
+
+        egui::Area::new(egui::Id::new("app-menu"))
+            .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -80.0))
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                frame.show(ui, |ui| {
+                    ui.vertical(|ui| {
+                        ui.set_min_width(200.0);
+                        for entry in &self.registry {
+                            let row = ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 10.0;
+                                // App badge.
+                                let badge_rect = egui::Rect::from_center_size(
+                                    ui.cursor().min + egui::vec2(16.0, 16.0),
+                                    egui::vec2(32.0, 32.0),
+                                );
+                                ui.allocate_space(egui::vec2(32.0, 32.0));
+                                theme::paint_badge(
+                                    ui.painter(),
+                                    badge_rect,
+                                    entry.icon,
+                                    entry.color,
+                                );
+                                // App name.
+                                ui.label(egui::RichText::new(entry.name).color(p.text).size(14.0));
+                            });
+                            if row.response.interact(egui::Sense::click()).clicked() {
+                                to_launch = Some(entry.clone());
+                                self.app_menu_open = false;
+                            }
+                        }
+                    });
+                });
+            });
+
+        if let Some(entry) = to_launch {
+            self.launch(&entry);
+        }
+    }
+
+    /// The dock: a launcher icon on the left, then every open window. The launcher opens a
+    /// popup listing all installed apps. Clicking a window raises that one.
     ///
     /// A floating area rather than a panel, so windows pass underneath it instead of the
     /// desktop permanently losing a full-width strip of height to mostly-empty chrome.
     fn dock(&mut self, ctx: &egui::Context) {
         let p = theme::palette(ctx);
-        let mut to_launch: Option<AppEntry> = None;
         let mut to_focus: Option<u64> = None;
 
         let frame = egui::Frame::NONE
@@ -298,12 +361,16 @@ impl Desktop {
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 4.0;
 
-                        for entry in &self.registry {
-                            let running = self.windows.iter().any(|w| w.app_id == entry.id);
-                            let item = dock_item(ui, entry.icon, entry.color, entry.name, running);
-                            if item.clicked() {
-                                to_launch = Some(entry.clone());
-                            }
+                        // Launcher icon: opens the app menu.
+                        let launcher = dock_item(
+                            ui,
+                            egui_phosphor::regular::SQUARES_FOUR,
+                            p.accent,
+                            "All apps",
+                            false,
+                        );
+                        if launcher.clicked() {
+                            self.app_menu_open = !self.app_menu_open;
                         }
 
                         if !self.windows.is_empty() {
@@ -320,9 +387,6 @@ impl Desktop {
                 });
             });
 
-        if let Some(entry) = to_launch {
-            self.launch(&entry);
-        }
         if let Some(id) = to_focus {
             // egui tracks z-order per area, so "focus" is just moving that area to the top.
             ctx.move_to_top(egui::LayerId::new(
