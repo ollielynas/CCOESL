@@ -8,6 +8,7 @@ use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
+use ccosel_proto::build::CompileReq;
 use ccosel_proto::fs::ListDirReq;
 use ccosel_proto::{Method, WireReply, WireRequest, WireResult, server_error};
 
@@ -76,5 +77,17 @@ fn dispatch(state: &AppState, req: &WireRequest<'_>) -> Outcome {
             }
         }
         Method::Stat => Outcome::Err(server_error::UNKNOWN_METHOD, String::new()),
+        Method::Compile => {
+            let Ok(args) = postcard::from_bytes::<CompileReq>(req.args) else {
+                return Outcome::Err(server_error::MALFORMED, String::new());
+            };
+            match crate::build_api::compile(&state.jail, &state.jobs, &args) {
+                Ok(status) => match postcard::to_allocvec(&status) {
+                    Ok(bytes) => Outcome::Ok(bytes),
+                    Err(_) => Outcome::Err(server_error::IO, String::new()),
+                },
+                Err(code) => Outcome::Err(code, args.path.to_owned()),
+            }
+        }
     }
 }

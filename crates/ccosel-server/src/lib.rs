@@ -3,6 +3,7 @@
 //! Serves the shell, the app modules and the RPC endpoint from **one origin**, which is why
 //! there is no CORS configuration anywhere in this project.
 
+pub mod build_api;
 pub mod fs_api;
 pub mod rpc;
 
@@ -11,7 +12,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::Router;
-use axum::routing::post;
+use axum::extract::{Path as AxPath, State};
+use axum::http::{StatusCode, header};
+use axum::response::{IntoResponse, Response};
+use axum::routing::{get, post};
 use tower_http::services::ServeDir;
 
 use fs_api::Jail;
@@ -19,16 +23,21 @@ use fs_api::Jail;
 #[derive(Clone)]
 pub struct AppState {
     pub jail: Arc<Jail>,
+    /// Builds outlive the request that started them, so they live on the server rather than in
+    /// any one call. See `build_api`.
+    pub jobs: Arc<build_api::Jobs>,
 }
 
 /// Build the router. Separated from `serve` so tests can drive it on an ephemeral port.
 pub fn app(jail: Jail, web_dir: PathBuf) -> Router {
     let state = AppState {
         jail: Arc::new(jail),
+        jobs: Arc::new(build_api::Jobs::new()),
     };
 
     Router::new()
         .route("/rpc", post(rpc::handle))
+        .route("/files/{*path}", get(download))
         .fallback_service(
             // Precompressed assets are served as-is when the client accepts them: compressing
             // a 5 MB shell on every request would be absurd, and `xtask` can do it once at
@@ -45,4 +54,33 @@ pub async fn serve(addr: SocketAddr, jail: Jail, web_dir: PathBuf) -> anyhow::Re
     println!("CCOSEL serving http://{addr}/");
     axum::serve(listener, app(jail, web_dir)).await?;
     Ok(())
+}
+
+/// Streams a file out of the jail. This is the plain jailed-path counterpart to `ListDir` —
+/// anything under the jail is already fair game to enumerate, this just answers "and can I
+/// have the bytes."
+async fn download(State(state): State<AppState>, AxPath(path): AxPath<String>) -> Response {
+    let Ok(real) = state.jail.resolve(&path) else {
+        return StatusCode::FORBIDDEN.into_response();
+    };
+    let Ok(bytes) = tokio::fs::read(&real).await else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let filename = real
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("download")
+        .replace('"', "_");
+
+    (
+        [
+            (header::CONTENT_TYPE, "application/octet-stream".to_owned()),
+            (
+                header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{filename}\""),
+            ),
+        ],
+        bytes,
+    )
+        .into_response()
 }
