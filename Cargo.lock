@@ -723,6 +723,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "ccosel-connection"
+version = "0.1.0"
+
+[[package]]
 name = "ccosel-host"
 version = "0.1.0"
 dependencies = [
@@ -797,6 +801,7 @@ name = "ccosel-shell"
 version = "0.1.0"
 dependencies = [
  "ccosel-abi",
+ "ccosel-connection",
  "ccosel-host",
  "ccosel-host-web",
  "ccosel-proto",
@@ -804,6 +809,7 @@ dependencies = [
  "console_error_panic_hook",
  "eframe",
  "egui",
+ "image",
  "js-sys",
  "log",
  "postcard",
