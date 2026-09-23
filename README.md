@@ -36,3 +36,23 @@ The user can uplaod a project directory or select a project from the server file
 Plan to support
 - C / C++
 - Rust
+
+## Auth
+
+The server can gate itself behind GitHub OAuth plus an approved-account list. It's off by
+default — a checkout with nothing configured runs exactly as before.
+
+1. Register a GitHub OAuth app (https://github.com/settings/developers). Its callback URL is
+   `http://localhost:8777/auth/callback` (or whatever host:port the server is actually reached
+   at — see `crates/ccosel-server/src/auth.rs` for why `http://`, not `https://`, is correct for
+   now).
+2. Copy `data/approved_users.example.txt` to `data/approved_users.txt` and list the GitHub
+   usernames allowed to sign in, one per line.
+3. Start the server with the app's credentials:
+
+   ```sh
+   CCOSEL_GITHUB_CLIENT_ID=... CCOSEL_GITHUB_CLIENT_SECRET=... cargo xtask serve
+   ```
+
+`--approved-users <path>` overrides the list's location. Sessions live in server memory only —
+a restart signs everyone out.
