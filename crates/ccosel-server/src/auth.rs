@@ -1,12 +1,12 @@
 //! OAuth login, gated by a list of approved accounts.
 //!
-//! Scope, deliberately: GitHub is the only provider wired up, the server keeps sessions
+//! Scope, deliberately: Keycloak is the only provider wired up, the server keeps sessions
 //! in-memory (a restart signs everyone out), and everything below assumes `http://` on
 //! `localhost` — exactly what the ticket asked for. See the doc comments on [`SESSION_COOKIE`]
 //! and [`OAuthConfig`] for what that means and what a later HTTPS pass would change.
 //!
 //! The flow is the standard OAuth "authorization code" dance, run entirely as ordinary browser
-//! navigations (redirects), not as an app RPC method — a top-level redirect to github.com and
+//! navigations (redirects), not as an app RPC method — a top-level redirect to Keycloak and
 //! back cannot go through the guest command-buffer protocol, so this lives beside it instead:
 //!
 //! 1. `GET /auth/login` redirects to the provider with a random `state` token the server
@@ -55,9 +55,9 @@ fn random_token(len: usize) -> String {
         .collect()
 }
 
-/// Where the provider's endpoints are. A real deployment gets [`OAuthConfig::github`]; tests
-/// point `token_url`/`user_url` at a local mock server instead of the real GitHub API, the same
-/// way `compile_http.rs` drives a real socket rather than mocking axum itself.
+/// Where the provider's endpoints are. A real deployment gets [`OAuthConfig::keycloak`]; tests
+/// point `token_url`/`user_url` at a local mock server instead of a real Keycloak instance, the
+/// same way `compile_http.rs` drives a real socket rather than mocking axum itself.
 #[derive(Clone, Debug)]
 pub struct OAuthConfig {
     pub client_id: String,
@@ -68,13 +68,13 @@ pub struct OAuthConfig {
 }
 
 impl OAuthConfig {
-    pub fn github(client_id: String, client_secret: String) -> Self {
+    pub fn keycloak(base_url: String, client_id: String, client_secret: String) -> Self {
         Self {
             client_id,
             client_secret,
-            authorize_url: "https://github.com/login/oauth/authorize".to_string(),
-            token_url: "https://github.com/login/oauth/access_token".to_string(),
-            user_url: "https://api.github.com/user".to_string(),
+            authorize_url: format!("{base_url}/protocol/openid-connect/auth"),
+            token_url: format!("{base_url}/protocol/openid-connect/token"),
+            user_url: format!("{base_url}/protocol/openid-connect/userinfo"),
         }
     }
 }
@@ -199,7 +199,7 @@ async fn login(State(state): State<AppState>, headers: HeaderMap) -> Response {
 
     let redirect_uri = format!("{}/auth/callback", origin(&headers));
     let url = format!(
-        "{}?client_id={}&redirect_uri={}&scope=read:user&state={}",
+        "{}?client_id={}&redirect_uri={}&scope=openid&response_type=code&state={}",
         oauth.authorize_url,
         urlencode(&oauth.client_id),
         urlencode(&redirect_uri),
@@ -317,6 +317,7 @@ async fn exchange_and_fetch_login(
         .form(&[
             ("client_id", oauth.client_id.as_str()),
             ("client_secret", oauth.client_secret.as_str()),
+            ("grant_type", "authorization_code"),
             ("code", code),
             ("redirect_uri", redirect_uri),
         ])
@@ -336,7 +337,7 @@ async fn exchange_and_fetch_login(
 
     #[derive(Deserialize)]
     struct UserResp {
-        login: Option<String>,
+        preferred_username: Option<String>,
     }
 
     let user: UserResp = http
@@ -350,7 +351,7 @@ async fn exchange_and_fetch_login(
         .await
         .map_err(|e| format!("the OAuth provider's account response was not understood: {e}"))?;
 
-    user.login
+    user.preferred_username
         .ok_or_else(|| "the OAuth provider did not return an account name".to_string())
 }
 

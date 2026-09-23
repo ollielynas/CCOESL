@@ -39,19 +39,34 @@ Plan to support
 
 ## Auth
 
-The server can gate itself behind GitHub OAuth plus an approved-account list. It's off by
+The server can gate itself behind Keycloak OAuth plus an approved-account list. It's off by
 default — a checkout with nothing configured runs exactly as before.
 
-1. Register a GitHub OAuth app (https://github.com/settings/developers). Its callback URL is
-   `http://localhost:8777/auth/callback` (or whatever host:port the server is actually reached
-   at — see `crates/ccosel-server/src/auth.rs` for why `http://`, not `https://`, is correct for
-   now).
-2. Copy `data/approved_users.example.txt` to `data/approved_users.txt` and list the GitHub
-   usernames allowed to sign in, one per line.
-3. Start the server with the app's credentials:
+1. Start Keycloak locally:
 
    ```sh
-   CCOSEL_GITHUB_CLIENT_ID=... CCOSEL_GITHUB_CLIENT_SECRET=... cargo xtask serve
+   docker run -d -p 8080:8080 -e KEYCLOAK_ADMIN=admin -e KEYCLOAK_ADMIN_PASSWORD=admin \
+     quay.io/keycloak/keycloak start-dev
+   ```
+
+2. Open the Keycloak admin console at `http://localhost:8080` (admin/admin). Create a realm
+   (e.g. `ccosel`), then create a client:
+   - Client type: `OpenID Connect`
+   - Valid redirect URIs: `http://localhost:8777/auth/callback`
+   - Web origins: `http://localhost:8777`
+   - Client authentication: On (this generates the client secret)
+   Note the **Client ID** and **Client Secret** from the Credentials tab.
+
+3. Copy `data/approved_users.example.txt` to `data/approved_users.txt` and list the Keycloak
+   usernames allowed to sign in, one per line.
+
+4. Start the server with the Keycloak credentials:
+
+   ```sh
+   CCOSEL_KEYCLOAK_URL=http://localhost:8080/realms/ccosel \
+   CCOSEL_KEYCLOAK_CLIENT_ID=ccosel \
+   CCOSEL_KEYCLOAK_CLIENT_SECRET=... \
+   cargo xtask serve
    ```
 
 `--approved-users <path>` overrides the list's location. Sessions live in server memory only —

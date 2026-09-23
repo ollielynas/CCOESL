@@ -61,7 +61,7 @@
     bar.style.display = 'none';
     note.textContent = 'This server only allows approved accounts.';
     const signIn = document.createElement('button');
-    signIn.textContent = 'Sign in with GitHub';
+    signIn.textContent = 'Sign in with Keycloak';
     signIn.onclick = () => { location.href = '/auth/login'; };
     boot.appendChild(signIn);
   }

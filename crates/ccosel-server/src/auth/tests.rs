@@ -1,7 +1,7 @@
 //! The provider itself is not exercised here — these run in CI with no network access — but
 //! everything this module controls is: the approved-list check, the CSRF `state` token, session
 //! cookies, and the two calls a provider's callback triggers, against a small mock HTTP server
-//! standing in for GitHub. Same approach `rpc_http.rs` and `compile_http.rs` take: a real
+//! standing in for Keycloak. Same approach `rpc_http.rs` and `compile_http.rs` take: a real
 //! socket, not a mocked-out `Router`.
 
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -54,10 +54,10 @@ async fn mock_token(AxState(p): AxState<MockProvider>) -> axum::Json<Value> {
 }
 
 async fn mock_user(AxState(p): AxState<MockProvider>) -> axum::Json<Value> {
-    axum::Json(json!({ "login": p.login }))
+    axum::Json(json!({ "preferred_username": p.login }))
 }
 
-/// A stand-in for GitHub's two OAuth endpoints. Returns the base URL to point `token_url` /
+/// A stand-in for Keycloak's two OAuth endpoints. Returns the base URL to point `token_url` /
 /// `user_url` at (`{base}/token`, `{base}/user`).
 async fn spawn_mock_provider(login: &str, fail_token: bool) -> String {
     let state = MockProvider {

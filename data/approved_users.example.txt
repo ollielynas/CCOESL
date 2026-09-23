@@ -1,8 +1,8 @@
-# Accounts allowed to sign in to this CCOSEL server, one GitHub username per line.
+# Accounts allowed to sign in to this CCOSEL server, one Keycloak username per line.
 #
 # Copy this file to data/approved_users.txt (the default `--approved-users` path, gitignored)
 # and edit it. Matching is case-insensitive. Blank lines and lines starting with `#` are
 # ignored.
 #
-# octocat
-# torvalds
+# alice
+# bob
