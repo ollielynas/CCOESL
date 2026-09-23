@@ -21,12 +21,6 @@ use crate::background;
 use crate::fetch;
 use crate::registry::{AppEntry, catalog};
 
-/// Where the wallpaper image is served from. A plain static file under `web/`, alongside
-/// `index.html` — `ServeDir` serves it with no server changes needed. Not content-addressed
-/// like app modules: it is small, changes rarely, and doesn't need cache-busting machinery for
-/// this feature to make sense.
-const WALLPAPER_URL: &str = "/wallpaper.png";
-
 /// A launch in flight, or its outcome. Launching is async (fetch + compile); the render loop
 /// is not, so results land here and the next frame picks them up.
 enum Launch {
@@ -106,7 +100,7 @@ impl Desktop {
         let pending = self.wallpaper_pending.clone();
         let ctx = self.egui_ctx.clone();
         wasm_bindgen_futures::spawn_local(async move {
-            let result = background::fetch_wallpaper(WALLPAPER_URL).await;
+            let result = background::fetch_bing_wallpaper().await;
             *pending.borrow_mut() = Some(result);
             // The fetch resolved outside the frame loop, so nothing would redraw on its own.
             ctx.request_repaint();

@@ -31,6 +31,11 @@ pub async fn get_bytes(url: &str) -> Result<Vec<u8>, String> {
     Ok(js_sys::Uint8Array::new(&buffer).to_vec())
 }
 
+pub async fn get_text(url: &str) -> Result<String, String> {
+    let bytes = get_bytes(url).await?;
+    String::from_utf8(bytes).map_err(|e| format!("utf-8 decode {url}: {e}"))
+}
+
 /// POST bytes and return the response body.
 pub async fn post_bytes(url: &str, body: &[u8]) -> Result<Vec<u8>, String> {
     let window = web_sys::window().ok_or("no window")?;
