@@ -31,5 +31,12 @@ pub fn catalog() -> Vec<AppEntry> {
             url: "./dist/clock.wasm",
             default_size: [240.0, 200.0],
         },
+        AppEntry {
+            id: "settings",
+            name: "Settings",
+            icon: "⚙",
+            url: "./dist/settings.wasm",
+            default_size: [360.0, 320.0],
+        },
     ]
 }

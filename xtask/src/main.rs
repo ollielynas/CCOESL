@@ -171,7 +171,11 @@ fn build_web() -> Result<()> {
     )?;
 
     // Guest crate names use underscores; the served names use hyphens, matching the registry.
-    let guests = [("file_browser", "file-browser"), ("clock", "clock")];
+    let guests = [
+        ("file_browser", "file-browser"),
+        ("clock", "clock"),
+        ("settings", "settings"),
+    ];
     for (crate_name, served) in guests {
         std::fs::copy(
             root.join(format!(
