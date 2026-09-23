@@ -4,8 +4,8 @@
 //! "correct buffers decode correctly" but "no buffer, however malformed, panics".
 
 use ccosel_abi::{
-    Align, Cmd, DecodeError, Decoder, Encoder, Layout, MAX_SCOPE_DEPTH, ScopeKind, Vec2, id,
-    validate,
+    Align, Cmd, DecodeError, Decoder, Encoder, Layout, MAX_SCOPE_DEPTH, OpCode, ScopeKind, Vec2,
+    id, validate,
 };
 
 fn encode(cmds: &[Cmd<'_>]) -> Vec<u8> {
@@ -57,6 +57,14 @@ fn sample() -> Vec<Cmd<'static>> {
             id: id::hash_str(win, "thumb"),
             src: "/cas/abc123",
             size: Vec2::new(64.0, 64.0),
+        },
+        Cmd::UploadFolder {
+            id: id::hash_str(win, "upload"),
+        },
+        Cmd::OpenUrl {
+            id: id::hash_str(win, "download"),
+            label: "Download",
+            url: "/files/notes.md",
         },
         Cmd::EndWindow { id: win },
     ]
@@ -193,6 +201,43 @@ fn rejects_excessive_depth() {
         ok.push(Cmd::EndScope { id: i });
     }
     validate(&encode(&ok)).unwrap();
+}
+
+#[test]
+fn upload_folder_truncated_mid_command_is_an_error_not_a_panic() {
+    let buf = encode(&[Cmd::UploadFolder { id: 42 }]);
+    for n in 0..buf.len() {
+        let _ = decode(&buf[..n]);
+        let _ = validate(&buf[..n]);
+    }
+    // The full command still decodes cleanly.
+    assert_eq!(decode(&buf).unwrap(), vec![Cmd::UploadFolder { id: 42 }]);
+}
+
+#[test]
+fn open_url_rejects_an_over_long_url() {
+    // A guest (or a hostile one) claiming a `url` longer than the bytes actually present must
+    // be truncated, never read past the end of the buffer.
+    let mut buf = vec![OpCode::OpenUrl as u8];
+    buf.extend_from_slice(&7u64.to_le_bytes()); // id
+    buf.push(8); // varint len = 8
+    buf.extend_from_slice(b"Download"); // label, correctly sized
+    // varint length = 500, a two-byte LEB128 encoding (0xF4, 0x03), but far fewer bytes
+    // actually follow.
+    buf.push(0xF4);
+    buf.push(0x03);
+    buf.extend_from_slice(b"/files/short");
+    assert_eq!(decode(&buf), Err(DecodeError::Truncated));
+}
+
+#[test]
+fn open_url_rejects_invalid_utf8_in_the_url() {
+    let mut buf = vec![OpCode::OpenUrl as u8];
+    buf.extend_from_slice(&7u64.to_le_bytes()); // id
+    buf.push(0); // label: empty string
+    buf.push(2); // url: varint len = 2
+    buf.extend_from_slice(&[0xff, 0xfe]);
+    assert_eq!(decode(&buf), Err(DecodeError::InvalidUtf8));
 }
 
 #[test]

@@ -244,6 +244,30 @@ impl<'a> Ui<'a> {
         text.push_pending = false;
         self.response(id)
     }
+
+    /// Ask the shell to open a folder picker (or accept drag-and-drop onto the canvas) and
+    /// upload the chosen folder to the server.
+    ///
+    /// This only records the request and reports the click; the shell decides what "open a
+    /// picker" and "upload" mean and how the result reaches the app (see issue #19). A well
+    /// formed app just checks `.clicked()` the frame after, exactly like a button.
+    pub fn upload_folder(&mut self) -> Response {
+        let id = self.auto_id();
+        self.rec.push(&Cmd::UploadFolder { id });
+        self.response(id)
+    }
+
+    /// Open `url` in a new browser tab. Useful for downloads: point `url` at `/files/{path}` to
+    /// stream a file out of the jail.
+    ///
+    /// `label` is what the button shows. Keep it separate from `url` on purpose — a file
+    /// listing that put the URL itself on every row would be unreadable (`/files/notes.md`
+    /// repeated next to each file); pass something like `"Download"` instead.
+    pub fn open_url(&mut self, label: &str, url: &str) -> Response {
+        let id = self.auto_id();
+        self.rec.push(&Cmd::OpenUrl { id, label, url });
+        self.response(id)
+    }
 }
 
 /// A text field's contents.

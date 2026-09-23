@@ -44,6 +44,12 @@ struct TextState {
 pub struct Replayer {
     /// Keyed by the guest's local id.
     text: HashMap<u64, TextState>,
+    /// Widget ids that were `UploadFolder` buttons this frame. The shell checks these against
+    /// its own click detection to know when to open the browser's folder picker (see #19).
+    upload_ids: Vec<u64>,
+    /// Widget ids and target URLs from `OpenUrl` commands this frame. The shell checks these to
+    /// know when, and where, to open a new browser tab (see #19).
+    open_url_ids: Vec<(u64, String)>,
 }
 
 impl Replayer {
@@ -74,9 +80,16 @@ impl Replayer {
         // resolve them up front and attach on the way past. This is what makes tooltips
         // zero-latency despite responses being a frame stale.
         let mut tooltips: HashMap<u64, &str> = HashMap::new();
+        self.upload_ids.clear();
+        self.open_url_ids.clear();
         for cmd in &cmds {
-            if let Cmd::Tooltip { id, text } = *cmd {
-                tooltips.insert(id, text);
+            match *cmd {
+                Cmd::Tooltip { id, text } => {
+                    tooltips.insert(id, text);
+                }
+                Cmd::UploadFolder { id } => self.upload_ids.push(id),
+                Cmd::OpenUrl { id, url, .. } => self.open_url_ids.push((id, url.to_owned())),
+                _ => {}
             }
         }
 
@@ -98,6 +111,19 @@ impl Replayer {
         self.text
             .get(&local_id)
             .map(|t| (t.buf.as_str(), t.version))
+    }
+
+    /// Widget ids that were `UploadFolder` buttons in the last successfully replayed frame.
+    /// Acting on a click against one of these (opening a picker, uploading) is the shell's job
+    /// (#19); this crate only exposes which ids to watch.
+    pub fn upload_ids(&self) -> &[u64] {
+        &self.upload_ids
+    }
+
+    /// Widget ids and target URLs from `OpenUrl` commands in the last successfully replayed
+    /// frame. Acting on a click (opening the tab) is the shell's job (#19).
+    pub fn open_url_ids(&self) -> &[(u64, String)] {
+        &self.open_url_ids
     }
 }
 
@@ -179,6 +205,19 @@ impl Cx<'_> {
 
                 Cmd::Separator => {
                     ui.separator();
+                }
+
+                Cmd::UploadFolder { id } => {
+                    let r = ui.add(egui::Button::new("Upload Folder").frame_when_inactive(false));
+                    self.finish(id, r);
+                }
+
+                Cmd::OpenUrl { id, label, .. } => {
+                    // Draw `label`, never `url` — a file listing that put the URL itself on
+                    // every row would be unreadable (`/files/notes.md` repeated next to each
+                    // file). The URL is only for the shell's click handler (#19).
+                    let r = ui.add(egui::Button::new(label).frame_when_inactive(false));
+                    self.finish(id, r);
                 }
 
                 Cmd::Image { id, src, size } => {

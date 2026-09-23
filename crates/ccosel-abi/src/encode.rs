@@ -145,6 +145,16 @@ impl Encoder {
                 self.u64(id);
                 self.str(text);
             }
+            Cmd::UploadFolder { id } => {
+                self.u8(OpCode::UploadFolder as u8);
+                self.u64(id);
+            }
+            Cmd::OpenUrl { id, label, url } => {
+                self.u8(OpCode::OpenUrl as u8);
+                self.u64(id);
+                self.str(label);
+                self.str(url);
+            }
         }
     }
 }

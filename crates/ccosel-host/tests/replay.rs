@@ -212,6 +212,91 @@ fn arbitrary_bytes_never_panic_the_host() {
 }
 
 #[test]
+fn upload_folder_and_open_url_are_drawn_and_tracked() {
+    let buf = encode(&[
+        Cmd::UploadFolder { id: 30 },
+        Cmd::OpenUrl {
+            id: 31,
+            label: "Download",
+            url: "/files/notes.md",
+        },
+    ]);
+
+    let ctx = egui::Context::default();
+    let mut r = Replayer::new();
+    let recs = frame(&ctx, &mut r, &buf, raw_input()).unwrap();
+
+    let ids: Vec<u64> = recs.iter().map(|r| r.local_id).collect();
+    assert_eq!(ids, vec![30, 31], "both drawn as widgets and reported");
+
+    assert_eq!(r.upload_ids(), &[30]);
+    assert_eq!(r.open_url_ids(), &[(31, "/files/notes.md".to_string())]);
+}
+
+#[test]
+fn a_click_on_open_url_lands_on_the_right_widget() {
+    let buf = encode(&[
+        Cmd::UploadFolder { id: 30 },
+        Cmd::OpenUrl {
+            id: 31,
+            label: "Download",
+            url: "/files/notes.md",
+        },
+    ]);
+    let ctx = egui::Context::default();
+    let mut r = Replayer::new();
+
+    let recs = frame(&ctx, &mut r, &buf, raw_input()).unwrap();
+    let open_url_rect = find(&recs, 31).rect;
+    let target = egui::pos2(
+        (open_url_rect[0] + open_url_rect[2]) / 2.0,
+        (open_url_rect[1] + open_url_rect[3]) / 2.0,
+    );
+
+    let mut input = raw_input();
+    input.events = vec![
+        egui::Event::PointerMoved(target),
+        egui::Event::PointerButton {
+            pos: target,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: Default::default(),
+        },
+        egui::Event::PointerButton {
+            pos: target,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: Default::default(),
+        },
+    ];
+    let recs = frame(&ctx, &mut r, &buf, input).unwrap();
+
+    assert!(
+        find(&recs, 31).clicked(),
+        "the OpenUrl button should register the click"
+    );
+    assert!(
+        !find(&recs, 30).clicked(),
+        "the UploadFolder button must not"
+    );
+}
+
+#[test]
+fn upload_and_open_url_ids_do_not_survive_a_rejected_frame() {
+    // Same contract as decoded state generally: an error leaves the previous good frame's
+    // tracked ids standing rather than clearing them out from under the shell.
+    let good = encode(&[Cmd::UploadFolder { id: 30 }]);
+    let ctx = egui::Context::default();
+    let mut r = Replayer::new();
+    frame(&ctx, &mut r, &good, raw_input()).unwrap();
+    assert_eq!(r.upload_ids(), &[30]);
+
+    let bad = vec![0xEE];
+    assert!(frame(&ctx, &mut r, &bad, raw_input()).is_err());
+    assert_eq!(r.upload_ids(), &[30], "unchanged by the rejected frame");
+}
+
+#[test]
 fn tooltips_do_not_need_a_hover_branch() {
     // The tooltip is emitted unconditionally alongside its widget and resolved by id, so the
     // guest never has to see `hovered()` to produce one.
