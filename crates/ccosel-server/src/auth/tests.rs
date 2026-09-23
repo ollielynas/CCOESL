@@ -79,7 +79,7 @@ async fn spawn_mock_provider(login: &str, fail_token: bool) -> String {
 fn oauth_config_for(provider_base: &str) -> OAuthConfig {
     OAuthConfig {
         client_id: "test-client-id".to_string(),
-        client_secret: "test-client-secret".to_string(),
+        client_secret: Some("test-client-secret".to_string()),
         authorize_url: format!("{provider_base}/authorize"),
         token_url: format!("{provider_base}/token"),
         user_url: format!("{provider_base}/user"),

@@ -54,8 +54,8 @@ default — a checkout with nothing configured runs exactly as before.
    - Client type: `OpenID Connect`
    - Valid redirect URIs: `http://localhost:8777/auth/callback`
    - Web origins: `http://localhost:8777`
-   - Client authentication: On (this generates the client secret)
-   Note the **Client ID** and **Client Secret** from the Credentials tab.
+   - Access type: `public` (no client secret needed)
+   Note the **Client ID** from the Settings tab.
 
 3. Copy `data/approved_users.example.txt` to `data/approved_users.txt` and list the Keycloak
    usernames allowed to sign in, one per line.
@@ -65,8 +65,13 @@ default — a checkout with nothing configured runs exactly as before.
    ```sh
    CCOSEL_KEYCLOAK_URL=http://localhost:8080/realms/ccosel \
    CCOSEL_KEYCLOAK_CLIENT_ID=ccosel \
-   CCOSEL_KEYCLOAK_CLIENT_SECRET=... \
    cargo xtask serve
+   ```
+
+   If you created a confidential client instead, add the secret:
+
+   ```sh
+   CCOSEL_KEYCLOAK_CLIENT_SECRET=... cargo xtask serve
    ```
 
 `--approved-users <path>` overrides the list's location. Sessions live in server memory only —

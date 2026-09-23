@@ -51,16 +51,16 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    // All three unset (the default until an operator configures Keycloak) means `/auth/login`
+    // Both unset (the default until an operator configures Keycloak) means `/auth/login`
     // answers 503 instead of the server refusing to start — see `AuthState`'s doc comment.
     let keycloak_url = std::env::var("CCOSEL_KEYCLOAK_URL").ok();
     let client_id = std::env::var("CCOSEL_KEYCLOAK_CLIENT_ID").ok();
     let client_secret = std::env::var("CCOSEL_KEYCLOAK_CLIENT_SECRET").ok();
-    let oauth = match (keycloak_url, client_id, client_secret) {
-        (Some(url), Some(id), Some(secret)) => Some(OAuthConfig::keycloak(url, id, secret)),
+    let oauth = match (keycloak_url, client_id) {
+        (Some(url), Some(id)) => Some(OAuthConfig::keycloak(url, id, client_secret)),
         _ => {
             println!(
-                "note: CCOSEL_KEYCLOAK_URL / CCOSEL_KEYCLOAK_CLIENT_ID / CCOSEL_KEYCLOAK_CLIENT_SECRET not set — login is disabled"
+                "note: CCOSEL_KEYCLOAK_URL / CCOSEL_KEYCLOAK_CLIENT_ID not set — login is disabled"
             );
             None
         }

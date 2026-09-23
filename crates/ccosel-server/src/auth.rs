@@ -61,14 +61,14 @@ fn random_token(len: usize) -> String {
 #[derive(Clone, Debug)]
 pub struct OAuthConfig {
     pub client_id: String,
-    pub client_secret: String,
+    pub client_secret: Option<String>,
     pub authorize_url: String,
     pub token_url: String,
     pub user_url: String,
 }
 
 impl OAuthConfig {
-    pub fn keycloak(base_url: String, client_id: String, client_secret: String) -> Self {
+    pub fn keycloak(base_url: String, client_id: String, client_secret: Option<String>) -> Self {
         Self {
             client_id,
             client_secret,
@@ -311,16 +311,20 @@ async fn exchange_and_fetch_login(
         error: Option<String>,
     }
 
+    let mut form = vec![
+        ("client_id", oauth.client_id.as_str()),
+        ("grant_type", "authorization_code"),
+        ("code", code),
+        ("redirect_uri", redirect_uri),
+    ];
+    if let Some(secret) = &oauth.client_secret {
+        form.push(("client_secret", secret));
+    }
+
     let token_resp: TokenResp = http
         .post(&oauth.token_url)
         .header(header::ACCEPT, "application/json")
-        .form(&[
-            ("client_id", oauth.client_id.as_str()),
-            ("client_secret", oauth.client_secret.as_str()),
-            ("grant_type", "authorization_code"),
-            ("code", code),
-            ("redirect_uri", redirect_uri),
-        ])
+        .form(&form)
         .send()
         .await
         .map_err(|e| format!("could not reach the OAuth provider: {e}"))?
