@@ -134,7 +134,7 @@ fn visuals(p: &Palette, dark: bool) -> egui::Visuals {
 
     v.widgets.noninteractive = widget(p.surface, p.border, p.text, 0.0);
     v.widgets.inactive = widget(p.surface_hi, p.border, p.text, 0.0);
-    v.widgets.hovered = widget(p.surface_hover, p.border_hi, p.text, 1.0);
+    v.widgets.hovered = widget(p.surface_hover, p.border_hi, p.text, 0.0);
     v.widgets.active = widget(p.accent_deep, p.accent, Color32::WHITE, 0.0);
     v.widgets.open = widget(p.surface_hover, p.border_hi, p.text, 0.0);
 
