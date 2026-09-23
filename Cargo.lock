@@ -788,6 +788,7 @@ dependencies = [
  "ccosel-proto",
  "postcard",
  "serde",
+ "serde_json",
  "tokio",
  "tower-http",
 ]

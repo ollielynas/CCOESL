@@ -13,6 +13,7 @@
 
 extern crate alloc;
 
+pub mod build;
 pub mod fs;
 
 use serde::{Deserialize, Serialize};
@@ -27,6 +28,7 @@ pub const PROTO_VERSION: u32 = 1;
 pub enum Method {
     ListDir = 1,
     Stat = 2,
+    Compile = 3,
 }
 
 impl Method {
@@ -34,6 +36,7 @@ impl Method {
         match v {
             1 => Some(Self::ListDir),
             2 => Some(Self::Stat),
+            3 => Some(Self::Compile),
             _ => None,
         }
     }
@@ -123,4 +126,6 @@ pub mod server_error {
     pub const IO: u32 = 4;
     pub const UNKNOWN_METHOD: u32 = 5;
     pub const MALFORMED: u32 = 6;
+    pub const NOT_A_CARGO_PROJECT: u32 = 7;
+    pub const TIMEOUT: u32 = 8;
 }

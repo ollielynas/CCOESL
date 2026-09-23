@@ -31,5 +31,12 @@ pub fn catalog() -> Vec<AppEntry> {
             url: "./dist/clock.wasm",
             default_size: [240.0, 200.0],
         },
+        AppEntry {
+            id: "rust-compiler",
+            name: "Compiler",
+            icon: "⚙",
+            url: "./dist/rust-compiler.wasm",
+            default_size: [480.0, 360.0],
+        },
     ]
 }

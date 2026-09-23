@@ -73,6 +73,7 @@ fn policy(method: u16) -> (Coalesce, u32) {
     match Method::from_u16(method) {
         Some(Method::ListDir) => (Coalesce::ByArgs, 8_000),
         Some(Method::Stat) => (Coalesce::ByArgs, 4_000),
+        Some(Method::Compile) => (Coalesce::ByArgs, 8_000),
         None => (Coalesce::None, 4_000),
     }
 }
@@ -282,6 +283,7 @@ fn map_server_error(code: u32) -> u32 {
         se::DENIED => rpc_error::DENIED,
         se::NOT_FOUND | se::NOT_A_DIRECTORY | se::IO => rpc_error::SERVER,
         se::UNKNOWN_METHOD | se::MALFORMED => rpc_error::DECODE,
+        se::NOT_A_CARGO_PROJECT | se::TIMEOUT => rpc_error::SERVER,
         _ => rpc_error::SERVER,
     }
 }
