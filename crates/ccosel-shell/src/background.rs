@@ -48,36 +48,18 @@ fn read_signal() -> Option<Signal> {
     })
 }
 
-/// Fetches the Bing image of the day and decodes it. The Bing API returns JSON with an `images`
-/// array whose first entry has a `url` field (relative path). This fetches the JSON, extracts the
-/// URL, then fetches the actual image.
-pub async fn fetch_bing_wallpaper() -> Result<egui::ColorImage, String> {
-    let json = crate::fetch::get_text(
-        "https://www.bing.com/HPImageArchive.aspx?format=js&idx=0&n=1&mkt=en-US",
-    )
-    .await?;
-
-    // Parse the image URL from JSON without serde: find "url":"<path>"
-    let url = extract_bing_url(&json).ok_or("bing: could not find image url in response")?;
-    let full_url = format!("https://www.bing.com{url}");
-
-    let bytes = crate::fetch::get_bytes(&full_url).await?;
-    let decoded =
-        image::load_from_memory(&bytes).map_err(|e| format!("decode bing wallpaper: {e}"))?;
+/// Fetches and decodes the wallpaper image, ready for `egui::Context::load_texture`. Only ever
+/// called when [`detect`] chose [`Background::Image`], so this is exactly the extra network
+/// traffic that choice implies — nothing is fetched when the connection looked too weak for it.
+pub async fn fetch_wallpaper(url: &str) -> Result<egui::ColorImage, String> {
+    let bytes = crate::fetch::get_bytes(url).await?;
+    let decoded = image::load_from_memory(&bytes).map_err(|e| format!("decode wallpaper: {e}"))?;
     let rgba = decoded.to_rgba8();
     let size = [rgba.width() as usize, rgba.height() as usize];
     Ok(egui::ColorImage::from_rgba_unmultiplied(
         size,
         rgba.as_raw(),
     ))
-}
-
-/// Extracts the `url` field from the Bing image archive JSON response.
-fn extract_bing_url(json: &str) -> Option<String> {
-    let marker = "\"url\":\"";
-    let start = json.find(marker)? + marker.len();
-    let end = json[start..].find('"')?;
-    Some(json[start..start + end].to_owned())
 }
 
 /// Draws a handful of soft, translucent circles: the "abstract shapes" background for a
