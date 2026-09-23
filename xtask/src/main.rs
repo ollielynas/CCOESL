@@ -423,13 +423,22 @@ fn test() -> Result<()> {
     step("tests: apps", &root.join("apps"), &["test", "--workspace"])
 }
 
-/// The browser backend's tests only exist on wasm32 (native `cargo test` reports 0 for them),
-/// and run under node via the runner configured in `.cargo/config.toml`.
+/// The browser backend's and the shell's tests only exist on wasm32 (native `cargo test`
+/// reports 0 for them, since both crates are `cfg(target_arch = "wasm32")`), and run under
+/// node via the runner configured in `.cargo/config.toml`.
 fn test_wasm() -> Result<()> {
     step(
-        "tests: browser backend, under node",
+        "tests: shell + browser backend, under node",
         &root(),
-        &["test", "-p", "ccosel-host-web", "--target", WASM],
+        &[
+            "test",
+            "-p",
+            "ccosel-shell",
+            "-p",
+            "ccosel-host-web",
+            "--target",
+            WASM,
+        ],
     )
 }
 
