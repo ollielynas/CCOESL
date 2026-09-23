@@ -258,6 +258,55 @@ fn go_up_at_root_stays_at_root() {
 }
 
 #[test]
+fn a_breadcrumb_jumps_straight_to_an_ancestor() {
+    let mut h = Harness::new(RustCompiler::default());
+    h.app.path = "/a/b/c".to_owned();
+    h.frame();
+    h.reply::<ListDir>(&listing(vec![]));
+    h.frame();
+    assert!(h.buttons().starts_with(&[
+        "\u{2b06} Up".to_owned(),
+        "\u{1f3e0}".to_owned(),
+        "a".to_owned(),
+        "b".to_owned(),
+        "c".to_owned(),
+    ]));
+
+    // Two frames, as clicking any button does: one for the app to observe the click and update
+    // `path`, one more for the resulting re-request to land on the wire.
+    h.click("a");
+    h.frame();
+    h.frame();
+    assert_eq!(h.app.path, "/a");
+
+    h.reply::<ListDir>(&listing(vec![]));
+    h.frame();
+    h.click("\u{1f3e0}");
+    h.frame();
+    h.frame();
+    assert_eq!(h.app.path, "/");
+}
+
+#[test]
+fn crumbs_run_from_the_root_down() {
+    let app = RustCompiler::default();
+    assert_eq!(app.crumbs(), [("\u{1f3e0}".to_owned(), "/".to_owned())]);
+
+    let app = RustCompiler {
+        path: "/a/b".to_owned(),
+        ..Default::default()
+    };
+    assert_eq!(
+        app.crumbs(),
+        [
+            ("\u{1f3e0}".to_owned(), "/".to_owned()),
+            ("a".to_owned(), "/a".to_owned()),
+            ("b".to_owned(), "/a/b".to_owned()),
+        ]
+    );
+}
+
+#[test]
 fn itoa_handles_zero_and_common_sizes() {
     assert_eq!(itoa(0), "0");
     assert_eq!(itoa(42), "42");

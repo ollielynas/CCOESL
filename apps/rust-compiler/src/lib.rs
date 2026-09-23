@@ -95,6 +95,20 @@ impl RustCompiler {
         }
         self.path.push_str(name);
     }
+
+    /// The path as a chain of `(label, full path)` breadcrumbs, root first. Mirrors the File
+    /// Browser's `crumbs`: a project worth building is often a few directories deep, and
+    /// getting there — or back to an ancestor — should be one click, not a string of "Up"s.
+    fn crumbs(&self) -> Vec<(String, String)> {
+        let mut out = vec![("🏠".to_owned(), "/".to_owned())];
+        let mut acc = String::new();
+        for seg in self.path.split('/').filter(|s| !s.is_empty()) {
+            acc.push('/');
+            acc.push_str(seg);
+            out.push((seg.to_owned(), acc.clone()));
+        }
+        out
+    }
 }
 
 /// The progress indicator, plus what cargo is chewing on right now.
@@ -166,6 +180,7 @@ impl App for RustCompiler {
         // Clicks are recorded here and acted on below: a request borrows `self.path`, and
         // navigation mutates it.
         let mut go_up = false;
+        let mut go_to: Option<String> = None;
         let mut enter: Option<String> = None;
         let mut build = false;
 
@@ -174,7 +189,23 @@ impl App for RustCompiler {
                 go_up = true;
             }
             ui.tooltip("Go to parent directory");
-            ui.label(self.path.as_str());
+        });
+
+        // A clickable trail, not just a path label: reaching a project a few directories deep
+        // — or backing out to one on the way — is one click instead of several "Up"s.
+        let crumbs = self.crumbs();
+        ui.horizontal(|ui| {
+            let last = crumbs.len() - 1;
+            for (i, (label, path)) in crumbs.iter().enumerate() {
+                ui.push_id(path.as_str(), |ui| {
+                    if ui.button(label.as_str()).clicked() {
+                        go_to = Some(path.clone());
+                    }
+                });
+                if i != last {
+                    ui.label("›");
+                }
+            }
         });
         ui.separator();
 
@@ -234,6 +265,9 @@ impl App for RustCompiler {
 
         if go_up {
             self.go_up();
+        }
+        if let Some(path) = go_to {
+            self.path = path;
         }
         if let Some(name) = enter {
             self.enter(&name);
