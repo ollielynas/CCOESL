@@ -19,13 +19,8 @@ use crate::http_wire::{HttpWire, Inbox};
 use crate::app_window::AppWindow;
 use crate::background;
 use crate::fetch;
+use crate::fullscreen;
 use crate::registry::{AppEntry, catalog};
-
-/// Where the wallpaper image is served from. A plain static file under `web/`, alongside
-/// `index.html` — `ServeDir` serves it with no server changes needed. Not content-addressed
-/// like app modules: it is small, changes rarely, and doesn't need cache-busting machinery for
-/// this feature to make sense.
-const WALLPAPER_URL: &str = "/wallpaper.png";
 
 /// A launch in flight, or its outcome. Launching is async (fetch + compile); the render loop
 /// is not, so results land here and the next frame picks them up.
@@ -106,7 +101,7 @@ impl Desktop {
         let pending = self.wallpaper_pending.clone();
         let ctx = self.egui_ctx.clone();
         wasm_bindgen_futures::spawn_local(async move {
-            let result = background::fetch_wallpaper(WALLPAPER_URL).await;
+            let result = background::fetch_bing_wallpaper().await;
             *pending.borrow_mut() = Some(result);
             // The fetch resolved outside the frame loop, so nothing would redraw on its own.
             ctx.request_repaint();
@@ -342,6 +337,20 @@ impl Desktop {
                     // Right-hand status. The per-frame byte count is the number this whole
                     // architecture is organised around, so it is worth keeping visible.
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        // Rightmost, like a system-tray icon: the one control here that isn't
+                        // status. The label reflects whatever state the browser is actually in,
+                        // since F11 or Escape can leave fullscreen without going through this
+                        // button at all.
+                        let icon = if fullscreen::is_active() {
+                            "⤡"
+                        } else {
+                            "⛶"
+                        };
+                        if ui.button(icon).on_hover_text("Toggle fullscreen").clicked() {
+                            fullscreen::toggle();
+                        }
+                        ui.separator();
+
                         let bytes: usize = self.windows.iter().map(|w| w.command_bytes()).sum();
                         ui.label(format!("{bytes} B/frame"));
                         ui.separator();
