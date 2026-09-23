@@ -8,6 +8,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use ccosel_connection::Background;
 use ccosel_host::AppHost;
 use ccosel_host_web::{WebHost, WebInstance};
 use ccosel_transport::{PendingKey, Transport};
@@ -16,8 +17,15 @@ use js_sys::WebAssembly;
 use crate::http_wire::{HttpWire, Inbox};
 
 use crate::app_window::AppWindow;
+use crate::background;
 use crate::fetch;
 use crate::registry::{AppEntry, catalog};
+
+/// Where the wallpaper image is served from. A plain static file under `web/`, alongside
+/// `index.html` — `ServeDir` serves it with no server changes needed. Not content-addressed
+/// like app modules: it is small, changes rarely, and doesn't need cache-busting machinery for
+/// this feature to make sense.
+const WALLPAPER_URL: &str = "/wallpaper.png";
 
 /// A launch in flight, or its outcome. Launching is async (fetch + compile); the render loop
 /// is not, so results land here and the next frame picks them up.
@@ -43,6 +51,18 @@ pub struct Desktop {
     transport: Transport,
     /// Replies land here from `fetch` callbacks and are applied at the top of the next frame.
     replies: Inbox,
+    /// Image or shapes (issue #3), decided once from the connection at boot rather than
+    /// re-checked every frame: `navigator.connection` can change mid-session, but re-deciding
+    /// continuously would mean a wallpaper that flickers between modes as the estimate jitters.
+    background: Background,
+    /// Set once the wallpaper image has been fetched and decoded, if `background` is
+    /// [`Background::Image`]. `None` either means it is still loading or that mode isn't
+    /// active — [`Self::wallpaper`] falls back to the drawn shapes in both cases, so a slow or
+    /// failed fetch degrades gracefully instead of leaving a blank background.
+    wallpaper_texture: Option<egui::TextureHandle>,
+    /// Landing spot for the async wallpaper fetch, mirroring `inbox`/`Launch` above: the fetch
+    /// resolves outside the frame loop, so its result is picked up at the top of the next one.
+    wallpaper_pending: Rc<RefCell<Option<Result<egui::ColorImage, String>>>>,
 }
 
 impl Desktop {
@@ -51,6 +71,7 @@ impl Desktop {
 
         let replies: Inbox = Rc::new(RefCell::new(Vec::new()));
         let wire = HttpWire::new("/rpc", replies.clone(), egui_ctx.clone());
+        let background = background::detect();
 
         let mut desktop = Self {
             registry: catalog(),
@@ -63,13 +84,51 @@ impl Desktop {
             egui_ctx,
             transport: Transport::new(Box::new(wire)),
             replies,
+            background,
+            wallpaper_texture: None,
+            wallpaper_pending: Rc::new(RefCell::new(None)),
         };
         // Open something on first boot: an empty desktop with no affordance is a worse first
         // impression than a window the user can close.
         if let Some(first) = desktop.registry.first().cloned() {
             desktop.launch(&first);
         }
+        if desktop.background == Background::Image {
+            desktop.load_wallpaper();
+        }
         desktop
+    }
+
+    /// Kicks off the async fetch+decode for the wallpaper image. Only called when `background`
+    /// is [`Background::Image`] — on a weak connection nothing here ever runs, which is the
+    /// whole point of deciding first and fetching second.
+    fn load_wallpaper(&self) {
+        let pending = self.wallpaper_pending.clone();
+        let ctx = self.egui_ctx.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            let result = background::fetch_wallpaper(WALLPAPER_URL).await;
+            *pending.borrow_mut() = Some(result);
+            // The fetch resolved outside the frame loop, so nothing would redraw on its own.
+            ctx.request_repaint();
+        });
+    }
+
+    /// Picks up the wallpaper fetch's result, if it has landed since the last frame, and turns
+    /// a decoded image into a GPU texture. Mirrors `drain_inbox` below for the same reason: the
+    /// async work finishes outside the frame loop.
+    fn drain_wallpaper(&mut self) {
+        let Some(result) = self.wallpaper_pending.borrow_mut().take() else {
+            return;
+        };
+        match result {
+            Ok(image) => {
+                let texture =
+                    self.egui_ctx
+                        .load_texture("wallpaper", image, egui::TextureOptions::default());
+                self.wallpaper_texture = Some(texture);
+            }
+            Err(err) => self.errors.push(format!("wallpaper: {err}")),
+        }
     }
 
     pub fn launch(&mut self, entry: &AppEntry) {
@@ -119,6 +178,7 @@ impl Desktop {
 
     pub fn ui(&mut self, ui: &mut egui::Ui) {
         self.drain_inbox();
+        self.drain_wallpaper();
         let ctx = ui.ctx().clone();
         let now_ms = ctx.input(|i| i.time) * 1000.0;
 
@@ -219,6 +279,22 @@ impl Desktop {
                         ),
                     );
                     painter.rect_filled(band, 0.0, lerp_color(top, bottom, t));
+                }
+
+                // Issue #3: image on a connection that looks like it can afford one, drawn
+                // shapes otherwise. `Image` mode falls back to the shapes too, silently, while
+                // the fetch is still in flight or if it failed — the gradient above already
+                // covers "nothing to show yet", so this is purely additional.
+                match (self.background, self.wallpaper_texture.as_ref()) {
+                    (Background::Image, Some(texture)) => {
+                        painter.image(
+                            texture.id(),
+                            rect,
+                            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                            egui::Color32::WHITE,
+                        );
+                    }
+                    _ => background::draw_shapes(painter, rect, dark),
                 }
 
                 if self.windows.is_empty() && *self.pending.borrow() == 0 {

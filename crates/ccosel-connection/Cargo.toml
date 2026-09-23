@@ -1,0 +1,6 @@
+[package]
+name = "ccosel-connection"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Pure logic: decide whether the desktop background should be an image or drawn shapes."

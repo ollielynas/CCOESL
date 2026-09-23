@@ -14,6 +14,7 @@ crate-type = ["cdylib", "rlib"]
 # without an x11 or wayland backend, so it fails to compile for Linux.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 ccosel-abi = { workspace = true }
+ccosel-connection = { workspace = true }
 ccosel-host = { workspace = true }
 ccosel-host-web = { path = "../ccosel-host-web" }
 ccosel-proto = { workspace = true }
@@ -26,6 +27,11 @@ eframe = { version = "0.36", default-features = false, features = ["glow", "defa
 log = { workspace = true }
 wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = { workspace = true }
-web-sys = { workspace = true, features = ["Window", "Document", "HtmlCanvasElement", "Request", "RequestInit", "Response", "Headers", "console"] }
+web-sys = { workspace = true, features = ["Window", "Document", "HtmlCanvasElement", "Request", "RequestInit", "Response", "Headers", "console", "Navigator", "NetworkInformation"] }
 js-sys = { workspace = true }
 console_error_panic_hook = "0.1"
+# Decodes the fetched wallpaper image client-side (issue #3): only when the connection looks
+# good enough to bother, so this never runs on a connection that couldn't afford the fetch
+# either. `png`-only: the placeholder wallpaper this ships is a PNG, and every extra format is
+# extra bytes in a shell that, unlike a guest app, does carry other genuinely heavy deps already.
+image = { version = "0.25", default-features = false, features = ["png"] }
