@@ -9,7 +9,8 @@ use axum::extract::State;
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use ccosel_proto::fs::ListDirReq;
-use ccosel_proto::{Method, WireReply, WireRequest, WireResult, server_error};
+use ccosel_proto::info::ServerInfoReply;
+use ccosel_proto::{Method, PROTO_VERSION, WireReply, WireRequest, WireResult, server_error};
 
 use crate::AppState;
 
@@ -76,5 +77,15 @@ fn dispatch(state: &AppState, req: &WireRequest<'_>) -> Outcome {
             }
         }
         Method::Stat => Outcome::Err(server_error::UNKNOWN_METHOD, String::new()),
+        Method::ServerInfo => {
+            let info = ServerInfoReply {
+                proto_version: PROTO_VERSION,
+                root: state.jail.root().display().to_string(),
+            };
+            match postcard::to_allocvec(&info) {
+                Ok(bytes) => Outcome::Ok(bytes),
+                Err(_) => Outcome::Err(server_error::IO, String::new()),
+            }
+        }
     }
 }
