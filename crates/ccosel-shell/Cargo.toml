@@ -26,6 +26,6 @@ eframe = { version = "0.36", default-features = false, features = ["glow", "defa
 log = { workspace = true }
 wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = { workspace = true }
-web-sys = { workspace = true, features = ["Window", "Document", "HtmlCanvasElement", "Request", "RequestInit", "Response", "Headers", "console"] }
+web-sys = { workspace = true, features = ["Window", "Document", "Element", "HtmlCanvasElement", "Request", "RequestInit", "Response", "Headers", "console"] }
 js-sys = { workspace = true }
 console_error_panic_hook = "0.1"
