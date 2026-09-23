@@ -32,6 +32,9 @@ use std::cell::RefCell;
 pub struct AppWindow<I: AppInstance> {
     pub title: String,
     pub icon: &'static str,
+    /// The app's own colour, from the registry — carried by every window of it so the desktop
+    /// can mark an app's icon with the same colour everywhere it appears.
+    pub color: egui::Color32,
     pub app_id: &'static str,
     /// Distinct per *instance*, not per app: two Files windows must not share egui state, or
     /// they would fight over scroll position and focus.
@@ -60,11 +63,13 @@ impl<I: AppInstance> AppWindow<I> {
         app_id: &'static str,
         title: String,
         icon: &'static str,
+        color: egui::Color32,
         default_size: [f32; 2],
     ) -> Self {
         Self {
             title,
             icon,
+            color,
             app_id,
             instance_id,
             open: true,

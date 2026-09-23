@@ -20,6 +20,7 @@ ccosel-proto = { workspace = true }
 ccosel-transport = { workspace = true }
 postcard = { workspace = true }
 egui = { workspace = true }
+egui-phosphor = "0.14"
 # Not inherited from the workspace: the web build wants none of eframe's defaults (wgpu,
 # accesskit, winit, x11, wayland). glow is the lighter of the two web renderers.
 eframe = { version = "0.36", default-features = false, features = ["glow", "default_fonts"] }
@@ -29,3 +30,8 @@ wasm-bindgen-futures = { workspace = true }
 web-sys = { workspace = true, features = ["Window", "Document", "HtmlCanvasElement", "Request", "RequestInit", "Response", "Headers", "console"] }
 js-sys = { workspace = true }
 console_error_panic_hook = "0.1"
+
+# Same wasm32 gate as the main dependencies above, and for the same reason: a native
+# `cargo test --workspace` must not need this pulled in at all.
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"
