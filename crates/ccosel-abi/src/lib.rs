@@ -36,7 +36,16 @@ pub use opcode::OpCode;
 /// Bumped on any incompatible change to the command stream, the frame structs, or the
 /// guest export list. The shell refuses to instantiate a module whose
 /// `ccosel_abi_version()` does not match.
-pub const ABI_VERSION: u32 = 2;
+///
+/// New opcodes (here: `UploadFolder`, `OpenUrl`) bump this. That is *not* the RPC-method case
+/// documented in `ARCHITECTURE.md` ("adding a method never bumps `ABI_VERSION`") — an RPC
+/// method's payload is opaque bytes this crate never inspects, so an old shell decodes it fine
+/// without knowing what it means. An opcode is different: it is a variant of `Cmd`, and the
+/// doc comment above already names "the command stream" as a bump condition. An old shell's
+/// decoder does not have the new `OpCode::from_u8` arm at all, so a cached module built against
+/// the new SDK would make it return `UnknownOpcode` and discard the whole frame — the version
+/// check exists precisely to turn that silent, confusing failure into a clean refusal to load.
+pub const ABI_VERSION: u32 = 3;
 
 /// Maximum scope nesting a guest may emit. Bounds the host's `Vec<egui::Ui>` stack so a
 /// malicious or buggy guest cannot drive it into unbounded recursion.
