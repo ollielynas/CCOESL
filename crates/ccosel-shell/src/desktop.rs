@@ -19,6 +19,7 @@ use crate::http_wire::{HttpWire, Inbox};
 use crate::app_window::AppWindow;
 use crate::background;
 use crate::fetch;
+use crate::fullscreen;
 use crate::registry::{AppEntry, catalog};
 
 /// A launch in flight, or its outcome. Launching is async (fetch + compile); the render loop
@@ -336,6 +337,20 @@ impl Desktop {
                     // Right-hand status. The per-frame byte count is the number this whole
                     // architecture is organised around, so it is worth keeping visible.
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        // Rightmost, like a system-tray icon: the one control here that isn't
+                        // status. The label reflects whatever state the browser is actually in,
+                        // since F11 or Escape can leave fullscreen without going through this
+                        // button at all.
+                        let icon = if fullscreen::is_active() {
+                            "⤡"
+                        } else {
+                            "⛶"
+                        };
+                        if ui.button(icon).on_hover_text("Toggle fullscreen").clicked() {
+                            fullscreen::toggle();
+                        }
+                        ui.separator();
+
                         let bytes: usize = self.windows.iter().map(|w| w.command_bytes()).sum();
                         ui.label(format!("{bytes} B/frame"));
                         ui.separator();
