@@ -14,6 +14,7 @@ mod app_window;
 mod background;
 mod desktop;
 mod fetch;
+mod fullscreen;
 mod http_wire;
 mod registry;
 
