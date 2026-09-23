@@ -286,9 +286,25 @@ impl Desktop {
                 // covers "nothing to show yet", so this is purely additional.
                 match (self.background, self.wallpaper_texture.as_ref()) {
                     (Background::Image, Some(texture)) => {
+                        // Center-crop: scale the image to cover the viewport, then sample
+                        // the center, like CSS `object-fit: cover`.
+                        let size = texture.size();
+                        let img_w = size[0] as f32;
+                        let img_h = size[1] as f32;
+                        let rect_w = rect.width();
+                        let rect_h = rect.height();
+                        let scale = (rect_w / img_w).max(rect_h / img_h);
+                        let draw_w = img_w * scale;
+                        let draw_h = img_h * scale;
+                        let offset_x = (rect_w - draw_w) * 0.5;
+                        let offset_y = (rect_h - draw_h) * 0.5;
+                        let draw_rect = egui::Rect::from_min_size(
+                            rect.min + egui::vec2(offset_x, offset_y),
+                            egui::vec2(draw_w, draw_h),
+                        );
                         painter.image(
                             texture.id(),
-                            rect,
+                            draw_rect,
                             egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
                             egui::Color32::WHITE,
                         );
