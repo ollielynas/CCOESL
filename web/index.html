@@ -33,10 +33,38 @@
 <script type="module">
   const boot = document.getElementById('boot');
   const statusEl = document.getElementById('status');
+  const bar = document.getElementById('bar');
   const fill = document.getElementById('fill');
   const note = document.getElementById('note');
 
   const SHELL = './dist/ccosel-shell_bg.wasm';
+
+  // Whether this server has approved-account login turned on, and whether this browser is
+  // already signed in — `/auth/*` exists independently of the wasm shell (see
+  // `crates/ccosel-server/src/auth.rs`), since a top-level OAuth redirect can't go through the
+  // guest-app protocol. An operator who has not set up an OAuth app yet gets `configured:
+  // false`, and the desktop boots exactly as it did before this existed.
+  async function checkAuth() {
+    try {
+      const res = await fetch('/auth/me', { credentials: 'same-origin' });
+      if (!res.ok) return { configured: false, authenticated: true };
+      return await res.json();
+    } catch {
+      // Fail open: an unreachable /auth/me must not be indistinguishable from "sign in
+      // required", or a network hiccup locks out a session that was fine a moment ago.
+      return { configured: false, authenticated: true };
+    }
+  }
+
+  function showSignIn() {
+    statusEl.textContent = 'Sign in required';
+    bar.style.display = 'none';
+    note.textContent = 'This server only allows approved accounts.';
+    const signIn = document.createElement('button');
+    signIn.textContent = 'Sign in with Keycloak';
+    signIn.onclick = () => { location.href = '/auth/login'; };
+    boot.appendChild(signIn);
+  }
 
   function human(n) {
     return n > 1048576 ? (n / 1048576).toFixed(1) + ' MB' : Math.round(n / 1024) + ' KB';
@@ -81,7 +109,16 @@
     await start(document.getElementById('canvas'));
   }
 
-  boot_().catch((err) => {
+  async function main() {
+    const auth = await checkAuth();
+    if (auth.configured && !auth.authenticated) {
+      showSignIn();
+      return;
+    }
+    await boot_();
+  }
+
+  main().catch((err) => {
     // A dropped connection mid-download is expected on this network, not exceptional. Offer
     // the retry rather than leaving a dead page.
     statusEl.textContent = 'Failed to start';

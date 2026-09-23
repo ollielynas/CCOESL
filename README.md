@@ -36,3 +36,43 @@ The user can uplaod a project directory or select a project from the server file
 Plan to support
 - C / C++
 - Rust
+
+## Auth
+
+The server can gate itself behind Keycloak OAuth plus an approved-account list. It's off by
+default — a checkout with nothing configured runs exactly as before.
+
+1. Start Keycloak locally:
+
+   ```sh
+   docker run -d -p 8080:8080 -e KEYCLOAK_ADMIN=admin -e KEYCLOAK_ADMIN_PASSWORD=admin \
+     quay.io/keycloak/keycloak start-dev
+   ```
+
+2. Open the Keycloak admin console at `http://localhost:8080` (admin/admin). Create a realm
+   (e.g. `ccosel`), then create a client:
+   - Client type: `OpenID Connect`
+   - Valid redirect URIs: `http://localhost:8777/auth/callback`
+   - Web origins: `http://localhost:8777`
+   - Access type: `public` (no client secret needed)
+   Note the **Client ID** from the Settings tab.
+
+3. Copy `data/approved_users.example.txt` to `data/approved_users.txt` and list the Keycloak
+   usernames allowed to sign in, one per line.
+
+4. Start the server with the Keycloak credentials:
+
+   ```sh
+   CCOSEL_KEYCLOAK_URL=http://localhost:8080/realms/ccosel \
+   CCOSEL_KEYCLOAK_CLIENT_ID=ccosel \
+   cargo xtask serve
+   ```
+
+   If you created a confidential client instead, add the secret:
+
+   ```sh
+   CCOSEL_KEYCLOAK_CLIENT_SECRET=... cargo xtask serve
+   ```
+
+`--approved-users <path>` overrides the list's location. Sessions live in server memory only —
+a restart signs everyone out.
