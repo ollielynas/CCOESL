@@ -118,6 +118,9 @@ impl App for FileBrowser {
             if ui.button("⟳ Refresh").clicked() {
                 refresh = true;
             }
+            if ui.upload_folder().clicked() {
+                // Upload handled by the shell; nothing to do here.
+            }
         });
 
         // A clickable trail, not just a path label: jumping to an ancestor is one click instead
@@ -220,6 +223,14 @@ impl App for FileBrowser {
                                 }
                                 if !entry.is_dir() {
                                     ui.label(format!("· {}", human_size(entry.size)).as_str());
+                                    let download_url = format!(
+                                        "/files{}{}",
+                                        if self.path.ends_with('/') { "" } else { "/" },
+                                        entry.name
+                                    );
+                                    if ui.open_url("Download", &download_url).clicked() {
+                                        // Download handled by the shell (opens in new tab).
+                                    }
                                 }
                             });
                         });
