@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use ccosel_proto::fs::{DirListing, ListDirReq};
 use ccosel_proto::{Method, WireReply, WireRequest, WireResult, server_error};
+use ccosel_server::auth::AuthState;
 use ccosel_server::fs_api::Jail;
 
 async fn spawn() -> SocketAddr {
@@ -24,7 +25,7 @@ async fn spawn() -> SocketAddr {
     fs::write(dir.join("hello.txt"), b"hi").unwrap();
 
     let jail = Jail::new(&dir).unwrap();
-    let app = ccosel_server::app(jail, dir.clone());
+    let app = ccosel_server::app(jail, dir.clone(), AuthState::default());
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
