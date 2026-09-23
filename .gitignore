@@ -4,3 +4,5 @@
 /web/dist
 # Per-machine Claude Code permissions; the shared settings.json is committed.
 /.claude/settings.local.json
+# Per-deployment: who is allowed to sign in. See data/approved_users.example.txt.
+/data/approved_users.txt
