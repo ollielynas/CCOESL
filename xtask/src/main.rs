@@ -79,8 +79,13 @@ fn help() {
     );
 }
 
+/// The workspace xtask was run from. `cargo run` sets `CARGO_MANIFEST_DIR` at runtime, which is
+/// preferred over the compile-time value: worktrees sharing a target dir reuse one binary, and
+/// the baked-in path can name a worktree that has since been deleted.
 fn root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    std::env::var_os("CARGO_MANIFEST_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")))
         .parent()
         .unwrap()
         .to_path_buf()
