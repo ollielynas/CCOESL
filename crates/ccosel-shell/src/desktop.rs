@@ -17,8 +17,25 @@ use crate::http_wire::{HttpWire, Inbox};
 
 use crate::app_window::AppWindow;
 use crate::fetch;
+use crate::fullscreen;
 use crate::registry::{AppEntry, catalog};
 use crate::theme;
+
+/// Dock badge geometry, shared between `dock_item` (which paints it) and `app_menu` (which
+/// needs to know the dock's on-screen height so its popup can sit above it without overlapping).
+const DOCK_BADGE: f32 = 42.0;
+const DOCK_LIFT: f32 = 5.0;
+/// Room under the badge for the running pill, plus the headroom the lift needs.
+const DOCK_GUTTER: f32 = 8.0;
+/// Matches the dock frame's `inner_margin` (`Margin::symmetric(10, 6)`): 6px top and bottom.
+const DOCK_FRAME_MARGIN_V: f32 = 6.0;
+/// Matches the dock area's own anchor offset: how far its bottom edge sits above the screen's.
+const DOCK_BOTTOM_OFFSET: f32 = 16.0;
+/// The dock's total on-screen height: badge, lift headroom, pill gutter, and the frame's
+/// vertical margin on both edges.
+const DOCK_HEIGHT: f32 = DOCK_BADGE + DOCK_LIFT + DOCK_GUTTER + DOCK_FRAME_MARGIN_V * 2.0;
+/// Clear space between the dock's top edge and the app menu popup above it.
+const MENU_GAP: f32 = 12.0;
 
 /// A launch in flight, or its outcome. Launching is async (fetch + compile); the render loop
 /// is not, so results land here and the next frame picks them up.
@@ -226,6 +243,25 @@ impl Desktop {
                         ui.label(egui::RichText::new("CCOSEL").color(p.text));
 
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            // Rightmost, like a system-tray icon: the one control here that
+                            // isn't status. The icon reflects whatever state the browser is
+                            // actually in, since F11 or Escape can leave fullscreen without
+                            // going through this button at all.
+                            let icon = if fullscreen::is_active() {
+                                egui_phosphor::regular::ARROWS_IN
+                            } else {
+                                egui_phosphor::regular::ARROWS_OUT
+                            };
+                            if ui
+                                .add(egui::Button::new(
+                                    egui::RichText::new(icon).size(13.0).color(p.text_dim),
+                                ))
+                                .on_hover_text("Toggle fullscreen")
+                                .clicked()
+                            {
+                                fullscreen::toggle();
+                            }
+
                             if !self.errors.is_empty() {
                                 ui.label(
                                     egui::RichText::new(egui_phosphor::regular::WARNING)
@@ -293,32 +329,60 @@ impl Desktop {
                 color: p.shadow,
             });
 
+        // Anchored the same distance above the dock's own top edge (dock height + its own
+        // anchor offset) plus a fixed gap, computed from the dock's real geometry rather than a
+        // guessed constant, so the two can never drift back into overlapping.
+        let menu_bottom_offset = DOCK_BOTTOM_OFFSET + DOCK_HEIGHT + MENU_GAP;
+
         egui::Area::new(egui::Id::new("app-menu"))
-            .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -80.0))
+            .anchor(
+                egui::Align2::CENTER_BOTTOM,
+                egui::vec2(0.0, -menu_bottom_offset),
+            )
             .order(egui::Order::Foreground)
             .show(ctx, |ui| {
                 frame.show(ui, |ui| {
                     ui.vertical(|ui| {
                         ui.set_min_width(200.0);
                         for entry in &self.registry {
-                            let row = ui.horizontal(|ui| {
-                                ui.spacing_mut().item_spacing.x = 10.0;
-                                // App badge.
+                            // Allocate the *whole* row as one click target first, then paint the
+                            // badge and label into it, so there is no separate `ui.label` widget
+                            // sitting on top able to swallow the click before the row sees it —
+                            // any point in the row launches the app, not just the icon glyph.
+                            let row_size = egui::vec2(ui.available_width(), 32.0);
+                            let (rect, response) =
+                                ui.allocate_exact_size(row_size, egui::Sense::click());
+
+                            if ui.is_rect_visible(rect) {
+                                if response.hovered() {
+                                    ui.painter().rect_filled(
+                                        rect,
+                                        egui::CornerRadius::same(8),
+                                        p.surface_hover,
+                                    );
+                                }
+
                                 let badge_rect = egui::Rect::from_center_size(
-                                    ui.cursor().min + egui::vec2(16.0, 16.0),
+                                    egui::pos2(rect.min.x + 16.0, rect.center().y),
                                     egui::vec2(32.0, 32.0),
                                 );
-                                ui.allocate_space(egui::vec2(32.0, 32.0));
                                 theme::paint_badge(
                                     ui.painter(),
                                     badge_rect,
                                     entry.icon,
                                     entry.color,
                                 );
-                                // App name.
-                                ui.label(egui::RichText::new(entry.name).color(p.text).size(14.0));
-                            });
-                            if row.response.interact(egui::Sense::click()).clicked() {
+
+                                ui.painter().text(
+                                    egui::pos2(rect.min.x + 42.0, rect.center().y),
+                                    egui::Align2::LEFT_CENTER,
+                                    entry.name,
+                                    egui::FontId::proportional(14.0),
+                                    p.text,
+                                );
+                            }
+
+                            if response.clicked() {
                                 to_launch = Some(entry.clone());
                                 self.app_menu_open = false;
                             }
@@ -345,7 +409,7 @@ impl Desktop {
             .fill(theme::glass(p))
             .stroke(egui::Stroke::new(1.0, theme::glass_border(p)))
             .corner_radius(egui::CornerRadius::same(22))
-            .inner_margin(egui::Margin::symmetric(10, 6))
+            .inner_margin(egui::Margin::symmetric(10, DOCK_FRAME_MARGIN_V as i8))
             .shadow(egui::Shadow {
                 offset: [0, 12],
                 blur: 36,
@@ -354,7 +418,10 @@ impl Desktop {
             });
 
         egui::Area::new(egui::Id::new("dock"))
-            .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -16.0))
+            .anchor(
+                egui::Align2::CENTER_BOTTOM,
+                egui::vec2(0.0, -DOCK_BOTTOM_OFFSET),
+            )
             .order(egui::Order::Foreground)
             .show(ctx, |ui| {
                 frame.show(ui, |ui| {
@@ -469,13 +536,8 @@ fn dock_item(
     tooltip: &str,
     running: bool,
 ) -> egui::Response {
-    const BADGE: f32 = 42.0;
-    const LIFT: f32 = 5.0;
-    /// Room under the badge for the running pill, plus the headroom the lift needs.
-    const GUTTER: f32 = 8.0;
-
     let (rect, response) = ui.allocate_exact_size(
-        egui::vec2(BADGE + 10.0, BADGE + LIFT + GUTTER),
+        egui::vec2(DOCK_BADGE + 10.0, DOCK_BADGE + DOCK_LIFT + DOCK_GUTTER),
         egui::Sense::click(),
     );
 
@@ -483,11 +545,11 @@ fn dock_item(
         let t = ui
             .ctx()
             .animate_bool_responsive(response.id, response.hovered());
-        let size = BADGE + 5.0 * t;
+        let size = DOCK_BADGE + 5.0 * t;
         let badge = egui::Rect::from_center_size(
             egui::pos2(
                 rect.center().x,
-                rect.bottom() - GUTTER - BADGE / 2.0 - LIFT * t,
+                rect.bottom() - DOCK_GUTTER - DOCK_BADGE / 2.0 - DOCK_LIFT * t,
             ),
             egui::vec2(size, size),
         );
