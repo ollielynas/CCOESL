@@ -19,6 +19,7 @@ use crate::app_window::AppWindow;
 use crate::fetch;
 use crate::fullscreen;
 use crate::registry::{AppEntry, catalog};
+use crate::theme;
 
 /// A launch in flight, or its outcome. Launching is async (fetch + compile); the render loop
 /// is not, so results land here and the next frame picks them up.
@@ -48,7 +49,7 @@ pub struct Desktop {
 
 impl Desktop {
     pub fn new(egui_ctx: egui::Context) -> Self {
-        apply_style(&egui_ctx);
+        theme::apply(&egui_ctx);
 
         let replies: Inbox = Rc::new(RefCell::new(Vec::new()));
         let wire = HttpWire::new("/rpc", replies.clone(), egui_ctx.clone());
@@ -132,15 +133,16 @@ impl Desktop {
         // Expire deadlines and reap calls belonging to windows that have gone.
         self.transport.tick(now_ms);
 
+        theme::paint_wallpaper(&ctx);
         self.taskbar(ui);
-        self.wallpaper(ui);
+        self.empty_state(ui);
 
         // Closing a window drops the instance, which is the only way to reclaim a guest's
         // memory — wasm linear memory cannot shrink, so a live instance holds its high-water
         // mark forever.
         for window in &mut self.windows {
             let mut open = window.open;
-            egui::Window::new(format!("{}  {}", window.icon, window.title))
+            egui::Window::new(icon_title(window.icon, window.color, &window.title))
                 .id(egui::Id::new(("app-window", window.instance_id)))
                 .default_size(window.default_size)
                 .open(&mut open)
@@ -190,38 +192,12 @@ impl Desktop {
         self.windows.retain(|w| w.open);
     }
 
-    fn wallpaper(&mut self, ui: &mut egui::Ui) {
+    /// What the desktop says when nothing is open. `theme::paint_wallpaper` already covers the
+    /// background layer beneath this, so all that is left is the affordance.
+    fn empty_state(&self, ui: &mut egui::Ui) {
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
             .show(ui, |ui| {
-                let rect = ui.max_rect();
-                let painter = ui.painter();
-                let dark = ui.visuals().dark_mode;
-                let (top, bottom) = if dark {
-                    (
-                        egui::Color32::from_rgb(0x1a, 0x1f, 0x2b),
-                        egui::Color32::from_rgb(0x10, 0x12, 0x18),
-                    )
-                } else {
-                    (
-                        egui::Color32::from_rgb(0xdd, 0xe4, 0xef),
-                        egui::Color32::from_rgb(0xc3, 0xcd, 0xdd),
-                    )
-                };
-                // A cheap vertical gradient: a handful of bands, no texture upload.
-                let bands = 48;
-                for i in 0..bands {
-                    let t = i as f32 / bands as f32;
-                    let band = egui::Rect::from_min_max(
-                        egui::pos2(rect.min.x, rect.min.y + rect.height() * t),
-                        egui::pos2(
-                            rect.max.x,
-                            rect.min.y + rect.height() * (t + 1.0 / bands as f32) + 1.0,
-                        ),
-                    );
-                    painter.rect_filled(band, 0.0, lerp_color(top, bottom, t));
-                }
-
                 if self.windows.is_empty() && *self.pending.borrow() == 0 {
                     ui.centered_and_justified(|ui| {
                         ui.label("Open an app from the taskbar");
@@ -231,19 +207,21 @@ impl Desktop {
     }
 
     fn taskbar(&mut self, ui: &mut egui::Ui) {
+        let p = theme::palette(ui.ctx());
         let mut to_launch: Option<AppEntry> = None;
         let mut to_focus: Option<u64> = None;
 
+        // No explicit border is painted here: the panel's own separator line, drawn from
+        // `widgets.noninteractive.bg_stroke` (the palette's `border`), already runs along its
+        // top edge, which is exactly the "top border" the taskbar wants.
         egui::Panel::bottom("taskbar")
-            .exact_size(40.0)
+            .exact_size(44.0)
             .show(ui, |ui| {
                 ui.horizontal_centered(|ui| {
                     ui.menu_button("  Apps  ", |ui| {
                         for entry in &self.registry {
-                            if ui
-                                .button(format!("{}  {}", entry.icon, entry.name))
-                                .clicked()
-                            {
+                            let label = icon_title(entry.icon, entry.color, entry.name);
+                            if ui.button(label).clicked() {
                                 to_launch = Some(entry.clone());
                                 ui.close();
                             }
@@ -253,7 +231,7 @@ impl Desktop {
                     ui.separator();
 
                     for window in &self.windows {
-                        let label = format!("{}  {}", window.icon, window.title);
+                        let label = icon_title(window.icon, window.color, &window.title);
                         if ui.button(label).clicked() {
                             to_focus = Some(window.instance_id);
                         }
@@ -282,14 +260,17 @@ impl Desktop {
                         ui.separator();
 
                         let bytes: usize = self.windows.iter().map(|w| w.command_bytes()).sum();
-                        ui.label(format!("{bytes} B/frame"));
+                        ui.label(status_text(format!("{bytes} B/frame"), p));
                         ui.separator();
-                        ui.label(format!("{} running", self.windows.len()));
+                        ui.label(status_text(format!("{} running", self.windows.len()), p));
                         if !self.errors.is_empty() {
                             ui.separator();
                             let msg = self.errors.join("\n");
-                            ui.colored_label(egui::Color32::from_rgb(0xd9, 0x64, 0x5b), "!")
-                                .on_hover_text(msg);
+                            ui.label(
+                                egui::RichText::new(egui_phosphor::regular::WARNING)
+                                    .color(ui.visuals().error_fg_color),
+                            )
+                            .on_hover_text(msg);
                         }
                     });
                 });
@@ -340,34 +321,38 @@ async fn launch_inner(
         entry.id,
         entry.name.to_owned(),
         entry.icon,
+        entry.color,
         entry.default_size,
     ))
 }
 
-/// Rounder corners and more breathing room than egui's defaults. Every app in the system
-/// draws through this one shared `egui::Ui`, so a single style pass here is what keeps
-/// windows, buttons and menus looking like one coherent product instead of a widget gallery.
-fn apply_style(ctx: &egui::Context) {
-    ctx.all_styles_mut(|style| {
-        style.spacing.item_spacing = egui::vec2(8.0, 8.0);
-        style.spacing.button_padding = egui::vec2(10.0, 6.0);
-        style.spacing.window_margin = egui::Margin::same(10);
-        style.spacing.menu_margin = egui::Margin::same(6);
-
-        let window_radius = egui::CornerRadius::same(10);
-        style.visuals.window_corner_radius = window_radius;
-        style.visuals.menu_corner_radius = window_radius;
-
-        let widget_radius = egui::CornerRadius::same(6);
-        style.visuals.widgets.noninteractive.corner_radius = widget_radius;
-        style.visuals.widgets.inactive.corner_radius = widget_radius;
-        style.visuals.widgets.hovered.corner_radius = widget_radius;
-        style.visuals.widgets.active.corner_radius = widget_radius;
-        style.visuals.widgets.open.corner_radius = widget_radius;
-    });
+/// `WidgetText` for a window title or taskbar entry: the app's Phosphor icon in its own
+/// colour, followed by its name in whatever colour the surrounding widget would normally use.
+/// Built as one `LayoutJob` rather than two widgets, so it drops into anything that takes a
+/// title — window titles included, which can't host a custom-painted child. This, plus the
+/// registry's per-app colour, is what "brighter app badge colours" means here: every app's
+/// mark carries its own colour everywhere it appears, rather than one uniform grey label.
+fn icon_title(icon: &str, color: egui::Color32, text: &str) -> egui::WidgetText {
+    let mut job = egui::text::LayoutJob::default();
+    job.append(
+        icon,
+        0.0,
+        egui::TextFormat {
+            color,
+            ..Default::default()
+        },
+    );
+    job.append(
+        &format!("  {text}"),
+        0.0,
+        egui::TextFormat {
+            color: egui::Color32::PLACEHOLDER,
+            ..Default::default()
+        },
+    );
+    job.into()
 }
 
-fn lerp_color(a: egui::Color32, b: egui::Color32, t: f32) -> egui::Color32 {
-    let l = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t) as u8;
-    egui::Color32::from_rgb(l(a.r(), b.r()), l(a.g(), b.g()), l(a.b(), b.b()))
+fn status_text(text: String, p: &theme::Palette) -> egui::RichText {
+    egui::RichText::new(text).small().color(p.text_dim)
 }
