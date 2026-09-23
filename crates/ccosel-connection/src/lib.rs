@@ -60,7 +60,9 @@ pub enum Background {
 /// - Without `effective_type`, `downlink_mbps >= 1.5` counts as good — roughly the floor the
 ///   Network Information spec itself uses for its own `"4g"` bucket.
 /// - With no usable signal at all (the common case today: Firefox and Safari do not implement
-///   the API), the connection is `Unknown` rather than assumed good or bad.
+///   the API), the connection defaults to `Good` — this is a LAN app where most users have
+///   fast, reliable connections, so assuming the worst would leave the wallpaper permanently
+///   disabled for a large portion of the user base.
 pub fn classify(signal: &Signal) -> Quality {
     if signal.save_data {
         return Quality::Poor;
@@ -69,7 +71,17 @@ pub fn classify(signal: &Signal) -> Quality {
         return match effective_type {
             "4g" => Quality::Good,
             "slow-2g" | "2g" | "3g" => Quality::Poor,
-            _ => Quality::Unknown,
+            _ => {
+                // Unrecognised bucket — fall through to check downlink rather than giving up.
+                if let Some(downlink) = signal.downlink_mbps {
+                    return if downlink >= 1.5 {
+                        Quality::Good
+                    } else {
+                        Quality::Poor
+                    };
+                }
+                Quality::Good
+            }
         };
     }
     if let Some(downlink) = signal.downlink_mbps {
@@ -79,7 +91,7 @@ pub fn classify(signal: &Signal) -> Quality {
             Quality::Poor
         };
     }
-    Quality::Unknown
+    Quality::Good
 }
 
 /// Turns a [`Quality`] into a background choice. `Unknown` draws shapes rather than risk an
@@ -110,10 +122,10 @@ mod tests {
     }
 
     #[test]
-    fn no_signal_at_all_is_unknown_and_draws_shapes() {
+    fn no_signal_at_all_defaults_to_good() {
         let s = signal(None, None, false);
-        assert_eq!(classify(&s), Quality::Unknown);
-        assert_eq!(choose(&s), Background::Shapes);
+        assert_eq!(classify(&s), Quality::Good);
+        assert_eq!(choose(&s), Background::Image);
     }
 
     #[test]
@@ -133,11 +145,16 @@ mod tests {
     }
 
     #[test]
-    fn an_unrecognised_effective_type_is_unknown() {
-        let s = signal(Some("bluetooth"), Some(50.0), false);
-        // effective_type is present but not one of the four buckets: treated as unknown, and
-        // downlink is not consulted as a fallback (effective_type, once present, is trusted).
-        assert_eq!(classify(&s), Quality::Unknown);
+    fn an_unrecognised_effective_type_falls_through_to_downlink() {
+        let fast = signal(Some("bluetooth"), Some(50.0), false);
+        assert_eq!(classify(&fast), Quality::Good);
+
+        let slow = signal(Some("bluetooth"), Some(0.5), false);
+        assert_eq!(classify(&slow), Quality::Poor);
+
+        // No downlink either → defaults to Good (LAN assumption).
+        let neither = signal(Some("bluetooth"), None, false);
+        assert_eq!(classify(&neither), Quality::Good);
     }
 
     #[test]
