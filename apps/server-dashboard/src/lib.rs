@@ -1,42 +1,38 @@
 //! The Server Dashboard app.
 //!
-//! Surfaces the state `ccosel-server` actually holds today: which protocol it speaks, which
-//! directory it is serving files from ([`ServerInfo`]), and what is currently in that shared
-//! jail ([`ListDir`], the same query the File Browser uses). A Refresh button forces the server
-//! to be asked again rather than trusting a stale cache, which is the one piece of "managing"
-//! the server supports right now — it exposes no other runtime-mutable state (no jobs, no
-//! connected-client registry) as of this writing. This app is meant to grow into those as the
-//! server grows them, not to invent management surface the server does not have.
+//! A live stats panel: polls the server periodically and shows protocol info, storage usage,
+//! and uptime. No file browser — that's the File Browser app's job.
 
-use ccosel_proto::fs::{EntryKind, ListDir, ListDirReq};
+use ccosel_proto::fs::{ListDir, ListDirReq};
 use ccosel_proto::info::{ServerInfo, ServerInfoReq};
 use ccosel_sdk::{App, Poll, Ui};
 
+/// How often to re-ask the server, in milliseconds.
+const REFRESH_INTERVAL_MS: f64 = 3000.0;
+
 pub struct ServerDashboard {
-    /// The directory currently being inspected under the jail root.
-    path: String,
+    last_refresh_ms: f64,
+    /// Monotonic timestamp of the first successful `ServerInfo` response, for uptime.
+    started_at_ms: Option<f64>,
+    /// Cached storage stats from the last successful `ListDir("/")` response.
+    total_dirs: usize,
+    total_files: usize,
+    total_bytes: u64,
 }
 
 impl Default for ServerDashboard {
     fn default() -> Self {
         Self {
-            path: "/".to_owned(),
+            last_refresh_ms: 0.0,
+            started_at_ms: None,
+            total_dirs: 0,
+            total_files: 0,
+            total_bytes: 0,
         }
     }
 }
 
-/// A single glyph per kind, matching the convention the File Browser and the shell's app icons
-/// already use.
-fn icon_for(kind: EntryKind) -> &'static str {
-    match kind {
-        EntryKind::Dir => "📁",
-        EntryKind::Symlink => "🔗",
-        EntryKind::File | EntryKind::Other => "📄",
-    }
-}
-
-/// Human-readable size without touching float `Display`, which would drag 20-40 KB of
-/// float-formatting machinery into a module every user downloads.
+/// Human-readable size without touching float `Display`.
 fn human_size(bytes: u64) -> String {
     let (n, unit) = if bytes >= 1 << 20 {
         (bytes / (1 << 20), "M")
@@ -65,52 +61,55 @@ fn itoa(mut n: u64) -> String {
     String::from_utf8_lossy(&buf[i..]).into_owned()
 }
 
-impl ServerDashboard {
-    fn go_up(&mut self) {
-        if self.path == "/" {
-            return;
-        }
-        match self.path.rfind('/') {
-            Some(0) | None => self.path = "/".to_owned(),
-            Some(i) => self.path.truncate(i),
-        }
+/// Format milliseconds as `MM:SS`.
+fn format_uptime(ms: f64) -> String {
+    let secs = (ms / 1000.0) as u64;
+    let m = secs / 60;
+    let s = secs % 60;
+    let mut out = String::new();
+    out.push_str(itoa(m).as_str());
+    out.push(':');
+    if s < 10 {
+        out.push('0');
     }
-
-    fn enter(&mut self, name: &str) {
-        if !self.path.ends_with('/') {
-            self.path.push('/');
-        }
-        self.path.push_str(name);
-    }
-
-    /// The path as a chain of `(label, full path)` breadcrumbs, root first.
-    fn crumbs(&self) -> Vec<(String, String)> {
-        let mut out = vec![("🏠".to_owned(), "/".to_owned())];
-        let mut acc = String::new();
-        for seg in self.path.split('/').filter(|s| !s.is_empty()) {
-            acc.push('/');
-            acc.push_str(seg);
-            out.push((seg.to_owned(), acc.clone()));
-        }
-        out
-    }
+    out.push_str(itoa(s).as_str());
+    out
 }
 
 impl App for ServerDashboard {
     fn update(&mut self, ui: &mut Ui<'_>) {
+        let now = ui.ctx().time_ms;
+
+        // Auto-refresh: re-ask the server periodically.
+        if now - self.last_refresh_ms >= REFRESH_INTERVAL_MS {
+            self.last_refresh_ms = now;
+            ui.rpc().invalidate::<ServerInfo>(&ServerInfoReq);
+            ui.rpc().invalidate::<ListDir>(&ListDirReq { path: "/" });
+        }
+
         ui.label("Server Dashboard");
         ui.separator();
 
+        // ── Server info ──
         ui.label("Server");
         match ui.rpc().get::<ServerInfo>(&ServerInfoReq) {
-            Poll::Pending => ui.label("Loading…"),
+            Poll::Pending => {
+                if self.started_at_ms.is_some() {
+                    ui.label("Refreshing…");
+                } else {
+                    ui.label("Connecting…");
+                }
+            }
             Poll::Failed(err) => {
                 ui.label(err.message());
-                if ui.button("Retry server info").clicked() {
+                if ui.button("Retry").clicked() {
                     ui.rpc().invalidate::<ServerInfo>(&ServerInfoReq);
                 }
             }
             Poll::Ready(info) => {
+                if self.started_at_ms.is_none() {
+                    self.started_at_ms = Some(now);
+                }
                 ui.horizontal(|ui| {
                     ui.label("Protocol version");
                     ui.label(itoa(u64::from(info.proto_version)).as_str());
@@ -122,118 +121,73 @@ impl App for ServerDashboard {
             }
         }
 
+        // ── Uptime ──
+        if let Some(start) = self.started_at_ms {
+            ui.horizontal(|ui| {
+                ui.label("Uptime");
+                ui.label(format_uptime(now - start).as_str());
+            });
+        }
+
+        // ── Storage stats ──
         ui.separator();
-        ui.label("Shared storage");
-
-        // Button presses are recorded and acted on after the closures below: a request borrows
-        // `self.path`, and navigation mutates it.
-        let mut go_up = false;
-        let mut refresh = false;
-        let mut go_to: Option<String> = None;
-
-        ui.horizontal(|ui| {
-            if ui.button("⬆ Up").clicked() {
-                go_up = true;
-            }
-            ui.tooltip("Go to parent directory");
-            if ui.button("⟳ Refresh").clicked() {
-                refresh = true;
-            }
-            ui.tooltip("Ask the server again instead of trusting the cache");
-        });
-
-        let crumbs = self.crumbs();
-        ui.horizontal(|ui| {
-            let last = crumbs.len() - 1;
-            for (i, (label, path)) in crumbs.iter().enumerate() {
-                ui.push_id(path.as_str(), |ui| {
-                    if ui.button(label.as_str()).clicked() {
-                        go_to = Some(path.clone());
-                    }
-                });
-                if i != last {
-                    ui.label("›");
-                }
-            }
-        });
-
-        if go_up {
-            self.go_up();
-        }
-        if let Some(path) = go_to {
-            self.path = path;
-        }
-        if refresh {
-            ui.rpc().invalidate::<ServerInfo>(&ServerInfoReq);
-            ui.rpc()
-                .invalidate::<ListDir>(&ListDirReq { path: &self.path });
-        }
-
-        ui.separator();
-
-        let mut retry = false;
-        let mut enter: Option<String> = None;
-
-        // Bound to a local so the borrow of `self.path` ends before the arms run.
-        let listing = ui.rpc().get::<ListDir>(&ListDirReq { path: &self.path });
-
-        match listing {
+        ui.label("Storage");
+        match ui.rpc().get::<ListDir>(&ListDirReq { path: "/" }) {
             Poll::Pending => {
-                ui.label("Loading…");
+                if self.total_dirs + self.total_files > 0 {
+                    // Show cached stats while refreshing.
+                    ui.label(
+                        format_storage(self.total_dirs, self.total_files, self.total_bytes)
+                            .as_str(),
+                    );
+                } else {
+                    ui.label("Loading…");
+                }
             }
             Poll::Failed(err) => {
                 ui.label(err.message());
-                if ui.button("Retry").clicked() {
-                    retry = true;
+                if ui.button("Retry storage").clicked() {
+                    ui.rpc().invalidate::<ListDir>(&ListDirReq { path: "/" });
                 }
             }
             Poll::Ready(listing) => {
-                let dirs = listing.entries.iter().filter(|e| e.is_dir()).count();
-                let files = listing.entries.len() - dirs;
-                let bytes: u64 = listing
+                self.total_dirs = listing.entries.iter().filter(|e| e.is_dir()).count();
+                self.total_files = listing.entries.len() - self.total_dirs;
+                self.total_bytes = listing
                     .entries
                     .iter()
                     .filter(|e| !e.is_dir())
                     .map(|e| e.size)
                     .sum();
-
                 ui.label(
-                    format!("{dirs} folders, {files} files, {} total", human_size(bytes)).as_str(),
+                    format_storage(self.total_dirs, self.total_files, self.total_bytes).as_str(),
                 );
                 if listing.truncated {
-                    ui.label("(listing truncated)");
-                }
-
-                if listing.entries.is_empty() {
-                    ui.label("(empty directory)");
-                }
-
-                for entry in &listing.entries {
-                    ui.push_id(&entry.name, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.label(icon_for(entry.kind));
-                            if entry.is_dir() {
-                                if ui.button(entry.name.as_str()).clicked() {
-                                    enter = Some(entry.name.clone());
-                                }
-                            } else {
-                                ui.label(entry.name.as_str());
-                                ui.label(format!("· {}", human_size(entry.size)).as_str());
-                            }
-                        });
-                    });
+                    ui.label("(listing truncated — more files than the server returned)");
                 }
             }
         }
 
-        if retry {
-            ui.rpc()
-                .invalidate::<ListDir>(&ListDirReq { path: &self.path });
+        // ── Refresh control ──
+        ui.separator();
+        if ui.button("⟳ Refresh now").clicked() {
+            self.last_refresh_ms = now;
+            ui.rpc().invalidate::<ServerInfo>(&ServerInfoReq);
+            ui.rpc().invalidate::<ListDir>(&ListDirReq { path: "/" });
         }
-        if let Some(name) = enter {
-            self.enter(&name);
-        }
+        ui.label("Auto-refreshes every 3 seconds.");
     }
+}
+
+fn format_storage(dirs: usize, files: usize, bytes: u64) -> String {
+    let mut out = String::new();
+    out.push_str(itoa(dirs as u64).as_str());
+    out.push_str(" folders, ");
+    out.push_str(itoa(files as u64).as_str());
+    out.push_str(" files, ");
+    out.push_str(human_size(bytes).as_str());
+    out.push_str(" total");
+    out
 }
 
 #[cfg(test)]
