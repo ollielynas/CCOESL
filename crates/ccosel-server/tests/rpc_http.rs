@@ -2,13 +2,17 @@
 
 use std::fs;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use ccosel_proto::fs::{DirListing, ListDirReq};
-use ccosel_proto::{Method, WireReply, WireRequest, WireResult, server_error};
+use ccosel_proto::info::{ServerInfoReply, ServerInfoReq};
+use ccosel_proto::{Method, PROTO_VERSION, WireReply, WireRequest, WireResult, server_error};
 use ccosel_server::fs_api::Jail;
 
-async fn spawn() -> SocketAddr {
+/// The jail root a spawned server serves, returned alongside its address so a test can assert
+/// on `ServerInfo`'s `root` without guessing the temp path back.
+async fn spawn() -> (SocketAddr, PathBuf) {
     // One directory per call, not per process: the tests in this file run on parallel threads
     // of one process, so a pid-only name is shared, and one test's `remove_dir_all` deleted the
     // directory another was in the middle of `create_dir_all`-ing (NotFound, about 2% of runs).
@@ -24,6 +28,7 @@ async fn spawn() -> SocketAddr {
     fs::write(dir.join("hello.txt"), b"hi").unwrap();
 
     let jail = Jail::new(&dir).unwrap();
+    let root = jail.root().to_path_buf();
     let app = ccosel_server::app(jail, dir.clone());
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -31,7 +36,7 @@ async fn spawn() -> SocketAddr {
     tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
     });
-    addr
+    (addr, root)
 }
 
 /// Minimal HTTP/1.1 POST. Avoids pulling a client crate into dev-dependencies for four lines
@@ -76,7 +81,7 @@ fn encode(reqs: &[(u32, &str)]) -> Vec<u8> {
 
 #[tokio::test]
 async fn lists_a_real_directory_over_http() {
-    let addr = spawn().await;
+    let (addr, _root) = spawn().await;
     let reply = post_rpc(addr, encode(&[(1, "/")])).await;
     let replies: Vec<WireReply> = postcard::from_bytes(&reply).unwrap();
 
@@ -93,7 +98,7 @@ async fn lists_a_real_directory_over_http() {
 #[tokio::test]
 async fn a_batch_returns_one_reply_per_call_and_one_failure_does_not_sink_the_rest() {
     // Coalesced calls share a request, so a single bad path must fail only its own entry.
-    let addr = spawn().await;
+    let (addr, _root) = spawn().await;
     let reply = post_rpc(
         addr,
         encode(&[(7, "/"), (8, "/../escape"), (9, "/Projects")]),
@@ -117,8 +122,29 @@ async fn a_batch_returns_one_reply_per_call_and_one_failure_does_not_sink_the_re
 
 #[tokio::test]
 async fn a_malformed_batch_is_rejected_not_crashed() {
-    let addr = spawn().await;
+    let (addr, _root) = spawn().await;
     let body = post_rpc(addr, vec![0xff; 32]).await;
     // 400 with a text body, not a postcard batch.
     assert!(postcard::from_bytes::<Vec<WireReply>>(&body).is_err());
+}
+
+#[tokio::test]
+async fn reports_server_info_over_http() {
+    let (addr, root) = spawn().await;
+    let args = postcard::to_allocvec(&ServerInfoReq).unwrap();
+    let batch: Vec<WireRequest> = vec![WireRequest {
+        seq: 1,
+        method: Method::ServerInfo as u16,
+        args: &args,
+    }];
+    let reply = post_rpc(addr, postcard::to_allocvec(&batch).unwrap()).await;
+    let replies: Vec<WireReply> = postcard::from_bytes(&reply).unwrap();
+
+    assert_eq!(replies.len(), 1);
+    let WireResult::Ok(bytes) = replies[0].result else {
+        panic!("expected Ok, got {:?}", replies[0].result);
+    };
+    let info: ServerInfoReply = postcard::from_bytes(bytes).unwrap();
+    assert_eq!(info.proto_version, PROTO_VERSION);
+    assert_eq!(info.root, root.display().to_string());
 }

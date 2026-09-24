@@ -36,5 +36,12 @@ pub fn catalog() -> Vec<AppEntry> {
             url: "./dist/clock.wasm",
             default_size: [240.0, 200.0],
         },
+        AppEntry {
+            id: "server-dashboard",
+            name: "Server",
+            icon: "🛠",
+            url: "./dist/server-dashboard.wasm",
+            default_size: [380.0, 420.0],
+        },
     ]
 }
