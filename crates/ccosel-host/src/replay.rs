@@ -44,6 +44,13 @@ struct TextState {
 pub struct Replayer {
     /// Keyed by the guest's local id.
     text: HashMap<u64, TextState>,
+    /// Widget ids and destination folders of this frame's `UploadFolder` buttons. The shell
+    /// checks these against the frame's clicks to know when to open the folder picker, and
+    /// where the chosen folder goes.
+    uploads: Vec<(u64, String)>,
+    /// Widget ids and target URLs from `OpenUrl` commands this frame. The shell checks these to
+    /// know when, and where, to open a new browser tab (see #19).
+    open_url_ids: Vec<(u64, String)>,
 }
 
 impl Replayer {
@@ -74,9 +81,16 @@ impl Replayer {
         // resolve them up front and attach on the way past. This is what makes tooltips
         // zero-latency despite responses being a frame stale.
         let mut tooltips: HashMap<u64, &str> = HashMap::new();
+        self.uploads.clear();
+        self.open_url_ids.clear();
         for cmd in &cmds {
-            if let Cmd::Tooltip { id, text } = *cmd {
-                tooltips.insert(id, text);
+            match *cmd {
+                Cmd::Tooltip { id, text } => {
+                    tooltips.insert(id, text);
+                }
+                Cmd::UploadFolder { id, dest } => self.uploads.push((id, dest.to_owned())),
+                Cmd::OpenUrl { id, url, .. } => self.open_url_ids.push((id, url.to_owned())),
+                _ => {}
             }
         }
 
@@ -98,6 +112,18 @@ impl Replayer {
         self.text
             .get(&local_id)
             .map(|t| (t.buf.as_str(), t.version))
+    }
+
+    /// Widget ids and destination folders of the `UploadFolder` buttons in the last
+    /// successfully replayed frame. Acting on a click (the picker, the upload) is the shell's job.
+    pub fn uploads(&self) -> &[(u64, String)] {
+        &self.uploads
+    }
+
+    /// Widget ids and target URLs from `OpenUrl` commands in the last successfully replayed
+    /// frame. Acting on a click (opening the tab) is the shell's job (#19).
+    pub fn open_url_ids(&self) -> &[(u64, String)] {
+        &self.open_url_ids
     }
 }
 
@@ -181,6 +207,19 @@ impl Cx<'_> {
                     ui.separator();
                 }
 
+                Cmd::UploadFolder { id, .. } => {
+                    let r = ui.add(egui::Button::new("⬆ Upload folder").frame_when_inactive(false));
+                    self.finish(id, r);
+                }
+
+                Cmd::OpenUrl { id, label, .. } => {
+                    // Draw `label`, never `url` — a file listing that put the URL itself on
+                    // every row would be unreadable (`/files/notes.md` repeated next to each
+                    // file). The URL is only for the shell's click handler (#19).
+                    let r = ui.add(egui::Button::new(label).frame_when_inactive(false));
+                    self.finish(id, r);
+                }
+
                 Cmd::Image { id, src, size } => {
                     // Images are fetched by the *shell*, by URL, so they hit the browser's HTTP
                     // cache and never occupy guest memory. Until the shell's loader lands, draw
@@ -198,6 +237,20 @@ impl Cx<'_> {
                             egui::FontId::proportional(9.0),
                             visuals.weak_text_color(),
                         );
+                    }
+                    self.finish(id, r);
+                }
+
+                Cmd::Plot { id, size, samples } => {
+                    // A width of 0 (or less) means "fill the row", so a guest can size a chart
+                    // to its window without knowing the window's width.
+                    let mut size = convert::vec2(size);
+                    if size.x <= 0.0 {
+                        size.x = ui.available_width();
+                    }
+                    let (rect, r) = ui.allocate_exact_size(size, egui::Sense::hover());
+                    if ui.is_rect_visible(rect) {
+                        paint_plot(ui, rect, samples);
                     }
                     self.finish(id, r);
                 }
@@ -347,4 +400,50 @@ fn to_record(local_id: u64, r: &egui::Response) -> RespRecord {
         value: 0.0,
         _pad: 0,
     }
+}
+
+/// Draw `samples` (each `0..=255`, oldest first) as a filled line graph filling `rect`.
+fn paint_plot(ui: &egui::Ui, rect: egui::Rect, samples: &[u8]) {
+    let visuals = ui.visuals();
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 4.0, visuals.extreme_bg_color);
+    // Quarter gridlines, so a reader can judge a level without an axis per chart.
+    let grid = egui::Stroke::new(1.0, visuals.faint_bg_color);
+    for q in 1..4 {
+        let y = rect.top() + rect.height() * q as f32 / 4.0;
+        painter.hline(rect.x_range(), y, grid);
+    }
+    if samples.len() < 2 {
+        return;
+    }
+    let step = rect.width() / (samples.len() - 1) as f32;
+    let points: Vec<egui::Pos2> = samples
+        .iter()
+        .enumerate()
+        .map(|(i, &v)| {
+            egui::pos2(
+                rect.left() + step * i as f32,
+                rect.bottom() - rect.height() * f32::from(v) / 255.0,
+            )
+        })
+        .collect();
+    // The theme's accent, which the shell sets as the link colour: saturated in both themes,
+    // unlike the selection fill, which is deliberately pale.
+    let accent = visuals.hyperlink_color;
+    // Fill under the line as one quad per segment: a single polygon would be concave, which
+    // egui's convex-polygon fill cannot draw correctly.
+    let fill = accent.gamma_multiply(0.2);
+    for w in points.windows(2) {
+        painter.add(egui::Shape::convex_polygon(
+            vec![
+                w[0],
+                w[1],
+                egui::pos2(w[1].x, rect.bottom()),
+                egui::pos2(w[0].x, rect.bottom()),
+            ],
+            fill,
+            egui::Stroke::NONE,
+        ));
+    }
+    painter.add(egui::Shape::line(points, egui::Stroke::new(2.0, accent)));
 }

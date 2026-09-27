@@ -6,13 +6,15 @@
 pub mod build_api;
 pub mod fs_api;
 pub mod rpc;
+pub mod stats;
+pub mod upload_api;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::Router;
-use axum::extract::{Path as AxPath, State};
+use axum::extract::{DefaultBodyLimit, Path as AxPath, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -26,6 +28,7 @@ pub struct AppState {
     /// Builds outlive the request that started them, so they live on the server rather than in
     /// any one call. See `build_api`.
     pub jobs: Arc<build_api::Jobs>,
+    pub stats: Arc<stats::Stats>,
 }
 
 /// Build the router. Separated from `serve` so tests can drive it on an ephemeral port.
@@ -33,10 +36,15 @@ pub fn app(jail: Jail, web_dir: PathBuf) -> Router {
     let state = AppState {
         jail: Arc::new(jail),
         jobs: Arc::new(build_api::Jobs::new()),
+        stats: Arc::new(stats::Stats::new()),
     };
 
     Router::new()
         .route("/rpc", post(rpc::handle))
+        .route(
+            "/upload",
+            post(upload_api::upload).layer(DefaultBodyLimit::max(upload_api::MAX_UPLOAD_BYTES)),
+        )
         .route("/files/{*path}", get(download))
         .fallback_service(
             // Precompressed assets are served as-is when the client accepts them: compressing
@@ -49,16 +57,11 @@ pub fn app(jail: Jail, web_dir: PathBuf) -> Router {
         .with_state(state)
 }
 
-pub async fn serve(addr: SocketAddr, jail: Jail, web_dir: PathBuf) -> anyhow::Result<()> {
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    println!("CCOSEL serving http://{addr}/");
-    axum::serve(listener, app(jail, web_dir)).await?;
-    Ok(())
-}
-
-/// Streams a file out of the jail. This is the plain jailed-path counterpart to `ListDir` —
-/// anything under the jail is already fair game to enumerate, this just answers "and can I
-/// have the bytes."
+/// Streams a file out of the jail, unconditionally. This is the plain jailed-path counterpart
+/// to `ListDir` rather than the content-addressed `/cas/{blake3}` scheme `ARCHITECTURE.md`
+/// describes for other assets, which needs `ccosel-cas` to exist first. It discloses no more
+/// than `ListDir` already does: anything under the jail is already fair game to enumerate, this
+/// just answers "and can I have the bytes."
 async fn download(State(state): State<AppState>, AxPath(path): AxPath<String>) -> Response {
     let Ok(real) = state.jail.resolve(&path) else {
         return StatusCode::FORBIDDEN.into_response();
@@ -83,4 +86,11 @@ async fn download(State(state): State<AppState>, AxPath(path): AxPath<String>) -
         bytes,
     )
         .into_response()
+}
+
+pub async fn serve(addr: SocketAddr, jail: Jail, web_dir: PathBuf) -> anyhow::Result<()> {
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    println!("CCOSEL serving http://{addr}/");
+    axum::serve(listener, app(jail, web_dir)).await?;
+    Ok(())
 }

@@ -58,6 +58,28 @@ pub enum Cmd<'a> {
         id: u64,
         text: &'a str,
     },
+    /// A button that asks the shell to open a folder picker and upload the chosen folder into
+    /// `dest`, a jail path such as `/Documents`. The shell drives the upload; this crate only
+    /// carries the request and reports the click.
+    UploadFolder {
+        id: u64,
+        dest: &'a str,
+    },
+    /// Ask the shell to open `url` in a new browser tab. `label` is the button text — kept
+    /// separate from `url` so a listing of many rows (e.g. files) does not have to show the
+    /// URL itself next to every one.
+    OpenUrl {
+        id: u64,
+        label: &'a str,
+        url: &'a str,
+    },
+    Plot {
+        id: u64,
+        size: Vec2,
+        /// Oldest first, each `0` (bottom) to `255` (top). The guest owns the scale, so the
+        /// shell never has to guess a range, and the stream stays one byte per point.
+        samples: &'a [u8],
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -141,10 +163,14 @@ impl<'a> Decoder<'a> {
         }
     }
 
-    fn str(&mut self) -> Result<&'a str, DecodeError> {
+    fn bytes(&mut self) -> Result<&'a [u8], DecodeError> {
         let len = self.varint()?;
         let len = usize::try_from(len).map_err(|_| DecodeError::Truncated)?;
-        let bytes = self.take(len)?;
+        self.take(len)
+    }
+
+    fn str(&mut self) -> Result<&'a str, DecodeError> {
+        let bytes = self.bytes()?;
         core::str::from_utf8(bytes).map_err(|_| DecodeError::InvalidUtf8)
     }
 
@@ -198,6 +224,20 @@ impl<'a> Decoder<'a> {
             OpCode::Tooltip => Cmd::Tooltip {
                 id: self.u64()?,
                 text: self.str()?,
+            },
+            OpCode::UploadFolder => Cmd::UploadFolder {
+                id: self.u64()?,
+                dest: self.str()?,
+            },
+            OpCode::OpenUrl => Cmd::OpenUrl {
+                id: self.u64()?,
+                label: self.str()?,
+                url: self.str()?,
+            },
+            OpCode::Plot => Cmd::Plot {
+                id: self.u64()?,
+                size: Vec2::new(self.f32()?, self.f32()?),
+                samples: self.bytes()?,
             },
         })
     }

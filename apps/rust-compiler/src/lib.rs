@@ -1,7 +1,8 @@
 //! The Rust Compiler app.
 //!
-//! Browse to a directory on the server, press Build, watch it compile, get the binary the
-//! server's own toolchain produced.
+//! Browse to a directory on the server, press Build, watch it compile, download the binary the
+//! server's own toolchain produced. Getting a project onto the server is the Files app's job
+//! (Upload folder); this app starts from a directory that is already there.
 //!
 //! A build takes minutes, so `Compile` is not a call that waits for one — it is a **poll**.
 //! The first request for a `(path, generation)` starts the job server-side; every later one
@@ -60,6 +61,26 @@ fn human_size(bytes: u64) -> String {
     s.push_str(itoa(n).as_str());
     s.push_str(unit);
     s
+}
+
+/// `/files/<path>`, each segment percent-encoded. `path` is jail-relative and its segments come
+/// from the project's own directory and crate names, which may hold spaces or `#`.
+pub fn download_url(path: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut url = String::from("/files");
+    for segment in path.split('/').filter(|s| !s.is_empty()) {
+        url.push('/');
+        for &b in segment.as_bytes() {
+            if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
+                url.push(b as char);
+            } else {
+                url.push('%');
+                url.push(HEX[usize::from(b >> 4)] as char);
+                url.push(HEX[usize::from(b & 0xF)] as char);
+            }
+        }
+    }
+    url
 }
 
 /// Hand-rolled for the same reason the File Browser hand-rolls it: float `Display` drags
@@ -154,10 +175,9 @@ fn draw_result(ui: &mut Ui<'_>, status: &CompileStatus) {
                     ui.label("📦");
                     ui.label(binary.name.as_str());
                     ui.label(human_size(binary.size).as_str());
+                    // The shell opens it in a new tab; the server sends it as a download.
+                    ui.open_url("Download", &download_url(&binary.path));
                 });
-                // No hyperlink opcode in the ABI yet, so the URL is shown rather than clicked:
-                // the server hands this file back over `/files`.
-                ui.label(format!("/files{}", binary.path).as_str());
             });
         });
     }

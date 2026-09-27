@@ -85,7 +85,8 @@ pub struct RespRecord {
     pub local_id: u64,
     /// See [`ResponseFlags`]. Mirrors `egui::response::Flags`.
     pub flags: u32,
-    /// Opcode-specific: for `TextEditSingle`, the committed text version.
+    /// Opcode-specific: for `TextEditSingle`, the committed text version; for `UploadFolder`,
+    /// how many uploads started from that button have finished.
     pub aux: u32,
     pub rect: [f32; 4],
     pub drag_delta: [f32; 2],

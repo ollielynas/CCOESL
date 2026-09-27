@@ -177,7 +177,26 @@ fn shows_success_with_binaries() {
     assert!(h.has_label("\u{2705} Build succeeded"));
     assert!(h.has_label("myapp"));
     assert!(h.has_label("2K"));
-    assert!(h.has_label("/files/project/target/release/myapp"));
+    assert_eq!(
+        h.open_urls(),
+        vec![(
+            "Download".to_owned(),
+            "/files/project/target/release/myapp".to_owned()
+        )]
+    );
+}
+
+#[test]
+fn download_urls_are_percent_encoded_per_segment() {
+    assert_eq!(
+        download_url("/p/target/release/app"),
+        "/files/p/target/release/app"
+    );
+    assert_eq!(
+        download_url("/my proj #2/target/release/a?b"),
+        "/files/my%20proj%20%232/target/release/a%3Fb"
+    );
+    assert_eq!(download_url("/café/x"), "/files/caf%C3%A9/x");
 }
 
 #[test]

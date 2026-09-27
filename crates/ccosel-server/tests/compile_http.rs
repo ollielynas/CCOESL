@@ -4,6 +4,7 @@
 
 use std::fs;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use ccosel_proto::build::{CompileReq, CompileResult, CompileStatus};
 use ccosel_proto::{Method, WireReply, WireRequest, WireResult};
@@ -12,7 +13,16 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// Serves a jail holding one zero-dependency crate, so the build never touches the network.
 async fn spawn() -> SocketAddr {
-    let dir = std::env::temp_dir().join(format!("ccosel-compile-http-{}", std::process::id()));
+    // One directory per call, not per process: this file's tests run in parallel threads of one
+    // process, and a shared pid-named directory is the race #9 fixed in `rpc_http.rs` (one
+    // test's `remove_dir_all` deleting the directory another was still building in).
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    let dir = std::env::temp_dir().join(format!(
+        "ccosel-compile-http-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    // Still cleared: a previous run whose pid was reused may have left this name behind.
     let _ = fs::remove_dir_all(&dir);
     let crate_dir = dir.join("hello");
     fs::create_dir_all(crate_dir.join("src")).unwrap();

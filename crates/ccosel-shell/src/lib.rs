@@ -11,11 +11,14 @@
 #![cfg(target_arch = "wasm32")]
 
 mod app_window;
+mod background;
 mod desktop;
 mod fetch;
 mod fullscreen;
 mod http_wire;
 mod registry;
+mod theme;
+mod upload;
 
 use wasm_bindgen::prelude::*;
 
