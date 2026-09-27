@@ -48,12 +48,12 @@ fn says_connecting_until_the_first_reply() {
 fn draws_three_graphs_and_the_current_values() {
     let h = connected(&info(65_000, 10));
     assert!(h.has_label("Live · updates every 2 seconds"));
-    assert!(h.has_label("1m 5s"));
+    assert!(h.has_label("Up 1m 5s"));
     assert!(h.has_label("4 CPUs"));
     assert!(h.has_label("50%"));
     assert!(h.has_label("3 GB of 4 GB"));
     assert!(h.has_label("/srv/shared"));
-    assert!(h.has_label("v7"));
+    assert!(h.has_label("Protocol v7"));
     let plots = h.plots();
     assert_eq!(plots.len(), 3);
     assert_eq!(plots[0], vec![127], "50% load is half height");
@@ -192,4 +192,14 @@ fn formatting() {
 #[test]
 fn polls_on_a_timer() {
     assert_eq!(ServerDashboard::default().wants_repaint_after_ms(), 250);
+}
+
+#[test]
+fn graphs_are_square_tiles_two_to_a_row() {
+    let h = connected(&info(10_000, 0));
+    let sizes = h.plot_sizes();
+    assert_eq!(sizes.len(), 3);
+    for size in sizes {
+        assert_eq!((size.x, size.y), (TILE, TILE));
+    }
 }

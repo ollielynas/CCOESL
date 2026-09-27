@@ -113,6 +113,16 @@ impl<A: App> Harness<A> {
             .collect()
     }
 
+    /// Requested size of every plot drawn in the last frame, in order.
+    pub fn plot_sizes(&self) -> Vec<ccosel_abi::Vec2> {
+        self.commands()
+            .filter_map(|c| match c {
+                Cmd::Plot { size, .. } => Some(size),
+                _ => None,
+            })
+            .collect()
+    }
+
     pub fn has_label(&self, text: &str) -> bool {
         self.labels().iter().any(|l| l == text)
     }

@@ -15,8 +15,8 @@ use ccosel_sdk::{App, Poll, Ui, Vec2};
 pub const POLL_INTERVAL_MS: f64 = 2000.0;
 /// Points kept per graph: two minutes at the poll interval.
 pub const HISTORY: usize = 60;
-/// Graph height, in points. Width fills the window.
-const PLOT_HEIGHT: f32 = 48.0;
+/// Side of each square graph, in points. Two across fit the window's default width.
+pub const TILE: f32 = 170.0;
 
 /// The last [`HISTORY`] readings of one statistic, oldest first.
 #[derive(Default)]
@@ -130,60 +130,67 @@ impl App for ServerDashboard {
         } else {
             "Live · updates every 2 seconds"
         });
-        ui.horizontal(|ui| {
-            ui.label("Up");
-            ui.label(&format_duration(info.uptime_ms));
-            ui.label("·");
-            ui.label(&count(u64::from(info.cpus), "CPU", "CPUs"));
-        });
         ui.separator();
 
-        ui.horizontal(|ui| {
-            ui.label("CPU load");
-            ui.label(&match info.load_milli {
-                Some(_) => percent(self.cpu.latest()),
-                None => "unavailable".to_owned(),
-            });
-        });
-        ui.plot(&self.cpu.scaled(100), Vec2::new(0.0, PLOT_HEIGHT));
-        ui.tooltip("1-minute load average across all CPUs, over the last 2 minutes");
-
-        ui.horizontal(|ui| {
-            ui.label("Memory");
-            ui.label(&match (info.mem_used_kib, info.mem_total_kib) {
-                (Some(used), Some(total)) => {
-                    let mut s = kib(used);
-                    s.push_str(" of ");
-                    s.push_str(&kib(total));
-                    s
-                }
-                _ => "unavailable".to_owned(),
-            });
-        });
-        ui.plot(&self.mem.scaled(100), Vec2::new(0.0, PLOT_HEIGHT));
-        ui.tooltip("Memory in use, as a share of the total, over the last 2 minutes");
-
-        ui.horizontal(|ui| {
-            ui.label("Requests");
-            let mut s = itoa(self.rpc_rate.latest());
-            s.push_str("/min");
-            ui.label(&s);
-        });
+        // A 2×2 grid of square tiles: three graphs, and the server's vital facts in the fourth.
+        let cpu = match info.load_milli {
+            Some(_) => percent(self.cpu.latest()),
+            None => "unavailable".to_owned(),
+        };
+        let mem = match (info.mem_used_kib, info.mem_total_kib) {
+            (Some(used), Some(total)) => {
+                let mut s = kib(used);
+                s.push_str(" of ");
+                s.push_str(&kib(total));
+                s
+            }
+            _ => "unavailable".to_owned(),
+        };
+        let mut rate = itoa(self.rpc_rate.latest());
+        rate.push_str("/min");
         // Scaled to the busiest moment on screen, so a quiet server still shows its shape.
-        let peak = self.rpc_rate.peak();
-        ui.plot(&self.rpc_rate.scaled(peak), Vec2::new(0.0, PLOT_HEIGHT));
-        ui.tooltip("RPC calls the server answered per minute, from every client");
+        let rate_samples = self.rpc_rate.scaled(self.rpc_rate.peak());
+
+        ui.horizontal(|ui| {
+            tile(
+                ui,
+                "CPU load",
+                &cpu,
+                &self.cpu.scaled(100),
+                "1-minute load average across all CPUs, over the last 2 minutes",
+            );
+            tile(
+                ui,
+                "Memory",
+                &mem,
+                &self.mem.scaled(100),
+                "Memory in use, as a share of the total, over the last 2 minutes",
+            );
+        });
+        ui.horizontal(|ui| {
+            tile(
+                ui,
+                "Requests",
+                &rate,
+                &rate_samples,
+                "RPC calls the server answered per minute, from every client",
+            );
+            ui.vertical(|ui| {
+                ui.label("Server");
+                ui.label(&count(u64::from(info.cpus), "CPU", "CPUs"));
+                let mut up = "Up ".to_owned();
+                up.push_str(&format_duration(info.uptime_ms));
+                ui.label(&up);
+                let mut proto = "Protocol v".to_owned();
+                proto.push_str(&itoa(u64::from(info.proto_version)));
+                ui.label(&proto);
+            });
+        });
         ui.separator();
 
         ui.horizontal(|ui| {
             ui.label("Serving");
             ui.label(&info.root);
-        });
-        ui.horizontal(|ui| {
-            ui.label("Protocol");
-            let mut s = "v".to_owned();
-            s.push_str(&itoa(u64::from(info.proto_version)));
-            ui.label(&s);
         });
     }
 
@@ -191,6 +198,18 @@ impl App for ServerDashboard {
         // Often enough to notice a settled poll promptly; the poll itself is still 2 s apart.
         250
     }
+}
+
+/// One square graph with its name and current value above it.
+fn tile(ui: &mut Ui<'_>, title: &str, value: &str, samples: &[u8], tip: &str) {
+    ui.vertical(|ui| {
+        ui.horizontal(|ui| {
+            ui.label(title);
+            ui.label(value);
+        });
+        ui.plot(samples, Vec2::new(TILE, TILE));
+        ui.tooltip(tip);
+    });
 }
 
 /// Decimal digits, without float `Display` (which alone would blow the size budget).
