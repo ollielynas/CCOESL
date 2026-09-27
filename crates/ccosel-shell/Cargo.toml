@@ -14,6 +14,7 @@ crate-type = ["cdylib", "rlib"]
 # without an x11 or wayland backend, so it fails to compile for Linux.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 ccosel-abi = { workspace = true }
+ccosel-connection = { workspace = true }
 ccosel-host = { workspace = true }
 ccosel-host-web = { path = "../ccosel-host-web" }
 ccosel-proto = { workspace = true }
@@ -27,6 +28,15 @@ eframe = { version = "0.36", default-features = false, features = ["glow", "defa
 log = { workspace = true }
 wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = { workspace = true }
-web-sys = { workspace = true, features = ["Window", "Document", "Element", "HtmlCanvasElement", "Request", "RequestInit", "Response", "Headers", "console"] }
+web-sys = { workspace = true, features = ["Window", "Document", "Element", "HtmlCanvasElement", "Request", "RequestInit", "Response", "Headers", "console", "Navigator", "NetworkInformation"] }
 js-sys = { workspace = true }
 console_error_panic_hook = "0.1"
+# Decodes the fetched wallpaper image client-side (issue #3): only when the connection looks
+# good enough to bother. JPEG because the wallpaper is a photo (a PNG of it is 8x the bytes);
+# PNG so a drawn or screenshot wallpaper works too. No other formats: each one is shell size.
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+
+# Same wasm32 gate as the main dependencies above, and for the same reason: a native
+# `cargo test --workspace` must not need this pulled in at all.
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"

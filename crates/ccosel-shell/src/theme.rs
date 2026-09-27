@@ -170,28 +170,33 @@ fn visuals(p: &Palette, dark: bool) -> egui::Visuals {
         stroke: Stroke::new(1.0, p.text),
     };
 
-    v.widgets.noninteractive = widget(p.surface, p.border, p.text, 0.0);
-    v.widgets.inactive = widget(p.surface_hi, p.border, p.text, 0.0);
-    v.widgets.hovered = widget(p.surface_hover, p.border_hi, p.text, 1.0);
-    v.widgets.active = widget(p.accent_deep, p.accent, Color32::WHITE, 0.0);
-    v.widgets.open = widget(p.surface_hover, p.border_hi, p.text, 0.0);
+    v.widgets.noninteractive = widget(p.surface, p.border, p.text);
+    v.widgets.inactive = widget(p.surface_hi, p.border, p.text);
+    v.widgets.hovered = widget(p.surface_hover, p.border_hi, p.text);
+    v.widgets.active = widget(p.accent_deep, p.accent, Color32::WHITE);
+    v.widgets.open = widget(p.surface_hover, p.border_hi, p.text);
 
     v
 }
 
-fn widget(
-    fill: Color32,
-    stroke: Color32,
-    text: Color32,
-    expansion: f32,
-) -> egui::style::WidgetVisuals {
+/// Every state's `expansion` equals its stroke width, and that is load-bearing: it is what
+/// keeps a button the same size when the pointer reaches it.
+///
+/// Guest buttons are frameless at rest and framed on hover (`frame_when_inactive(false)` in
+/// `ccosel-host`). egui 0.36 sizes the framed case as `button_padding`, but the frameless case
+/// as `button_padding + expansion - stroke width`, since it keeps the frame's inner margin and
+/// drops the stroke. With a 1px stroke and no expansion every guest button grew 2px on hover,
+/// and the rows after it moved: the jitter. Equal values cancel in both cases, and since every
+/// state uses the same ones, the painted frame never changes size between states either.
+fn widget(fill: Color32, stroke: Color32, text: Color32) -> egui::style::WidgetVisuals {
+    const STROKE: f32 = 1.0;
     egui::style::WidgetVisuals {
         bg_fill: fill,
         weak_bg_fill: fill,
-        bg_stroke: Stroke::new(1.0, stroke),
+        bg_stroke: Stroke::new(STROKE, stroke),
         corner_radius: CornerRadius::same(8),
         fg_stroke: Stroke::new(1.0, text),
-        expansion,
+        expansion: STROKE,
     }
 }
 
@@ -307,5 +312,107 @@ pub fn contrast_color(bg: Color32) -> Color32 {
         Color32::from_rgb(0x12, 0x14, 0x1A)
     } else {
         Color32::WHITE
+    }
+}
+
+/// The WCAG 2 contrast ratio between two colours: 1:1 is none, 21:1 is black on white, and
+/// `>= 4.5` is the AA bar for normal-size text.
+#[cfg(test)]
+fn contrast_ratio(a: Color32, b: Color32) -> f32 {
+    fn to_linear(c: u8) -> f32 {
+        let c = c as f32 / 255.0;
+        if c <= 0.04045 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    }
+    fn luminance(c: Color32) -> f32 {
+        0.2126 * to_linear(c.r()) + 0.7152 * to_linear(c.g()) + 0.0722 * to_linear(c.b())
+    }
+    let (la, lb) = (luminance(a), luminance(b));
+    let (lighter, darker) = if la > lb { (la, lb) } else { (lb, la) };
+    (lighter + 0.05) / (darker + 0.05)
+}
+
+// `wasm_bindgen_test`, not `#[test]`: this crate only compiles for wasm32, and the wasm32 runner
+// in `.cargo/config.toml` only picks tests up written this way. `cargo xtask test-wasm` runs them.
+#[cfg(test)]
+mod tests {
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    use super::*;
+
+    const AA_TEXT: f32 = 4.5;
+
+    #[wasm_bindgen_test]
+    fn text_clears_aa_contrast_on_surface_in_both_themes() {
+        for (name, p) in [("dark", &DARK), ("light", &LIGHT)] {
+            let ratio = contrast_ratio(p.text, p.surface);
+            assert!(ratio >= AA_TEXT, "{name} text/surface contrast is {ratio}");
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn identical_colors_have_no_contrast() {
+        assert!((contrast_ratio(DARK.text, DARK.text) - 1.0).abs() < 1e-6);
+    }
+
+    /// Size of a button, drawn the way `ccosel-host` draws guest buttons, with the pointer at
+    /// `pointer`. Two frames per call: egui styles a widget by its state from the frame before.
+    fn button_size(ctx: &egui::Context, pointer: egui::Pos2, framed: bool) -> egui::Vec2 {
+        let mut size = egui::Vec2::ZERO;
+        for _ in 0..2 {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(400.0, 300.0),
+                )),
+                events: vec![egui::Event::PointerMoved(pointer)],
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| {
+                let r = ui.add(egui::Button::new("Refresh").frame_when_inactive(framed));
+                size = r.rect.size();
+            });
+            out.textures_delta.clear();
+        }
+        size
+    }
+
+    #[wasm_bindgen_test]
+    fn hovering_a_button_does_not_change_its_size() {
+        for theme in [egui::Theme::Dark, egui::Theme::Light] {
+            for framed in [false, true] {
+                let ctx = egui::Context::default();
+                apply(&ctx);
+                ctx.set_theme(theme);
+                let away = button_size(&ctx, egui::pos2(390.0, 290.0), framed);
+                let over = button_size(&ctx, egui::pos2(12.0, 12.0), framed);
+                assert_eq!(
+                    away, over,
+                    "{theme:?}, framed at rest: {framed}: hover resized the button"
+                );
+            }
+        }
+    }
+
+    /// Guards the test above: it only proves anything if hovering really reached the button.
+    #[wasm_bindgen_test]
+    fn the_hover_in_the_size_test_lands_on_the_button() {
+        let ctx = egui::Context::default();
+        apply(&ctx);
+        let mut hovered = false;
+        for _ in 0..2 {
+            let input = egui::RawInput {
+                events: vec![egui::Event::PointerMoved(egui::pos2(12.0, 12.0))],
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| {
+                hovered = ui.button("Refresh").hovered();
+            });
+            out.textures_delta.clear();
+        }
+        assert!(hovered);
     }
 }
