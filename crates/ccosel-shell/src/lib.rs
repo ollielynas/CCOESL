@@ -11,6 +11,7 @@
 #![cfg(target_arch = "wasm32")]
 
 mod app_window;
+mod background;
 mod desktop;
 mod fetch;
 mod fullscreen;

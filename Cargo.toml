@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "crates/ccosel-abi",
+    "crates/ccosel-connection",
     "crates/ccosel-proto",
     "crates/ccosel-server",
     "crates/ccosel-transport",
@@ -24,6 +25,7 @@ license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
 ccosel-abi = { path = "crates/ccosel-abi" }
+ccosel-connection = { path = "crates/ccosel-connection" }
 ccosel-proto = { path = "crates/ccosel-proto" }
 ccosel-host = { path = "crates/ccosel-host" }
 ccosel-cas = { path = "crates/ccosel-cas" }
