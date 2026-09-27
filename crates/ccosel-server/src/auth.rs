@@ -1,4 +1,5 @@
-//! OAuth login, gated by a list of approved accounts.
+//! OAuth login against a Keycloak realm. Who may sign in is decided by who has an account in
+//! that realm; this server keeps no list of its own.
 //!
 //! Scope, deliberately: Keycloak is the only provider wired up, the server keeps sessions
 //! in-memory (a restart signs everyone out), and everything below assumes `http://` on
@@ -14,11 +15,9 @@
 //! 2. The provider redirects back to `GET /auth/callback?code=..&state=..`.
 //! 3. The server checks `state`, exchanges `code` for an access token, and asks the provider
 //!    who that token belongs to.
-//! 4. That login is checked against [`ApprovedUsers`]. Approved: a session cookie is set and
-//!    the browser is sent to `/`. Not approved: `403`, no cookie.
+//! 4. A session cookie is set and the browser is sent to `/`.
 
-use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -80,42 +79,6 @@ impl OAuthConfig {
     }
 }
 
-/// The allow-list a signed-in account is checked against. Logins are compared
-/// case-insensitively, since GitHub usernames are case-insensitive.
-#[derive(Clone, Default, Debug)]
-pub struct ApprovedUsers(Arc<HashSet<String>>);
-
-impl ApprovedUsers {
-    pub fn new(names: impl IntoIterator<Item = String>) -> Self {
-        Self(Arc::new(
-            names.into_iter().map(|n| n.to_lowercase()).collect(),
-        ))
-    }
-
-    /// One username per line. Blank lines and `#`-comments are ignored, so the file can explain
-    /// itself. Not finding the file is the caller's decision (main.rs treats it as an empty
-    /// list plus a warning, rather than refusing to start).
-    pub fn load(path: &Path) -> std::io::Result<Self> {
-        let text = std::fs::read_to_string(path)?;
-        Ok(Self::new(text.lines().filter_map(|line| {
-            let line = line.trim();
-            (!line.is_empty() && !line.starts_with('#')).then(|| line.to_string())
-        })))
-    }
-
-    pub fn is_approved(&self, login: &str) -> bool {
-        self.0.contains(&login.to_lowercase())
-    }
-
-    pub fn len(&self) -> usize {
-        self.0.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-}
-
 struct Session {
     login: String,
     expires_at: Instant,
@@ -128,7 +91,6 @@ struct Session {
 #[derive(Clone)]
 pub struct AuthState {
     oauth: Option<OAuthConfig>,
-    approved: ApprovedUsers,
     http: reqwest::Client,
     pending_logins: Arc<Mutex<HashMap<String, Instant>>>,
     sessions: Arc<Mutex<HashMap<String, Session>>>,
@@ -136,15 +98,14 @@ pub struct AuthState {
 
 impl Default for AuthState {
     fn default() -> Self {
-        Self::new(None, ApprovedUsers::default())
+        Self::new(None)
     }
 }
 
 impl AuthState {
-    pub fn new(oauth: Option<OAuthConfig>, approved: ApprovedUsers) -> Self {
+    pub fn new(oauth: Option<OAuthConfig>) -> Self {
         Self {
             oauth,
-            approved,
             http: reqwest::Client::new(),
             pending_logins: Arc::new(Mutex::new(HashMap::new())),
             sessions: Arc::new(Mutex::new(HashMap::new())),
@@ -279,17 +240,6 @@ async fn callback(
         Ok(login) => login,
         Err(msg) => return (StatusCode::BAD_GATEWAY, msg).into_response(),
     };
-
-    if !state.auth.approved.is_approved(&login) {
-        return (
-            StatusCode::FORBIDDEN,
-            format!(
-                "signed in as {login}, but that account is not on this server's approved list. \
-                 Ask the server's owner to add it."
-            ),
-        )
-            .into_response();
-    }
 
     let token = random_token(48);
     state.auth.sessions.lock().unwrap().insert(

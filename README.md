@@ -39,8 +39,8 @@ Plan to support
 
 ## Auth
 
-The server can gate itself behind Keycloak OAuth plus an approved-account list. It's off by
-default — a checkout with nothing configured runs exactly as before.
+The server can gate itself behind Keycloak OAuth: anyone with an account in the realm can sign
+in. It's off by default — a checkout with nothing configured runs exactly as before.
 
 1. Start Keycloak locally:
 
@@ -57,8 +57,8 @@ default — a checkout with nothing configured runs exactly as before.
    - Access type: `public` (no client secret needed)
    Note the **Client ID** from the Settings tab.
 
-3. Copy `data/approved_users.example.txt` to `data/approved_users.txt` and list the Keycloak
-   usernames allowed to sign in, one per line.
+3. Add a user for each person who should get in (**Users → Add user**, then set a password
+   under **Credentials**).
 
 4. Start the server with the Keycloak credentials:
 
@@ -77,5 +77,4 @@ default — a checkout with nothing configured runs exactly as before.
 Once it's on, `/rpc`, `/upload` and `/files/...` answer `401` without a signed-in session;
 only the boot page, the shell and app modules, and `/auth/*` stay public.
 
-`--approved-users <path>` overrides the list's location. Sessions live in server memory only —
-a restart signs everyone out.
+Sessions live in server memory only — a restart signs everyone out.

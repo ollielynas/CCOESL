@@ -39,8 +39,8 @@
 
   const SHELL = './dist/ccosel-shell_bg.wasm';
 
-  // Whether this server has approved-account login turned on, and whether this browser is
-  // already signed in — `/auth/*` exists independently of the wasm shell (see
+  // Whether this server has Keycloak login turned on, and whether this browser is already
+  // signed in — `/auth/*` exists independently of the wasm shell (see
   // `crates/ccosel-server/src/auth.rs`), since a top-level OAuth redirect can't go through the
   // guest-app protocol. An operator who has not set up an OAuth app yet gets `configured:
   // false`, and the desktop boots exactly as it did before this existed.
@@ -59,7 +59,6 @@
   function showSignIn() {
     statusEl.textContent = 'Sign in required';
     bar.style.display = 'none';
-    note.textContent = 'This server only allows approved accounts.';
     const signIn = document.createElement('button');
     signIn.textContent = 'Sign in with Keycloak';
     signIn.onclick = () => { location.href = '/auth/login'; };

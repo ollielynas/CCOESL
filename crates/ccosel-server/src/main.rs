@@ -3,7 +3,7 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-use ccosel_server::auth::{ApprovedUsers, AuthState, OAuthConfig};
+use ccosel_server::auth::{AuthState, OAuthConfig};
 use ccosel_server::fs_api::Jail;
 
 const KEYCLOAK_REALM: &str = "ccosel";
@@ -19,16 +19,12 @@ async fn main() -> anyhow::Result<()> {
     let mut root = PathBuf::from("data/shared");
     let mut web = PathBuf::from("web");
     let mut port = 8777u16;
-    let mut approved_users_path = PathBuf::from("data/approved_users.txt");
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--root" => root = PathBuf::from(args.next().unwrap_or_default()),
             "--web" => web = PathBuf::from(args.next().unwrap_or_default()),
             "--port" => port = args.next().unwrap_or_default().parse().unwrap_or(8777),
-            "--approved-users" => {
-                approved_users_path = PathBuf::from(args.next().unwrap_or_default())
-            }
             other => anyhow::bail!("unknown argument: {other}"),
         }
     }
@@ -36,24 +32,6 @@ async fn main() -> anyhow::Result<()> {
     std::fs::create_dir_all(&root)?;
     let jail = Jail::new(&root)?;
     println!("serving files from {}", jail.root().display());
-
-    let approved = match ApprovedUsers::load(&approved_users_path) {
-        Ok(list) => {
-            println!(
-                "loaded {} approved account(s) from {}",
-                list.len(),
-                approved_users_path.display()
-            );
-            list
-        }
-        Err(e) => {
-            println!(
-                "warning: could not read {} ({e}); no accounts are approved until it exists",
-                approved_users_path.display()
-            );
-            ApprovedUsers::default()
-        }
-    };
 
     let keycloak_url = std::env::var("CCOSEL_KEYCLOAK_URL").ok();
     let client_id = std::env::var("CCOSEL_KEYCLOAK_CLIENT_ID").ok();
@@ -74,7 +52,7 @@ async fn main() -> anyhow::Result<()> {
             }
         }
     };
-    let auth = AuthState::new(oauth, approved);
+    let auth = AuthState::new(oauth);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     ccosel_server::serve(addr, jail, web, auth).await

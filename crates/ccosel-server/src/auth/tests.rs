@@ -1,5 +1,5 @@
 //! The provider itself is not exercised here — these run in CI with no network access — but
-//! everything this module controls is: the approved-list check, the CSRF `state` token, session
+//! everything this module controls is: the CSRF `state` token, session
 //! cookies, and the two calls a provider's callback triggers, against a small mock HTTP server
 //! standing in for Keycloak. Same approach `rpc_http.rs` and `compile_http.rs` take: a real
 //! socket, not a mocked-out `Router`.
@@ -101,40 +101,6 @@ fn query_param<'a>(url: &'a str, name: &str) -> Option<&'a str> {
     })
 }
 
-// ---- ApprovedUsers ----
-
-#[test]
-fn approved_users_is_case_insensitive() {
-    let approved = ApprovedUsers::new(["Octocat".to_string()]);
-    assert!(approved.is_approved("octocat"));
-    assert!(approved.is_approved("OCTOCAT"));
-    assert!(!approved.is_approved("someone-else"));
-}
-
-#[test]
-fn approved_users_load_skips_blank_lines_and_comments() {
-    let dir = temp_dir("approved-users-file");
-    let path = dir.join("approved_users.txt");
-    std::fs::write(
-        &path,
-        "# approved accounts\noctocat\n\n  torvalds  \n# not-a-user\n",
-    )
-    .unwrap();
-
-    let approved = ApprovedUsers::load(&path).unwrap();
-    assert_eq!(approved.len(), 2);
-    assert!(approved.is_approved("octocat"));
-    assert!(approved.is_approved("torvalds"));
-    assert!(!approved.is_approved("not-a-user"));
-}
-
-#[test]
-fn approved_users_load_reports_a_missing_file() {
-    let dir = temp_dir("approved-users-missing");
-    let err = ApprovedUsers::load(&dir.join("does-not-exist.txt")).unwrap_err();
-    assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
-}
-
 // ---- /auth/me ----
 
 #[tokio::test]
@@ -167,7 +133,7 @@ async fn login_is_unavailable_when_oauth_is_not_configured() {
 async fn login_redirects_to_the_provider_with_a_state_token() {
     let provider = spawn_mock_provider("alice", false).await;
     let oauth = oauth_config_for(&provider);
-    let addr = spawn_app(AuthState::new(Some(oauth), ApprovedUsers::default())).await;
+    let addr = spawn_app(AuthState::new(Some(oauth))).await;
 
     let client = no_redirect_client();
     let resp = client
@@ -196,7 +162,7 @@ async fn login_redirects_to_the_provider_with_a_state_token() {
 async fn callback_rejects_an_unknown_or_expired_state() {
     let provider = spawn_mock_provider("alice", false).await;
     let oauth = oauth_config_for(&provider);
-    let addr = spawn_app(AuthState::new(Some(oauth), ApprovedUsers::default())).await;
+    let addr = spawn_app(AuthState::new(Some(oauth))).await;
 
     let resp = reqwest::get(format!(
         "http://{addr}/auth/callback?code=whatever&state=never-issued"
@@ -210,7 +176,7 @@ async fn callback_rejects_an_unknown_or_expired_state() {
 async fn callback_rejects_a_provider_declining_consent() {
     let provider = spawn_mock_provider("alice", false).await;
     let oauth = oauth_config_for(&provider);
-    let addr = spawn_app(AuthState::new(Some(oauth), ApprovedUsers::default())).await;
+    let addr = spawn_app(AuthState::new(Some(oauth))).await;
 
     let resp = reqwest::get(format!(
         "http://{addr}/auth/callback?error=access_denied&state=whatever"
@@ -242,11 +208,7 @@ async fn start_login(client: &reqwest::Client, addr: std::net::SocketAddr) -> St
 async fn full_login_flow_approves_and_sets_a_session_cookie() {
     let provider = spawn_mock_provider("alice", false).await;
     let oauth = oauth_config_for(&provider);
-    let addr = spawn_app(AuthState::new(
-        Some(oauth),
-        ApprovedUsers::new(["alice".to_string()]),
-    ))
-    .await;
+    let addr = spawn_app(AuthState::new(Some(oauth))).await;
 
     let client = no_redirect_client();
     let state = start_login(&client, addr).await;
@@ -325,55 +287,10 @@ async fn full_login_flow_approves_and_sets_a_session_cookie() {
 }
 
 #[tokio::test]
-async fn callback_refuses_a_login_not_on_the_approved_list() {
-    let provider = spawn_mock_provider("mallory", false).await;
-    let oauth = oauth_config_for(&provider);
-    // Approved list has someone else on it — "mallory" authenticates with the provider fine,
-    // but is not on it.
-    let addr = spawn_app(AuthState::new(
-        Some(oauth),
-        ApprovedUsers::new(["alice".to_string()]),
-    ))
-    .await;
-
-    let client = no_redirect_client();
-    let state = start_login(&client, addr).await;
-
-    let callback = client
-        .get(format!(
-            "http://{addr}/auth/callback?code=good-code&state={state}"
-        ))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(callback.status(), reqwest::StatusCode::FORBIDDEN);
-    assert!(
-        callback
-            .headers()
-            .get(reqwest::header::SET_COOKIE)
-            .is_none()
-    );
-
-    let me: Value = client
-        .get(format!("http://{addr}/auth/me"))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(me["authenticated"], false);
-}
-
-#[tokio::test]
 async fn callback_reports_a_provider_side_token_failure() {
     let provider = spawn_mock_provider("alice", true).await;
     let oauth = oauth_config_for(&provider);
-    let addr = spawn_app(AuthState::new(
-        Some(oauth),
-        ApprovedUsers::new(["alice".to_string()]),
-    ))
-    .await;
+    let addr = spawn_app(AuthState::new(Some(oauth))).await;
 
     let client = no_redirect_client();
     let state = start_login(&client, addr).await;
@@ -426,11 +343,7 @@ async fn jail_routes_are_open_when_oauth_is_not_configured() {
 #[tokio::test]
 async fn jail_routes_need_a_session_when_oauth_is_configured() {
     let provider = spawn_mock_provider("alice", false).await;
-    let addr = spawn_app(AuthState::new(
-        Some(oauth_config_for(&provider)),
-        ApprovedUsers::new(["alice".to_string()]),
-    ))
-    .await;
+    let addr = spawn_app(AuthState::new(Some(oauth_config_for(&provider)))).await;
     let client = no_redirect_client();
 
     for status in protected_statuses(&client, addr, None).await {
