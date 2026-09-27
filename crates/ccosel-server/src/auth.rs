@@ -65,6 +65,10 @@ pub struct OAuthConfig {
     pub authorize_url: String,
     pub token_url: String,
     pub user_url: String,
+    /// Where the provider ends its own session. Without this, signing out here would leave
+    /// Keycloak's session alive, and the next "Sign in" would go straight back in with no
+    /// password asked.
+    pub logout_url: String,
 }
 
 impl OAuthConfig {
@@ -75,12 +79,15 @@ impl OAuthConfig {
             authorize_url: format!("{base_url}/protocol/openid-connect/auth"),
             token_url: format!("{base_url}/protocol/openid-connect/token"),
             user_url: format!("{base_url}/protocol/openid-connect/userinfo"),
+            logout_url: format!("{base_url}/protocol/openid-connect/logout"),
         }
     }
 }
 
 struct Session {
     login: String,
+    /// What the provider needs to end its side of the session, if it issued one.
+    refresh_token: Option<String>,
     expires_at: Instant,
 }
 
@@ -112,7 +119,13 @@ impl AuthState {
         }
     }
 
-    fn session_login(&self, cookie_header: Option<&str>) -> Option<String> {
+    /// Whether login is turned on. Off, every request is let in.
+    pub fn enabled(&self) -> bool {
+        self.oauth.is_some()
+    }
+
+    /// The account signed in with this `Cookie` header, if any.
+    pub fn session_login(&self, cookie_header: Option<&str>) -> Option<String> {
         let token = read_cookie(cookie_header?, SESSION_COOKIE)?;
         let mut sessions = self.sessions.lock().unwrap();
         // Swept lazily on lookup rather than on a timer: this process has no background tasks
@@ -120,6 +133,46 @@ impl AuthState {
         // that to matter.
         sessions.retain(|_, s| s.expires_at > Instant::now());
         sessions.get(&token).map(|s| s.login.clone())
+    }
+}
+
+impl AuthState {
+    /// Signs this `Cookie` header's session out, here and at the provider. A session that is
+    /// already gone, or never existed, is not an error: the caller ends up signed out either
+    /// way, which is all it asked for.
+    pub async fn end_session(&self, cookie_header: Option<&str>) {
+        let Some(token) = cookie_header.and_then(|c| read_cookie(c, SESSION_COOKIE)) else {
+            return;
+        };
+        let Some(session) = self.sessions.lock().unwrap().remove(&token) else {
+            return;
+        };
+        let (Some(oauth), Some(refresh_token)) = (&self.oauth, session.refresh_token) else {
+            return;
+        };
+
+        let mut form = vec![
+            ("client_id", oauth.client_id.as_str()),
+            ("refresh_token", refresh_token.as_str()),
+        ];
+        if let Some(secret) = &oauth.client_secret {
+            form.push(("client_secret", secret));
+        }
+        // Our session is already gone, so failing here only leaves the provider's alive: the
+        // next sign-in skips the password prompt. Worth a line in the log, not an error page.
+        if let Err(e) = self
+            .http
+            .post(&oauth.logout_url)
+            .form(&form)
+            .send()
+            .await
+            .and_then(|r| r.error_for_status())
+        {
+            eprintln!(
+                "warning: could not end the provider session for {}: {e}",
+                session.login
+            );
+        }
     }
 }
 
@@ -235,17 +288,18 @@ async fn callback(
     }
 
     let redirect_uri = format!("{}/auth/callback", origin(&headers));
-    let login = match exchange_and_fetch_login(&state.auth.http, oauth, &code, &redirect_uri).await
-    {
-        Ok(login) => login,
-        Err(msg) => return (StatusCode::BAD_GATEWAY, msg).into_response(),
-    };
+    let (login, refresh_token) =
+        match exchange_and_fetch_login(&state.auth.http, oauth, &code, &redirect_uri).await {
+            Ok(found) => found,
+            Err(msg) => return (StatusCode::BAD_GATEWAY, msg).into_response(),
+        };
 
     let token = random_token(48);
     state.auth.sessions.lock().unwrap().insert(
         token.clone(),
         Session {
             login,
+            refresh_token,
             expires_at: Instant::now() + SESSION_TTL,
         },
     );
@@ -264,17 +318,19 @@ async fn callback(
 }
 
 /// The two calls a provider's OAuth flow needs after the redirect: trade the one-time `code`
-/// for an access token, then ask who it belongs to. Split out from [`callback`] so the network
+/// for an access token, then ask who it belongs to. Returns the login and, if the provider
+/// issued one, the refresh token that [`AuthState::end_session`] later signs out with. Split out from [`callback`] so the network
 /// half is one function with one error path, independent of routing and session bookkeeping.
 async fn exchange_and_fetch_login(
     http: &reqwest::Client,
     oauth: &OAuthConfig,
     code: &str,
     redirect_uri: &str,
-) -> Result<String, String> {
+) -> Result<(String, Option<String>), String> {
     #[derive(Deserialize)]
     struct TokenResp {
         access_token: Option<String>,
+        refresh_token: Option<String>,
         error_description: Option<String>,
         error: Option<String>,
     }
@@ -323,16 +379,15 @@ async fn exchange_and_fetch_login(
         .await
         .map_err(|e| format!("the OAuth provider's account response was not understood: {e}"))?;
 
-    user.preferred_username
-        .ok_or_else(|| "the OAuth provider did not return an account name".to_string())
+    let login = user
+        .preferred_username
+        .ok_or_else(|| "the OAuth provider did not return an account name".to_string())?;
+    Ok((login, token_resp.refresh_token))
 }
 
 async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    if let Some(cookie) = headers.get(header::COOKIE).and_then(|v| v.to_str().ok())
-        && let Some(token) = read_cookie(cookie, SESSION_COOKIE)
-    {
-        state.auth.sessions.lock().unwrap().remove(&token);
-    }
+    let cookie = headers.get(header::COOKIE).and_then(|v| v.to_str().ok());
+    state.auth.end_session(cookie).await;
     let mut resp = Redirect::to("/").into_response();
     // A negative Max-Age tells the browser to drop the cookie now, regardless of what it was.
     resp.headers_mut().append(

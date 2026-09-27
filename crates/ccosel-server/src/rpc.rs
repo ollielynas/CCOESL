@@ -6,8 +6,9 @@
 
 use axum::body::Bytes;
 use axum::extract::State;
-use axum::http::{StatusCode, header};
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
+use ccosel_proto::account::Account;
 use ccosel_proto::fs::ListDirReq;
 use ccosel_proto::{Method, WireReply, WireRequest, WireResult, server_error};
 
@@ -19,17 +20,20 @@ enum Outcome {
     Err(u32, String),
 }
 
-pub async fn handle(State(state): State<AppState>, body: Bytes) -> Response {
+pub async fn handle(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
     let Ok(requests) = postcard::from_bytes::<Vec<WireRequest>>(&body) else {
         return (StatusCode::BAD_REQUEST, "malformed rpc batch").into_response();
     };
 
     // Two passes: run every call into owned buffers, then borrow those into the reply batch.
     // `WireResult::Ok` borrows its payload, so the buffers have to outlive the encoding.
-    let outcomes: Vec<(u32, Outcome)> = requests
-        .iter()
-        .map(|req| (req.seq, dispatch(&state, req)))
-        .collect();
+    // In order, one at a time: a batch that signs out and then asks who is signed in should
+    // see the sign-out.
+    let cookie = headers.get(header::COOKIE).and_then(|v| v.to_str().ok());
+    let mut outcomes: Vec<(u32, Outcome)> = Vec::with_capacity(requests.len());
+    for req in &requests {
+        outcomes.push((req.seq, dispatch(&state, cookie, req).await));
+    }
 
     let replies: Vec<WireReply> = outcomes
         .iter()
@@ -57,7 +61,7 @@ pub async fn handle(State(state): State<AppState>, body: Bytes) -> Response {
 
 /// A failed call is a failed *entry*, never a failed batch: one bad path must not take down
 /// the other calls that were coalesced into the same request.
-fn dispatch(state: &AppState, req: &WireRequest<'_>) -> Outcome {
+async fn dispatch(state: &AppState, cookie: Option<&str>, req: &WireRequest<'_>) -> Outcome {
     let Some(method) = Method::from_u16(req.method) else {
         return Outcome::Err(server_error::UNKNOWN_METHOD, String::new());
     };
@@ -76,5 +80,20 @@ fn dispatch(state: &AppState, req: &WireRequest<'_>) -> Outcome {
             }
         }
         Method::Stat => Outcome::Err(server_error::UNKNOWN_METHOD, String::new()),
+        Method::WhoAmI => encode(&Account {
+            login_enabled: state.auth.enabled(),
+            name: state.auth.session_login(cookie),
+        }),
+        Method::SignOut => {
+            state.auth.end_session(cookie).await;
+            encode(&())
+        }
+    }
+}
+
+fn encode<T: serde::Serialize>(reply: &T) -> Outcome {
+    match postcard::to_allocvec(reply) {
+        Ok(bytes) => Outcome::Ok(bytes),
+        Err(_) => Outcome::Err(server_error::IO, String::new()),
     }
 }

@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use axum::Router as AxRouter;
 use axum::extract::State as AxState;
 use axum::routing::{get as ax_get, post as ax_post};
+use ccosel_proto::account::Account;
 use serde_json::{Value, json};
 
 use super::*;
@@ -43,13 +44,18 @@ async fn spawn_app(auth: AuthState) -> std::net::SocketAddr {
 struct MockProvider {
     login: String,
     fail_token: bool,
+    /// The refresh tokens `/logout` has been called with, in order.
+    logouts: Arc<Mutex<Vec<String>>>,
 }
 
 async fn mock_token(AxState(p): AxState<MockProvider>) -> axum::Json<Value> {
     if p.fail_token {
         axum::Json(json!({ "error": "bad_verification_code" }))
     } else {
-        axum::Json(json!({ "access_token": "test-access-token" }))
+        axum::Json(json!({
+            "access_token": "test-access-token",
+            "refresh_token": "test-refresh-token",
+        }))
     }
 }
 
@@ -57,23 +63,44 @@ async fn mock_user(AxState(p): AxState<MockProvider>) -> axum::Json<Value> {
     axum::Json(json!({ "preferred_username": p.login }))
 }
 
-/// A stand-in for Keycloak's two OAuth endpoints. Returns the base URL to point `token_url` /
-/// `user_url` at (`{base}/token`, `{base}/user`).
+async fn mock_logout(
+    AxState(p): AxState<MockProvider>,
+    axum::Form(form): axum::Form<HashMap<String, String>>,
+) {
+    p.logouts
+        .lock()
+        .unwrap()
+        .push(form.get("refresh_token").cloned().unwrap_or_default());
+}
+
+/// A stand-in for Keycloak's OAuth endpoints. Returns the base URL to point `token_url` /
+/// `user_url` / `logout_url` at (`{base}/token`, `{base}/user`, `{base}/logout`).
 async fn spawn_mock_provider(login: &str, fail_token: bool) -> String {
+    spawn_recording_provider(login, fail_token).await.0
+}
+
+/// [`spawn_mock_provider`], also handing back the provider's record of `/logout` calls.
+async fn spawn_recording_provider(
+    login: &str,
+    fail_token: bool,
+) -> (String, Arc<Mutex<Vec<String>>>) {
+    let logouts = Arc::new(Mutex::new(Vec::new()));
     let state = MockProvider {
         login: login.to_string(),
         fail_token,
+        logouts: logouts.clone(),
     };
     let router = AxRouter::new()
         .route("/token", ax_post(mock_token))
         .route("/user", ax_get(mock_user))
+        .route("/logout", ax_post(mock_logout))
         .with_state(state);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
         axum::serve(listener, router).await.unwrap();
     });
-    format!("http://{addr}")
+    (format!("http://{addr}"), logouts)
 }
 
 fn oauth_config_for(provider_base: &str) -> OAuthConfig {
@@ -83,6 +110,7 @@ fn oauth_config_for(provider_base: &str) -> OAuthConfig {
         authorize_url: format!("{provider_base}/authorize"),
         token_url: format!("{provider_base}/token"),
         user_url: format!("{provider_base}/user"),
+        logout_url: format!("{provider_base}/logout"),
     }
 }
 
@@ -360,4 +388,133 @@ async fn jail_routes_need_a_session_when_oauth_is_configured() {
         .await
         .unwrap();
     assert_eq!(me.status(), reqwest::StatusCode::OK);
+}
+
+// ---- WhoAmI and SignOut over /rpc ----
+
+/// Signs `login` in through the real callback and returns the `name=value` cookie pair.
+async fn signed_in_cookie(client: &reqwest::Client, addr: std::net::SocketAddr) -> String {
+    let state = start_login(client, addr).await;
+    let callback = client
+        .get(format!(
+            "http://{addr}/auth/callback?code=good-code&state={state}"
+        ))
+        .send()
+        .await
+        .unwrap();
+    let set_cookie = callback.headers().get(reqwest::header::SET_COOKIE).unwrap();
+    set_cookie
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_string()
+}
+
+/// Sends one argument-less call to `/rpc` and returns the HTTP status and, on success, the
+/// decoded reply.
+async fn rpc<T: for<'de> Deserialize<'de>>(
+    client: &reqwest::Client,
+    addr: std::net::SocketAddr,
+    cookie: Option<&str>,
+    method: ccosel_proto::Method,
+) -> (reqwest::StatusCode, Option<T>) {
+    let args = postcard::to_allocvec(&()).unwrap();
+    let batch = vec![ccosel_proto::WireRequest {
+        seq: 1,
+        method: method as u16,
+        args: &args,
+    }];
+    let mut req = client
+        .post(format!("http://{addr}/rpc"))
+        .body(postcard::to_allocvec(&batch).unwrap());
+    if let Some(c) = cookie {
+        req = req.header(reqwest::header::COOKIE, c);
+    }
+    let resp = req.send().await.unwrap();
+    let status = resp.status();
+    if !status.is_success() {
+        return (status, None);
+    }
+    let bytes = resp.bytes().await.unwrap();
+    let replies: Vec<ccosel_proto::WireReply> = postcard::from_bytes(&bytes).unwrap();
+    match &replies[0].result {
+        ccosel_proto::WireResult::Ok(payload) => {
+            (status, Some(postcard::from_bytes(payload).unwrap()))
+        }
+        ccosel_proto::WireResult::Err { code, .. } => panic!("rpc failed with {code}"),
+    }
+}
+
+#[tokio::test]
+async fn who_am_i_reports_login_off_when_oauth_is_not_configured() {
+    let addr = spawn_app(AuthState::default()).await;
+    let (status, account) = rpc::<Account>(
+        &no_redirect_client(),
+        addr,
+        None,
+        ccosel_proto::Method::WhoAmI,
+    )
+    .await;
+    assert_eq!(status, reqwest::StatusCode::OK);
+    assert_eq!(
+        account,
+        Some(Account {
+            login_enabled: false,
+            name: None
+        })
+    );
+}
+
+#[tokio::test]
+async fn sign_out_over_rpc_ends_the_session_here_and_at_the_provider() {
+    let (provider, logouts) = spawn_recording_provider("alice", false).await;
+    let addr = spawn_app(AuthState::new(Some(oauth_config_for(&provider)))).await;
+    let client = no_redirect_client();
+    let cookie = signed_in_cookie(&client, addr).await;
+
+    let (_, account) =
+        rpc::<Account>(&client, addr, Some(&cookie), ccosel_proto::Method::WhoAmI).await;
+    assert_eq!(
+        account,
+        Some(Account {
+            login_enabled: true,
+            name: Some("alice".to_string())
+        })
+    );
+
+    let (status, _) = rpc::<()>(&client, addr, Some(&cookie), ccosel_proto::Method::SignOut).await;
+    assert_eq!(status, reqwest::StatusCode::OK);
+    assert_eq!(*logouts.lock().unwrap(), ["test-refresh-token"]);
+
+    // The cookie no longer opens /rpc, which is what sends the shell back to sign-in.
+    let (status, _) =
+        rpc::<Account>(&client, addr, Some(&cookie), ccosel_proto::Method::WhoAmI).await;
+    assert_eq!(status, reqwest::StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn logout_route_also_ends_the_provider_session() {
+    let (provider, logouts) = spawn_recording_provider("alice", false).await;
+    let addr = spawn_app(AuthState::new(Some(oauth_config_for(&provider)))).await;
+    let client = no_redirect_client();
+    let cookie = signed_in_cookie(&client, addr).await;
+
+    client
+        .get(format!("http://{addr}/auth/logout"))
+        .header(reqwest::header::COOKIE, &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(*logouts.lock().unwrap(), ["test-refresh-token"]);
+
+    // Logging out again, with the dead cookie, has nothing left to end.
+    client
+        .get(format!("http://{addr}/auth/logout"))
+        .header(reqwest::header::COOKIE, &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(logouts.lock().unwrap().len(), 1);
 }

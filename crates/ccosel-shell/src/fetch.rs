@@ -31,8 +31,27 @@ pub async fn get_bytes(url: &str) -> Result<Vec<u8>, String> {
     Ok(js_sys::Uint8Array::new(&buffer).to_vec())
 }
 
+/// Why a POST failed. `Unauthorized` is its own case because it is not a network problem to
+/// retry: the session has ended, and only signing in again fixes it.
+pub enum PostError {
+    Unauthorized,
+    Other(String),
+}
+
+impl From<String> for PostError {
+    fn from(e: String) -> Self {
+        Self::Other(e)
+    }
+}
+
+impl From<&str> for PostError {
+    fn from(e: &str) -> Self {
+        Self::Other(e.to_owned())
+    }
+}
+
 /// POST bytes and return the response body.
-pub async fn post_bytes(url: &str, body: &[u8]) -> Result<Vec<u8>, String> {
+pub async fn post_bytes(url: &str, body: &[u8]) -> Result<Vec<u8>, PostError> {
     let window = web_sys::window().ok_or("no window")?;
 
     let init = web_sys::RequestInit::new();
@@ -53,8 +72,11 @@ pub async fn post_bytes(url: &str, body: &[u8]) -> Result<Vec<u8>, String> {
         .dyn_into::<web_sys::Response>()
         .map_err(|_| "fetch did not return a Response".to_owned())?;
 
+    if response.status() == 401 {
+        return Err(PostError::Unauthorized);
+    }
     if !response.ok() {
-        return Err(format!("{url}: HTTP {}", response.status()));
+        return Err(format!("{url}: HTTP {}", response.status()).into());
     }
 
     let buffer = JsFuture::from(

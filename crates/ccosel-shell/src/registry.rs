@@ -36,5 +36,13 @@ pub fn catalog() -> Vec<AppEntry> {
             url: "./dist/clock.wasm",
             default_size: [240.0, 200.0],
         },
+        AppEntry {
+            id: "account",
+            name: "Account",
+            icon: egui_phosphor::regular::USER_CIRCLE,
+            color: egui::Color32::from_rgb(0x8b, 0x5c, 0xf6),
+            url: "./dist/account.wasm",
+            default_size: [240.0, 160.0],
+        },
     ]
 }
