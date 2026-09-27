@@ -204,8 +204,16 @@ async fn create_client(base: &str, token: &str) -> anyhow::Result<()> {
             "clientId": KEYCLOAK_CLIENT_ID,
             "protocol": "openid-connect",
             "publicClient": true,
-            "redirectUris": ["http://localhost:8777/auth/callback"],
-            "webOrigins": ["http://localhost:8777"],
+            "redirectUris": [
+                "http://localhost:8777/auth/callback",
+                "http://127.0.0.1:8777/auth/callback",
+                "http://localhost:8777/*",
+                "http://127.0.0.1:8777/*"
+            ],
+            "webOrigins": [
+                "http://localhost:8777",
+                "http://127.0.0.1:8777"
+            ],
         }))
         .send()
         .await?;
