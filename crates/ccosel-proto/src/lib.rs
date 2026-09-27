@@ -15,6 +15,7 @@ extern crate alloc;
 
 pub mod account;
 pub mod fs;
+pub mod info;
 
 use serde::{Deserialize, Serialize};
 
@@ -28,8 +29,9 @@ pub const PROTO_VERSION: u32 = 1;
 pub enum Method {
     ListDir = 1,
     Stat = 2,
-    WhoAmI = 3,
-    SignOut = 4,
+    ServerInfo = 3,
+    WhoAmI = 4,
+    SignOut = 5,
 }
 
 impl Method {
@@ -37,8 +39,9 @@ impl Method {
         match v {
             1 => Some(Self::ListDir),
             2 => Some(Self::Stat),
-            3 => Some(Self::WhoAmI),
-            4 => Some(Self::SignOut),
+            3 => Some(Self::ServerInfo),
+            4 => Some(Self::WhoAmI),
+            5 => Some(Self::SignOut),
             _ => None,
         }
     }

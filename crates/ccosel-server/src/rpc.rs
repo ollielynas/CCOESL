@@ -10,9 +10,10 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use ccosel_proto::account::Account;
 use ccosel_proto::fs::ListDirReq;
-use ccosel_proto::{Method, WireReply, WireRequest, WireResult, server_error};
+use ccosel_proto::info::ServerInfoReply;
+use ccosel_proto::{Method, PROTO_VERSION, WireReply, WireRequest, WireResult, server_error};
 
-use crate::AppState;
+use crate::{AppState, stats};
 
 /// What one call produced, before it is borrowed into a `WireReply`.
 enum Outcome {
@@ -62,6 +63,7 @@ pub async fn handle(State(state): State<AppState>, headers: HeaderMap, body: Byt
 /// A failed call is a failed *entry*, never a failed batch: one bad path must not take down
 /// the other calls that were coalesced into the same request.
 async fn dispatch(state: &AppState, cookie: Option<&str>, req: &WireRequest<'_>) -> Outcome {
+    state.stats.count_rpc();
     let Some(method) = Method::from_u16(req.method) else {
         return Outcome::Err(server_error::UNKNOWN_METHOD, String::new());
     };
@@ -80,6 +82,20 @@ async fn dispatch(state: &AppState, cookie: Option<&str>, req: &WireRequest<'_>)
             }
         }
         Method::Stat => Outcome::Err(server_error::UNKNOWN_METHOD, String::new()),
+        Method::ServerInfo => {
+            let host = stats::sample_host();
+            let info = ServerInfoReply {
+                proto_version: PROTO_VERSION,
+                root: state.jail.root().display().to_string(),
+                uptime_ms: state.stats.uptime_ms(),
+                rpc_calls: state.stats.rpc_calls(),
+                cpus: host.cpus,
+                load_milli: host.load_milli,
+                mem_used_kib: host.mem_used_kib,
+                mem_total_kib: host.mem_total_kib,
+            };
+            encode(&info)
+        }
         Method::WhoAmI => encode(&Account {
             login_enabled: state.auth.enabled(),
             name: state.auth.session_login(cookie),

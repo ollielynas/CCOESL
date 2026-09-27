@@ -228,3 +228,29 @@ fn tooltips_do_not_need_a_hover_branch() {
     assert_eq!(recs.len(), 1, "a tooltip is not itself a widget");
     assert_eq!(recs[0].local_id, 21);
 }
+
+#[test]
+fn a_plot_is_drawn_at_its_size_and_reported() {
+    let buf = encode(&[
+        Cmd::Plot {
+            id: 40,
+            size: ccosel_abi::Vec2::new(120.0, 30.0),
+            samples: &[0, 255, 10, 200],
+        },
+        // Zero width means "fill the row".
+        Cmd::Plot {
+            id: 41,
+            size: ccosel_abi::Vec2::new(0.0, 20.0),
+            samples: &[],
+        },
+    ]);
+    let ctx = egui::Context::default();
+    let mut r = Replayer::new();
+    let recs = frame(&ctx, &mut r, &buf, raw_input()).unwrap();
+
+    let fixed = find(&recs, 40).rect;
+    assert_eq!(fixed[2] - fixed[0], 120.0);
+    assert_eq!(fixed[3] - fixed[1], 30.0);
+    let fill = find(&recs, 41).rect;
+    assert!(fill[2] - fill[0] > 120.0, "a zero-width plot fills the row");
+}

@@ -228,6 +228,15 @@ impl<'a> Ui<'a> {
         self.response(id)
     }
 
+    /// A line graph of `samples`, oldest first, each already scaled to `0..=255` (bottom to
+    /// top). Scaling is the app's job so the wire carries one byte per point; label the range
+    /// with ordinary [`Ui::label`]s. An `x` of `0.0` fills the row's width.
+    pub fn plot(&mut self, samples: &[u8], size: Vec2) -> Response {
+        let id = self.auto_id();
+        self.rec.push(&Cmd::Plot { id, size, samples });
+        self.response(id)
+    }
+
     /// A single-line text field. See [`Text`] for why the buffer usually isn't sent.
     pub fn text_edit(&mut self, text: &mut Text) -> Response {
         let id = self.auto_id();

@@ -179,6 +179,7 @@ fn build_web() -> Result<()> {
     let guests = [
         ("file_browser", "file-browser"),
         ("clock", "clock"),
+        ("server_dashboard", "server-dashboard"),
         ("account", "account"),
     ];
     for (crate_name, served) in guests {

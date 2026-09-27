@@ -37,6 +37,14 @@ pub fn catalog() -> Vec<AppEntry> {
             default_size: [240.0, 200.0],
         },
         AppEntry {
+            id: "server-dashboard",
+            name: "Server",
+            icon: egui_phosphor::regular::CHART_LINE,
+            color: egui::Color32::from_rgb(0x10, 0xb9, 0x81),
+            url: "./dist/server-dashboard.wasm",
+            default_size: [380.0, 560.0],
+        },
+        AppEntry {
             id: "account",
             name: "Account",
             icon: egui_phosphor::regular::USER_CIRCLE,
