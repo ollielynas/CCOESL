@@ -114,6 +114,13 @@ async fn ensure_keycloak_running() -> anyhow::Result<()> {
         return Ok(());
     }
 
+    // Remove a leftover stopped container with the same name.
+    let _ = std::process::Command::new("docker")
+        .args(["rm", "-f", KEYCLOAK_CONTAINER_NAME])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+
     println!("starting keycloak container…");
     let status = std::process::Command::new("docker")
         .args([
@@ -134,9 +141,7 @@ async fn ensure_keycloak_running() -> anyhow::Result<()> {
         .stderr(std::process::Stdio::piped())
         .status()?;
     if !status.success() {
-        anyhow::bail!(
-            "failed to start keycloak container (is {KEYCLOAK_CONTAINER_NAME} already running?)"
-        );
+        anyhow::bail!("failed to start keycloak container (is docker running?)");
     }
 
     println!("waiting for keycloak to start…");
