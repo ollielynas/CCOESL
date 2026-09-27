@@ -6,8 +6,15 @@ use std::path::PathBuf;
 use ccosel_server::auth::{ApprovedUsers, AuthState, OAuthConfig};
 use ccosel_server::fs_api::Jail;
 
+const KEYCLOAK_REALM: &str = "ccosel";
+const KEYCLOAK_CLIENT_ID: &str = "ccosel";
+const KEYCLOAK_ADMIN_USER: &str = "admin";
+const KEYCLOAK_ADMIN_PASS: &str = "admin";
+const KEYCLOAK_CONTAINER_NAME: &str = "ccosel-keycloak";
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    dotenvy::dotenv().ok();
     let mut args = std::env::args().skip(1);
     let mut root = PathBuf::from("data/shared");
     let mut web = PathBuf::from("web");
@@ -40,9 +47,6 @@ async fn main() -> anyhow::Result<()> {
             list
         }
         Err(e) => {
-            // Missing on purpose while OAuth isn't set up yet: an empty jail is still a jail,
-            // an empty allow-list is still a valid (if useless) allow-list, so this is a
-            // warning rather than a reason to refuse to start.
             println!(
                 "warning: could not read {} ({e}); no accounts are approved until it exists",
                 approved_users_path.display()
@@ -51,22 +55,162 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    // Both unset (the default until an operator configures Keycloak) means `/auth/login`
-    // answers 503 instead of the server refusing to start — see `AuthState`'s doc comment.
     let keycloak_url = std::env::var("CCOSEL_KEYCLOAK_URL").ok();
     let client_id = std::env::var("CCOSEL_KEYCLOAK_CLIENT_ID").ok();
     let client_secret = std::env::var("CCOSEL_KEYCLOAK_CLIENT_SECRET").ok();
     let oauth = match (keycloak_url, client_id) {
         (Some(url), Some(id)) => Some(OAuthConfig::keycloak(url, id, client_secret)),
         _ => {
-            println!(
-                "note: CCOSEL_KEYCLOAK_URL / CCOSEL_KEYCLOAK_CLIENT_ID not set — login is disabled"
-            );
-            None
+            println!("Keycloak not configured — attempting auto-provision…");
+            match auto_provision_keycloak().await {
+                Ok((url, id)) => {
+                    println!("keycloak ready at {url}");
+                    Some(OAuthConfig::keycloak(url, id, None))
+                }
+                Err(e) => {
+                    println!("note: could not auto-provision Keycloak ({e}) — login is disabled");
+                    None
+                }
+            }
         }
     };
     let auth = AuthState::new(oauth, approved);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     ccosel_server::serve(addr, jail, web, auth).await
+}
+
+async fn auto_provision_keycloak() -> anyhow::Result<(String, String)> {
+    ensure_docker()?;
+    ensure_keycloak_running().await?;
+    let base = "http://localhost:8080";
+    let admin_token = keycloak_admin_token(base).await?;
+    create_realm(base, &admin_token).await?;
+    create_client(base, &admin_token).await?;
+    let url = format!("{base}/realms/{KEYCLOAK_REALM}");
+    write_dotenv(&url, KEYCLOAK_CLIENT_ID)?;
+    Ok((url, KEYCLOAK_CLIENT_ID.to_string()))
+}
+
+fn ensure_docker() -> anyhow::Result<()> {
+    let status = std::process::Command::new("docker")
+        .args(["--version"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+    match status {
+        Ok(s) if s.success() => Ok(()),
+        _ => anyhow::bail!(
+            "docker is required for auto-provisioning — install it or set CCOSEL_KEYCLOAK_URL manually"
+        ),
+    }
+}
+
+async fn ensure_keycloak_running() -> anyhow::Result<()> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(2))
+        .build()?;
+    if client.get("http://localhost:8080").send().await.is_ok() {
+        return Ok(());
+    }
+
+    println!("starting keycloak container…");
+    let status = std::process::Command::new("docker")
+        .args([
+            "run",
+            "-d",
+            "--name",
+            KEYCLOAK_CONTAINER_NAME,
+            "-p",
+            "8080:8080",
+            "-e",
+            &format!("KEYCLOAK_ADMIN={KEYCLOAK_ADMIN_USER}"),
+            "-e",
+            &format!("KEYCLOAK_ADMIN_PASSWORD={KEYCLOAK_ADMIN_PASS}"),
+            "quay.io/keycloak/keycloak",
+            "start-dev",
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .status()?;
+    if !status.success() {
+        anyhow::bail!(
+            "failed to start keycloak container (is {KEYCLOAK_CONTAINER_NAME} already running?)"
+        );
+    }
+
+    println!("waiting for keycloak to start…");
+    for _ in 0..60 {
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        if client.get("http://localhost:8080").send().await.is_ok() {
+            return Ok(());
+        }
+    }
+    anyhow::bail!("keycloak did not start within 60 seconds")
+}
+
+async fn keycloak_admin_token(base: &str) -> anyhow::Result<String> {
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!(
+            "{base}/realms/master/protocol/openid-connect/token"
+        ))
+        .form(&[
+            ("grant_type", "password"),
+            ("client_id", "admin-cli"),
+            ("username", KEYCLOAK_ADMIN_USER),
+            ("password", KEYCLOAK_ADMIN_PASS),
+        ])
+        .send()
+        .await?
+        .json::<serde_json::Value>()
+        .await?;
+    resp["access_token"]
+        .as_str()
+        .map(String::from)
+        .ok_or_else(|| anyhow::anyhow!("could not get admin token: {resp}"))
+}
+
+async fn create_realm(base: &str, token: &str) -> anyhow::Result<()> {
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("{base}/admin/realms"))
+        .bearer_auth(token)
+        .json(&serde_json::json!({ "realm": KEYCLOAK_REALM }))
+        .send()
+        .await?;
+    if resp.status().is_success() || resp.status().as_u16() == 409 {
+        return Ok(());
+    }
+    anyhow::bail!("failed to create realm: {}", resp.text().await?)
+}
+
+async fn create_client(base: &str, token: &str) -> anyhow::Result<()> {
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("{base}/admin/realms/{KEYCLOAK_REALM}/clients"))
+        .bearer_auth(token)
+        .json(&serde_json::json!({
+            "clientId": KEYCLOAK_CLIENT_ID,
+            "protocol": "openid-connect",
+            "publicClient": true,
+            "redirectUris": ["http://localhost:8777/auth/callback"],
+            "webOrigins": ["http://localhost:8777"],
+        }))
+        .send()
+        .await?;
+    if resp.status().is_success() || resp.status().as_u16() == 409 {
+        return Ok(());
+    }
+    anyhow::bail!("failed to create client: {}", resp.text().await?)
+}
+
+fn write_dotenv(keycloak_url: &str, client_id: &str) -> anyhow::Result<()> {
+    let content = format!(
+        "CCOSEL_KEYCLOAK_URL={keycloak_url}\n\
+         CCOSEL_KEYCLOAK_CLIENT_ID={client_id}\n"
+    );
+    std::fs::write(".env", &content)?;
+    println!("wrote .env with auto-provisioned Keycloak credentials");
+    Ok(())
 }
