@@ -77,7 +77,8 @@ in. It's off by default — a checkout with nothing configured runs exactly as b
 Once it's on, `/rpc`, `/upload` and `/files/...` answer `401` without a signed-in session;
 only the boot page, the shell and app modules, and `/auth/*` stay public.
 
-To sign out, open the **Account** app and press **Sign out**. That ends the session on this
+The **Account** app shows who you are signed in as. **Manage account** opens Keycloak's
+account page (profile, password, sessions) in a new tab. To sign out, press **Sign out** there. That ends the session on this
 server and in Keycloak, so signing in again asks for the password.
 
 Sessions live in server memory only — a restart signs everyone out.

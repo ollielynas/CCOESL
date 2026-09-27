@@ -58,6 +58,12 @@ pub enum Cmd<'a> {
         id: u64,
         text: &'a str,
     },
+    OpenUrl {
+        id: u64,
+        /// What the button says. Kept apart from `url` so a row of links need not show URLs.
+        label: &'a str,
+        url: &'a str,
+    },
     Plot {
         id: u64,
         size: Vec2,
@@ -209,6 +215,11 @@ impl<'a> Decoder<'a> {
             OpCode::Tooltip => Cmd::Tooltip {
                 id: self.u64()?,
                 text: self.str()?,
+            },
+            OpCode::OpenUrl => Cmd::OpenUrl {
+                id: self.u64()?,
+                label: self.str()?,
+                url: self.str()?,
             },
             OpCode::Plot => Cmd::Plot {
                 id: self.u64()?,

@@ -111,6 +111,7 @@ fn oauth_config_for(provider_base: &str) -> OAuthConfig {
         token_url: format!("{provider_base}/token"),
         user_url: format!("{provider_base}/user"),
         logout_url: format!("{provider_base}/logout"),
+        account_url: format!("{provider_base}/account"),
     }
 }
 
@@ -462,7 +463,8 @@ async fn who_am_i_reports_login_off_when_oauth_is_not_configured() {
         account,
         Some(Account {
             login_enabled: false,
-            name: None
+            name: None,
+            account_url: None,
         })
     );
 }
@@ -480,7 +482,8 @@ async fn sign_out_over_rpc_ends_the_session_here_and_at_the_provider() {
         account,
         Some(Account {
             login_enabled: true,
-            name: Some("alice".to_string())
+            name: Some("alice".to_string()),
+            account_url: Some(format!("{provider}/account")),
         })
     );
 

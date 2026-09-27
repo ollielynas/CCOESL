@@ -254,3 +254,82 @@ fn a_plot_is_drawn_at_its_size_and_reported() {
     let fill = find(&recs, 41).rect;
     assert!(fill[2] - fill[0] > 120.0, "a zero-width plot fills the row");
 }
+
+/// Clicks the middle of widget `id` and returns the URLs the host asked the browser to open.
+fn click_and_collect_opened(buf: &[u8], id: u64) -> Vec<String> {
+    let ctx = egui::Context::default();
+    let mut r = Replayer::new();
+    let recs = frame(&ctx, &mut r, buf, raw_input()).unwrap();
+    let rect = find(&recs, id).rect;
+    let target = egui::pos2((rect[0] + rect[2]) / 2.0, (rect[1] + rect[3]) / 2.0);
+
+    let mut input = raw_input();
+    input.events = vec![
+        egui::Event::PointerMoved(target),
+        egui::Event::PointerButton {
+            pos: target,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: Default::default(),
+        },
+        egui::Event::PointerButton {
+            pos: target,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: Default::default(),
+        },
+    ];
+    let mut clicked = false;
+    let mut full = ctx.run_ui(input, |ui| {
+        clicked = find(&r.replay(ui, APP, buf).unwrap(), id).clicked();
+    });
+    full.textures_delta.clear();
+    assert!(clicked, "the click should land on the link");
+    full.platform_output
+        .commands
+        .into_iter()
+        .filter_map(|c| match c {
+            egui::OutputCommand::OpenUrl(open) => {
+                assert!(open.new_tab);
+                Some(open.url)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn clicking_open_url_opens_it_in_a_new_tab() {
+    let url = "http://localhost:8080/realms/ccosel/account";
+    let buf = encode(&[Cmd::OpenUrl {
+        id: 40,
+        label: "Manage account",
+        url,
+    }]);
+    assert_eq!(click_and_collect_opened(&buf, 40), [url]);
+}
+
+#[test]
+fn open_url_only_opens_web_and_same_origin_urls() {
+    for url in [
+        "javascript:alert(1)",
+        "data:text/html,hi",
+        "//evil.example/",
+    ] {
+        let buf = encode(&[Cmd::OpenUrl {
+            id: 41,
+            label: "Open",
+            url,
+        }]);
+        assert!(
+            click_and_collect_opened(&buf, 41).is_empty(),
+            "{url} was opened"
+        );
+    }
+    let buf = encode(&[Cmd::OpenUrl {
+        id: 42,
+        label: "Download",
+        url: "/files/notes.md",
+    }]);
+    assert_eq!(click_and_collect_opened(&buf, 42), ["/files/notes.md"]);
+}

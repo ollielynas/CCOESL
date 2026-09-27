@@ -6,10 +6,13 @@ use ccosel_sdk::testing::{Harness, rpc_error};
 
 use super::*;
 
+const ACCOUNT_URL: &str = "http://localhost:8080/realms/ccosel/account";
+
 fn signed_in(name: &str) -> Me {
     Me {
         login_enabled: true,
         name: Some(name.to_owned()),
+        account_url: Some(ACCOUNT_URL.to_owned()),
     }
 }
 
@@ -29,6 +32,10 @@ fn shows_who_is_signed_in() {
     assert!(h.has_label("Signed in as"));
     assert!(h.has_label("ollielynas"));
     assert!(h.has_button("Sign out"));
+    assert_eq!(
+        h.links(),
+        [("Manage account".to_owned(), ACCOUNT_URL.to_owned())]
+    );
 }
 
 #[test]
@@ -36,9 +43,11 @@ fn says_when_login_is_off() {
     let h = showing(Me {
         login_enabled: false,
         name: None,
+        account_url: None,
     });
     assert!(h.has_label("Login is turned off on this server."));
     assert!(!h.has_button("Sign out"));
+    assert!(h.links().is_empty());
 }
 
 #[test]
@@ -46,6 +55,7 @@ fn says_when_nobody_is_signed_in() {
     let h = showing(Me {
         login_enabled: true,
         name: None,
+        account_url: Some(ACCOUNT_URL.to_owned()),
     });
     assert!(h.has_label("Not signed in."));
     assert!(!h.has_button("Sign out"));

@@ -17,6 +17,9 @@ pub struct Account {
     /// The signed-in account name. Always `Some` when `login_enabled`, since the server
     /// refuses `/rpc` to anyone without a session.
     pub name: Option<String>,
+    /// The identity provider's page for managing this account (profile, password, sessions).
+    /// `None` when login is off.
+    pub account_url: Option<String>,
 }
 
 pub struct WhoAmI;

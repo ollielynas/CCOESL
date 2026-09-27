@@ -103,6 +103,17 @@ impl<A: App> Harness<A> {
             .collect()
     }
 
+    /// `(label, url)` of every [`Ui::open_url`](crate::Ui::open_url) button drawn in the last
+    /// frame, in order.
+    pub fn links(&self) -> Vec<(String, String)> {
+        self.commands()
+            .filter_map(|c| match c {
+                Cmd::OpenUrl { label, url, .. } => Some((label.to_string(), url.to_string())),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// Samples of every plot drawn in the last frame, in order.
     pub fn plots(&self) -> Vec<Vec<u8>> {
         self.commands()

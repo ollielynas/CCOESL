@@ -149,6 +149,12 @@ impl Encoder {
                 self.u64(id);
                 self.str(text);
             }
+            Cmd::OpenUrl { id, label, url } => {
+                self.u8(OpCode::OpenUrl as u8);
+                self.u64(id);
+                self.str(label);
+                self.str(url);
+            }
             Cmd::Plot { id, size, samples } => {
                 self.u8(OpCode::Plot as u8);
                 self.u64(id);

@@ -19,7 +19,10 @@ pub enum OpCode {
     /// Emitted unconditionally alongside a widget. The *shell* decides hover and draws it, so
     /// there is no one-frame delay. Guests must never branch on `hovered()` in order to draw.
     Tooltip = 0x0A,
-    // 0x0B is reserved for ProgressBar (#21); 0x0C and 0x0D for UploadFolder and OpenUrl (#15).
+    // 0x0B is reserved for ProgressBar (#21); 0x0C for UploadFolder (#15).
+    /// A button that opens `url` in a new browser tab when clicked. The shell opens it itself,
+    /// on the click, so a guest can never open a tab the user did not ask for.
+    OpenUrl = 0x0D,
     /// A line graph of `samples`, each already scaled by the guest to `0..=255`. The shell draws
     /// it, so a live chart costs one byte per point on the wire and no guest-side rendering.
     Plot = 0x0E,
@@ -41,6 +44,7 @@ impl OpCode {
             0x08 => Some(Self::TextEditSingle),
             0x09 => Some(Self::Image),
             0x0A => Some(Self::Tooltip),
+            0x0D => Some(Self::OpenUrl),
             0x0E => Some(Self::Plot),
             _ => None,
         }

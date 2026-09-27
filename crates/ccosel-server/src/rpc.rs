@@ -99,6 +99,7 @@ async fn dispatch(state: &AppState, cookie: Option<&str>, req: &WireRequest<'_>)
         Method::WhoAmI => encode(&Account {
             login_enabled: state.auth.enabled(),
             name: state.auth.session_login(cookie),
+            account_url: state.auth.account_url().map(str::to_owned),
         }),
         Method::SignOut => {
             state.auth.end_session(cookie).await;

@@ -58,6 +58,11 @@ fn sample() -> Vec<Cmd<'static>> {
             src: "/cas/abc123",
             size: Vec2::new(64.0, 64.0),
         },
+        Cmd::OpenUrl {
+            id: id::hash_str(win, "account"),
+            label: "Manage account",
+            url: "http://localhost:8080/realms/ccosel/account",
+        },
         Cmd::Plot {
             id: id::hash_str(win, "cpu"),
             size: Vec2::new(0.0, 48.0),

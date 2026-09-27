@@ -69,6 +69,8 @@ pub struct OAuthConfig {
     /// Keycloak's session alive, and the next "Sign in" would go straight back in with no
     /// password asked.
     pub logout_url: String,
+    /// The provider's own page for a signed-in user to manage their profile and password.
+    pub account_url: String,
 }
 
 impl OAuthConfig {
@@ -80,6 +82,7 @@ impl OAuthConfig {
             token_url: format!("{base_url}/protocol/openid-connect/token"),
             user_url: format!("{base_url}/protocol/openid-connect/userinfo"),
             logout_url: format!("{base_url}/protocol/openid-connect/logout"),
+            account_url: format!("{base_url}/account"),
         }
     }
 }
@@ -122,6 +125,11 @@ impl AuthState {
     /// Whether login is turned on. Off, every request is let in.
     pub fn enabled(&self) -> bool {
         self.oauth.is_some()
+    }
+
+    /// Where a signed-in user manages their account at the provider, if login is on.
+    pub fn account_url(&self) -> Option<&str> {
+        self.oauth.as_ref().map(|o| o.account_url.as_str())
     }
 
     /// The account signed in with this `Cookie` header, if any.

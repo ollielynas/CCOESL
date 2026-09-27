@@ -101,6 +101,14 @@ impl Replayer {
     }
 }
 
+/// Whether a guest's `OpenUrl` may be opened: web pages and this server's own paths only. A
+/// `javascript:` or `data:` URL would run with the page's authority, which no guest gets.
+fn is_openable(url: &str) -> bool {
+    url.starts_with("https://")
+        || url.starts_with("http://")
+        || (url.starts_with('/') && !url.starts_with("//"))
+}
+
 /// For each scope-opening command, the index of the command that closes it.
 ///
 /// `validate` has already proven the stream is balanced and within the depth limit, so this
@@ -198,6 +206,14 @@ impl Cx<'_> {
                             egui::FontId::proportional(9.0),
                             visuals.weak_text_color(),
                         );
+                    }
+                    self.finish(id, r);
+                }
+
+                Cmd::OpenUrl { id, label, url } => {
+                    let r = ui.add(egui::Button::new(label).frame_when_inactive(false));
+                    if r.clicked() && is_openable(url) {
+                        ui.ctx().open_url(egui::OpenUrl::new_tab(url));
                     }
                     self.finish(id, r);
                 }

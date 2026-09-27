@@ -237,6 +237,15 @@ impl<'a> Ui<'a> {
         self.response(id)
     }
 
+    /// A button that opens `url` in a new browser tab. The shell opens it on the click itself,
+    /// so `.clicked()` is only for the app's own bookkeeping. Only `http(s)://` and
+    /// same-origin (`/...`) URLs are opened; anything else draws a button that does nothing.
+    pub fn open_url(&mut self, label: &str, url: &str) -> Response {
+        let id = self.auto_id();
+        self.rec.push(&Cmd::OpenUrl { id, label, url });
+        self.response(id)
+    }
+
     /// A single-line text field. See [`Text`] for why the buffer usually isn't sent.
     pub fn text_edit(&mut self, text: &mut Text) -> Response {
         let id = self.auto_id();

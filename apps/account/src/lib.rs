@@ -56,9 +56,14 @@ impl App for Account {
                     ui.label("Signed in as");
                     ui.label(name);
                     ui.separator();
-                    if ui.button("Sign out").clicked() {
-                        self.signing_out = true;
-                    }
+                    ui.horizontal(|ui| {
+                        if let Some(url) = account.account_url.as_deref() {
+                            ui.open_url("Manage account", url);
+                        }
+                        if ui.button("Sign out").clicked() {
+                            self.signing_out = true;
+                        }
+                    });
                 }
                 (true, None) => {
                     ui.label("Not signed in.");
