@@ -181,7 +181,12 @@ async fn create_realm(base: &str, token: &str) -> anyhow::Result<()> {
     let resp = client
         .post(format!("{base}/admin/realms"))
         .bearer_auth(token)
-        .json(&serde_json::json!({ "realm": KEYCLOAK_REALM }))
+        .json(&serde_json::json!({
+            "realm": KEYCLOAK_REALM,
+            "enabled": true,
+            "registrationAllowed": false,
+            "loginWithEmailAllowed": true
+        }))
         .send()
         .await?;
     if resp.status().is_success() || resp.status().as_u16() == 409 {
