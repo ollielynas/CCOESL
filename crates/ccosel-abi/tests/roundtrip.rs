@@ -58,6 +58,11 @@ fn sample() -> Vec<Cmd<'static>> {
             src: "/cas/abc123",
             size: Vec2::new(64.0, 64.0),
         },
+        Cmd::Plot {
+            id: id::hash_str(win, "cpu"),
+            size: Vec2::new(0.0, 48.0),
+            samples: &[0, 64, 255, 128],
+        },
         Cmd::EndWindow { id: win },
     ]
 }
@@ -202,4 +207,22 @@ fn ids_are_stable_and_path_dependent() {
     assert_ne!(a, id::hash_str(id::ROOT, "windos"));
     // Same salt under a different parent must not collide.
     assert_ne!(id::hash_str(a, "ok"), id::hash_str(id::ROOT, "ok"));
+}
+
+#[test]
+fn plot_claiming_more_samples_than_are_present_is_truncated_not_a_panic() {
+    let buf = encode(&[Cmd::Plot {
+        id: 1,
+        size: Vec2::new(100.0, 40.0),
+        samples: &[1, 2, 3],
+    }]);
+    // Every strict prefix (an empty buffer is a valid empty frame) is cut mid-command.
+    for n in 1..buf.len() {
+        assert!(decode(&buf[..n]).is_err());
+    }
+    let mut lying = buf.clone();
+    // The varint length sits just before the samples; claim 100 of them.
+    let len_at = buf.len() - 4;
+    lying[len_at] = 100;
+    assert_eq!(decode(&lying), Err(DecodeError::Truncated));
 }

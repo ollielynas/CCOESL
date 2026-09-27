@@ -58,6 +58,13 @@ pub enum Cmd<'a> {
         id: u64,
         text: &'a str,
     },
+    Plot {
+        id: u64,
+        size: Vec2,
+        /// Oldest first, each `0` (bottom) to `255` (top). The guest owns the scale, so the
+        /// shell never has to guess a range, and the stream stays one byte per point.
+        samples: &'a [u8],
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -141,10 +148,14 @@ impl<'a> Decoder<'a> {
         }
     }
 
-    fn str(&mut self) -> Result<&'a str, DecodeError> {
+    fn bytes(&mut self) -> Result<&'a [u8], DecodeError> {
         let len = self.varint()?;
         let len = usize::try_from(len).map_err(|_| DecodeError::Truncated)?;
-        let bytes = self.take(len)?;
+        self.take(len)
+    }
+
+    fn str(&mut self) -> Result<&'a str, DecodeError> {
+        let bytes = self.bytes()?;
         core::str::from_utf8(bytes).map_err(|_| DecodeError::InvalidUtf8)
     }
 
@@ -198,6 +209,11 @@ impl<'a> Decoder<'a> {
             OpCode::Tooltip => Cmd::Tooltip {
                 id: self.u64()?,
                 text: self.str()?,
+            },
+            OpCode::Plot => Cmd::Plot {
+                id: self.u64()?,
+                size: Vec2::new(self.f32()?, self.f32()?),
+                samples: self.bytes()?,
             },
         })
     }

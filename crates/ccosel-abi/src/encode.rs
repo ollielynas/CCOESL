@@ -76,9 +76,13 @@ impl Encoder {
         }
     }
 
+    fn bytes(&mut self, b: &[u8]) {
+        self.varint(b.len() as u64);
+        self.buf.extend_from_slice(b);
+    }
+
     fn str(&mut self, s: &str) {
-        self.varint(s.len() as u64);
-        self.buf.extend_from_slice(s.as_bytes());
+        self.bytes(s.as_bytes());
     }
 
     fn layout(&mut self, l: Layout) {
@@ -144,6 +148,13 @@ impl Encoder {
                 self.u8(OpCode::Tooltip as u8);
                 self.u64(id);
                 self.str(text);
+            }
+            Cmd::Plot { id, size, samples } => {
+                self.u8(OpCode::Plot as u8);
+                self.u64(id);
+                self.f32(size.x);
+                self.f32(size.y);
+                self.bytes(samples);
             }
         }
     }

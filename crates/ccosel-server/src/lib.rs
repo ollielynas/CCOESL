@@ -5,6 +5,7 @@
 
 pub mod fs_api;
 pub mod rpc;
+pub mod stats;
 pub mod upload_api;
 
 use std::net::SocketAddr;
@@ -23,12 +24,14 @@ use fs_api::Jail;
 #[derive(Clone)]
 pub struct AppState {
     pub jail: Arc<Jail>,
+    pub stats: Arc<stats::Stats>,
 }
 
 /// Build the router. Separated from `serve` so tests can drive it on an ephemeral port.
 pub fn app(jail: Jail, web_dir: PathBuf) -> Router {
     let state = AppState {
         jail: Arc::new(jail),
+        stats: Arc::new(stats::Stats::new()),
     };
 
     Router::new()
