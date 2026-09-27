@@ -253,6 +253,31 @@ impl<'a> Ui<'a> {
         text.push_pending = false;
         self.response(id)
     }
+
+    /// A button that opens the browser's folder picker and uploads the chosen folder into
+    /// `dest`, a server path such as `/Documents`: the folder `photos` lands at
+    /// `/Documents/photos`.
+    ///
+    /// The shell does the picking and uploading. The app learns an upload into this button's
+    /// folder finished through [`Response::uploads_finished`], a count that goes up by one each
+    /// time; that is its cue to re-list `dest`.
+    pub fn upload_folder(&mut self, dest: &str) -> Response {
+        let id = self.auto_id();
+        self.rec.push(&Cmd::UploadFolder { id, dest });
+        self.response(id)
+    }
+
+    /// Open `url` in a new browser tab. Useful for downloads: point `url` at `/files/{path}` to
+    /// stream a file out of the jail.
+    ///
+    /// `label` is what the button shows. Keep it separate from `url` on purpose — a file
+    /// listing that put the URL itself on every row would be unreadable (`/files/notes.md`
+    /// repeated next to each file); pass something like `"Download"` instead.
+    pub fn open_url(&mut self, label: &str, url: &str) -> Response {
+        let id = self.auto_id();
+        self.rec.push(&Cmd::OpenUrl { id, label, url });
+        self.response(id)
+    }
 }
 
 /// A text field's contents.

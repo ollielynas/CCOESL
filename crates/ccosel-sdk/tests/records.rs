@@ -9,6 +9,8 @@ use ccosel_sdk::{App, FrameCtx, Recorder, RpcCtx, Text, Ui, Vec2};
 struct Demo {
     clicks: u32,
     filter: Text,
+    uploads: u32,
+    downloads: u32,
 }
 
 impl App for Demo {
@@ -23,6 +25,12 @@ impl App for Demo {
             ui.text_edit(&mut self.filter);
         });
         ui.image("/cas/abc123", Vec2::new(64.0, 64.0));
+        if ui.upload_folder("/Documents").clicked() {
+            self.uploads += 1;
+        }
+        if ui.open_url("Download", "/files/notes.md").clicked() {
+            self.downloads += 1;
+        }
     }
 }
 
@@ -41,6 +49,8 @@ fn demo() -> Demo {
     Demo {
         clicks: 0,
         filter: Text::new(""),
+        uploads: 0,
+        downloads: 0,
     }
 }
 
@@ -64,6 +74,15 @@ fn records_a_well_formed_frame() {
         cmds[7],
         Cmd::Image {
             src: "/cas/abc123",
+            ..
+        }
+    ));
+    assert!(matches!(cmds[8], Cmd::UploadFolder { .. }));
+    assert!(matches!(
+        cmds[9],
+        Cmd::OpenUrl {
+            label: "Download",
+            url: "/files/notes.md",
             ..
         }
     ));
@@ -95,7 +114,9 @@ fn widget_ids(buf: &[u8]) -> Vec<u64> {
             | Cmd::Button { id, .. }
             | Cmd::BeginScope { id, .. }
             | Cmd::TextEditSingle { id, .. }
-            | Cmd::Image { id, .. } => Some(id),
+            | Cmd::Image { id, .. }
+            | Cmd::UploadFolder { id, .. }
+            | Cmd::OpenUrl { id, .. } => Some(id),
             _ => None,
         })
         .collect()
@@ -149,6 +170,64 @@ fn a_click_is_observed_one_frame_later() {
     rec.set_responses(vec![]);
     record(&mut app, &mut rec);
     assert_eq!(app.clicks, 1);
+}
+
+#[test]
+fn upload_folder_click_is_observed_one_frame_later() {
+    let mut app = demo();
+    let mut rec = Recorder::new();
+
+    let buf = record(&mut app, &mut rec);
+    assert_eq!(app.uploads, 0);
+
+    let id = decode(&buf)
+        .into_iter()
+        .find_map(|c| match c {
+            Cmd::UploadFolder { id, .. } => Some(id),
+            _ => None,
+        })
+        .unwrap();
+
+    rec.set_responses(vec![RespRecord {
+        local_id: id,
+        flags: ResponseFlags::CLICKED | ResponseFlags::ENABLED,
+        ..Default::default()
+    }]);
+    record(&mut app, &mut rec);
+    assert_eq!(app.uploads, 1);
+
+    rec.set_responses(vec![]);
+    record(&mut app, &mut rec);
+    assert_eq!(app.uploads, 1, "responses are not sticky");
+}
+
+#[test]
+fn open_url_click_is_observed_one_frame_later() {
+    let mut app = demo();
+    let mut rec = Recorder::new();
+
+    let buf = record(&mut app, &mut rec);
+    assert_eq!(app.downloads, 0);
+
+    let id = decode(&buf)
+        .into_iter()
+        .find_map(|c| match c {
+            Cmd::OpenUrl { id, .. } => Some(id),
+            _ => None,
+        })
+        .unwrap();
+
+    rec.set_responses(vec![RespRecord {
+        local_id: id,
+        flags: ResponseFlags::CLICKED | ResponseFlags::ENABLED,
+        ..Default::default()
+    }]);
+    record(&mut app, &mut rec);
+    assert_eq!(app.downloads, 1);
+
+    rec.set_responses(vec![]);
+    record(&mut app, &mut rec);
+    assert_eq!(app.downloads, 1, "responses are not sticky");
 }
 
 #[test]
@@ -224,4 +303,44 @@ fn deeply_nested_scopes_still_produce_a_valid_buffer() {
     let mut ui = Ui::root(&mut rec, FrameCtx::default(), &rpc);
     Deep.update(&mut ui);
     ccosel_abi::validate(rec.commands()).unwrap();
+}
+
+#[test]
+fn upload_folder_carries_its_destination() {
+    let mut app = demo();
+    let mut rec = Recorder::new();
+    let buf = record(&mut app, &mut rec);
+    let dest = decode(&buf)
+        .into_iter()
+        .find_map(|c| match c {
+            Cmd::UploadFolder { dest, .. } => Some(dest.to_owned()),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(dest, "/Documents");
+}
+
+#[test]
+fn uploads_finished_reads_the_shells_count() {
+    let mut rec = Recorder::new();
+    let rpc = RpcCtx::new();
+    // The id the button will get, found by recording it once.
+    let id = {
+        let mut ui = Ui::root(&mut rec, FrameCtx::default(), &rpc);
+        ui.upload_folder("/");
+        decode(rec.commands())
+            .into_iter()
+            .find_map(|c| match c {
+                Cmd::UploadFolder { id, .. } => Some(id),
+                _ => None,
+            })
+            .unwrap()
+    };
+    rec.set_responses(vec![RespRecord {
+        local_id: id,
+        aux: 3,
+        ..Default::default()
+    }]);
+    let mut ui = Ui::root(&mut rec, FrameCtx::default(), &rpc);
+    assert_eq!(ui.upload_folder("/").uploads_finished(), 3);
 }

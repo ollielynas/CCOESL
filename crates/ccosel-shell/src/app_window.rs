@@ -1,7 +1,7 @@
 //! One running app, and the per-frame dance around it.
 
 use std::cell::Cell;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 
 use ccosel_abi::{REPAINT_ON_INPUT_ONLY, RespRecord};
@@ -52,6 +52,9 @@ pub struct AppWindow<I: AppInstance> {
     /// so a suspended app's replies survive until it is resumed.
     events: Rc<RefCell<VecDeque<Vec<u8>>>>,
     alive: Rc<Cell<bool>>,
+    /// Per `UploadFolder` button, how many uploads from it have finished. Handed to the app in
+    /// that button's response (`aux`), which is how it knows to re-list the folder.
+    uploads_finished: HashMap<u64, u32>,
 }
 
 impl<I: AppInstance> AppWindow<I> {
@@ -80,7 +83,38 @@ impl<I: AppInstance> AppWindow<I> {
             error: None,
             events: Rc::new(RefCell::new(VecDeque::new())),
             alive: Rc::new(Cell::new(true)),
+            uploads_finished: HashMap::new(),
         }
+    }
+
+    /// The `UploadFolder` button clicked this frame, if any: its id and destination folder.
+    /// Called straight after [`Self::ui`], so the picker opens in the same frame as the click.
+    pub fn clicked_upload(&self) -> Option<(u64, String)> {
+        self.replayer
+            .uploads()
+            .iter()
+            .find(|(id, _)| self.clicked(*id))
+            .cloned()
+    }
+
+    /// The target of the `OpenUrl` button clicked this frame, if any.
+    pub fn clicked_open_url(&self) -> Option<String> {
+        self.replayer
+            .open_url_ids()
+            .iter()
+            .find(|(id, _)| self.clicked(*id))
+            .map(|(_, url)| url.clone())
+    }
+
+    fn clicked(&self, local_id: u64) -> bool {
+        self.responses
+            .iter()
+            .any(|r| r.local_id == local_id && r.clicked())
+    }
+
+    /// An upload started from this window's `widget` button has finished.
+    pub fn upload_finished(&mut self, widget: u64) {
+        *self.uploads_finished.entry(widget).or_default() += 1;
     }
 
     /// A delivery handle for the transport's pending table.
@@ -165,7 +199,14 @@ impl<I: AppInstance> AppWindow<I> {
                 .replayer
                 .replay(ui, self.instance_id, &self.last_commands)
             {
-                Ok(responses) => self.responses = responses,
+                Ok(mut responses) => {
+                    for r in &mut responses {
+                        if let Some(&n) = self.uploads_finished.get(&r.local_id) {
+                            r.aux = n;
+                        }
+                    }
+                    self.responses = responses;
+                }
                 Err(e) => {
                     // A malformed frame is dropped whole; the previous one stays up.
                     self.error = Some(e.to_string());

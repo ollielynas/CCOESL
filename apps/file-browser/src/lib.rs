@@ -17,6 +17,9 @@ pub struct FileBrowser {
     /// Keyed by name, not by index: the listing is replaced asynchronously, so an index would
     /// silently come to mean a different file.
     selected: Option<String>,
+    /// The upload button's finished-upload count as of the last frame. When the shell's count
+    /// moves past it, an upload has landed and the listing is re-asked.
+    uploads_seen: u32,
 }
 
 impl Default for FileBrowser {
@@ -25,6 +28,7 @@ impl Default for FileBrowser {
             path: "/".to_owned(),
             filter: Text::new(""),
             selected: None,
+            uploads_seen: 0,
         }
     }
 }
@@ -116,6 +120,13 @@ impl App for FileBrowser {
             }
             ui.tooltip("Go to parent directory");
             if ui.button("⟳ Refresh").clicked() {
+                refresh = true;
+            }
+            // Into the folder on screen. The shell opens the picker and does the upload.
+            let finished = ui.upload_folder(&self.path).uploads_finished();
+            ui.tooltip("Upload a folder from this computer into this one");
+            if finished != self.uploads_seen {
+                self.uploads_seen = finished;
                 refresh = true;
             }
         });
@@ -220,6 +231,8 @@ impl App for FileBrowser {
                                 }
                                 if !entry.is_dir() {
                                     ui.label(format!("· {}", human_size(entry.size)).as_str());
+                                    // Opened by the shell in a new tab.
+                                    ui.open_url("Download", &download_url(&self.path, &entry.name));
                                 }
                             });
                         });
@@ -263,6 +276,26 @@ impl App for FileBrowser {
             }
         }
     }
+}
+
+/// `/files/<path>/<name>`, each segment percent-encoded, so a name like `notes #1.md` or
+/// `a?b.txt` asks for that file rather than cutting the URL short at the `#` or `?`.
+pub fn download_url(dir: &str, name: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut url = String::from("/files");
+    for segment in dir.split('/').filter(|s| !s.is_empty()).chain([name]) {
+        url.push('/');
+        for &b in segment.as_bytes() {
+            if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
+                url.push(b as char);
+            } else {
+                url.push('%');
+                url.push(HEX[usize::from(b >> 4)] as char);
+                url.push(HEX[usize::from(b & 0xF)] as char);
+            }
+        }
+    }
+    url
 }
 
 #[cfg(test)]

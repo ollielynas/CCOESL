@@ -42,6 +42,9 @@ pub struct Harness<A: App> {
     rec: Recorder,
     rpc: RpcCtx,
     clicks: Vec<RespRecord>,
+    /// Per `UploadFolder` button id, how many uploads the "shell" has finished. Reported in
+    /// that button's response every frame, as the real shell does.
+    uploads_finished: Vec<(u64, u32)>,
     calls: Vec<OutCall>,
     last: Vec<u8>,
 }
@@ -54,6 +57,7 @@ impl<A: App> Harness<A> {
             rec: Recorder::new(),
             rpc: RpcCtx::new(),
             clicks: Vec::new(),
+            uploads_finished: Vec::new(),
             calls: Vec::new(),
             last: Vec::new(),
         }
@@ -66,7 +70,19 @@ impl<A: App> Harness<A> {
     /// Panics if the app emits a command buffer the host would reject, so every frame a test
     /// runs is also checked for well-formedness.
     pub fn frame(&mut self) {
-        self.rec.set_responses(core::mem::take(&mut self.clicks));
+        let mut responses = core::mem::take(&mut self.clicks);
+        for &(id, n) in &self.uploads_finished {
+            match responses.iter_mut().find(|r| r.local_id == id) {
+                Some(r) => r.aux = n,
+                None => responses.push(RespRecord {
+                    local_id: id,
+                    aux: n,
+                    flags: ResponseFlags::ENABLED,
+                    ..Default::default()
+                }),
+            }
+        }
+        self.rec.set_responses(responses);
         self.rpc.begin_frame();
         {
             let mut ui = Ui::root(&mut self.rec, self.ctx, &self.rpc);
@@ -121,6 +137,42 @@ impl<A: App> Harness<A> {
                 _ => None,
             })
             .collect()
+    }
+
+    /// Destination folder of every `upload_folder` button drawn in the last frame, in order.
+    pub fn upload_buttons(&self) -> Vec<String> {
+        self.commands()
+            .filter_map(|c| match c {
+                Cmd::UploadFolder { dest, .. } => Some(dest.to_string()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// `(label, url)` of every `open_url` button drawn in the last frame, in order.
+    pub fn open_urls(&self) -> Vec<(String, String)> {
+        self.commands()
+            .filter_map(|c| match c {
+                Cmd::OpenUrl { label, url, .. } => Some((label.to_string(), url.to_string())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Plays the shell finishing an upload started from the first `upload_folder` button in
+    /// the last frame. The app sees it on the next [`frame`](Self::frame).
+    pub fn finish_upload(&mut self) {
+        let id = self
+            .commands()
+            .find_map(|c| match c {
+                Cmd::UploadFolder { id, .. } => Some(id),
+                _ => None,
+            })
+            .expect("no upload_folder button in the last frame");
+        match self.uploads_finished.iter_mut().find(|(i, _)| *i == id) {
+            Some((_, n)) => *n += 1,
+            None => self.uploads_finished.push((id, 1)),
+        }
     }
 
     pub fn has_label(&self, text: &str) -> bool {
