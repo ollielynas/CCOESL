@@ -13,8 +13,10 @@
 mod app_window;
 mod desktop;
 mod fetch;
+mod fullscreen;
 mod http_wire;
 mod registry;
+mod theme;
 
 use wasm_bindgen::prelude::*;
 
