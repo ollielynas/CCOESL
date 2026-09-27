@@ -10,7 +10,7 @@ ccosel-proto = { workspace = true, features = ["std"] }
 anyhow = { workspace = true }
 axum = "0.8"
 dotenvy = "0.15"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "fs"] }
 tower-http = { version = "0.6", features = ["fs", "compression-br", "compression-gzip"] }
 postcard = { workspace = true, features = ["use-std"] }
 serde = { workspace = true, features = ["std"] }
@@ -23,4 +23,4 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 rand = "0.8"
 
 [dev-dependencies]
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "fs"] }
