@@ -30,3 +30,8 @@ wasm-bindgen-futures = { workspace = true }
 web-sys = { workspace = true, features = ["Window", "Document", "Element", "HtmlCanvasElement", "Request", "RequestInit", "Response", "Headers", "console"] }
 js-sys = { workspace = true }
 console_error_panic_hook = "0.1"
+
+# Same wasm32 gate as the main dependencies above, and for the same reason: a native
+# `cargo test --workspace` must not need this pulled in at all.
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"
