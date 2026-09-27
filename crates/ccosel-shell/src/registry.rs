@@ -9,8 +9,11 @@
 pub struct AppEntry {
     pub id: &'static str,
     pub name: &'static str,
-    /// Single-glyph stand-in until the icon pipeline exists.
+    /// A Phosphor glyph, drawn on `color` as a badge — see `theme::paint_badge`.
     pub icon: &'static str,
+    /// The badge's background. Each app gets its own, so its windows and dock entries
+    /// stay visually identifiable at a glance instead of blurring into one grey list.
+    pub color: egui::Color32,
     pub url: &'static str,
     pub default_size: [f32; 2],
 }
@@ -20,14 +23,16 @@ pub fn catalog() -> Vec<AppEntry> {
         AppEntry {
             id: "file-browser",
             name: "Files",
-            icon: "🗀",
+            icon: egui_phosphor::regular::FOLDER,
+            color: egui::Color32::from_rgb(0x3b, 0x82, 0xf6),
             url: "./dist/file-browser.wasm",
             default_size: [420.0, 320.0],
         },
         AppEntry {
             id: "clock",
             name: "Clock",
-            icon: "◴",
+            icon: egui_phosphor::regular::CLOCK,
+            color: egui::Color32::from_rgb(0xf5, 0x9e, 0x0b),
             url: "./dist/clock.wasm",
             default_size: [240.0, 200.0],
         },

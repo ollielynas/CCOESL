@@ -21,6 +21,7 @@ ccosel-proto = { workspace = true }
 ccosel-transport = { workspace = true }
 postcard = { workspace = true }
 egui = { workspace = true }
+egui-phosphor = "0.14"
 # Not inherited from the workspace: the web build wants none of eframe's defaults (wgpu,
 # accesskit, winit, x11, wayland). glow is the lighter of the two web renderers.
 eframe = { version = "0.36", default-features = false, features = ["glow", "default_fonts"] }
@@ -31,7 +32,11 @@ web-sys = { workspace = true, features = ["Window", "Document", "Element", "Html
 js-sys = { workspace = true }
 console_error_panic_hook = "0.1"
 # Decodes the fetched wallpaper image client-side (issue #3): only when the connection looks
-# good enough to bother, so this never runs on a connection that couldn't afford the fetch
-# either. `png`-only: the placeholder wallpaper this ships is a PNG, and every extra format is
-# extra bytes in a shell that, unlike a guest app, does carry other genuinely heavy deps already.
-image = { version = "0.25", default-features = false, features = ["png"] }
+# good enough to bother. JPEG because the wallpaper is a photo (a PNG of it is 8x the bytes);
+# PNG so a drawn or screenshot wallpaper works too. No other formats: each one is shell size.
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+
+# Same wasm32 gate as the main dependencies above, and for the same reason: a native
+# `cargo test --workspace` must not need this pulled in at all.
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"

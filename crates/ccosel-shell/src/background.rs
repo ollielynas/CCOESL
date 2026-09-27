@@ -51,15 +51,62 @@ fn read_signal() -> Option<Signal> {
 /// Fetches and decodes the wallpaper image, ready for `egui::Context::load_texture`. Only ever
 /// called when [`detect`] chose [`Background::Image`], so this is exactly the extra network
 /// traffic that choice implies — nothing is fetched when the connection looked too weak for it.
-pub async fn fetch_wallpaper(url: &str) -> Result<egui::ColorImage, String> {
+pub async fn fetch_wallpaper(url: &str, max_side: usize) -> Result<egui::ColorImage, String> {
     let bytes = crate::fetch::get_bytes(url).await?;
-    let decoded = image::load_from_memory(&bytes).map_err(|e| format!("decode wallpaper: {e}"))?;
+    decode_wallpaper(&bytes, max_side)
+}
+
+/// Decodes a JPEG or PNG (detected from its bytes, not its name) and shrinks it to fit
+/// `max_side`, the GPU's texture limit. Without the shrink, a photo straight off a camera is
+/// larger than many GPUs accept, and egui refuses the texture.
+pub fn decode_wallpaper(bytes: &[u8], max_side: usize) -> Result<egui::ColorImage, String> {
+    let mut decoded =
+        image::load_from_memory(bytes).map_err(|e| format!("decode wallpaper: {e}"))?;
+    let max_side = u32::try_from(max_side).unwrap_or(u32::MAX);
+    if decoded.width() > max_side || decoded.height() > max_side {
+        decoded = decoded.thumbnail(max_side, max_side);
+    }
     let rgba = decoded.to_rgba8();
     let size = [rgba.width() as usize, rgba.height() as usize];
     Ok(egui::ColorImage::from_rgba_unmultiplied(
         size,
         rgba.as_raw(),
     ))
+}
+
+/// The part of an `image` (width, height) to show so it fills `target` without stretching,
+/// like CSS `object-fit: cover`: scaled until both sides cover, centred, the overflow cropped.
+/// Returned as UV coordinates, so the image is drawn exactly into `target` and nothing spills
+/// past the screen edge.
+pub fn cover_uv(image: [usize; 2], target: egui::Vec2) -> egui::Rect {
+    let full = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+    let (iw, ih) = (image[0] as f32, image[1] as f32);
+    if iw <= 0.0 || ih <= 0.0 || target.x <= 0.0 || target.y <= 0.0 {
+        return full;
+    }
+    let image_aspect = iw / ih;
+    let target_aspect = target.x / target.y;
+    if image_aspect > target_aspect {
+        // Wider than the screen: keep the full height, crop the sides.
+        let visible = target_aspect / image_aspect;
+        let margin = (1.0 - visible) / 2.0;
+        egui::Rect::from_min_max(egui::pos2(margin, 0.0), egui::pos2(1.0 - margin, 1.0))
+    } else {
+        // Taller than the screen: keep the full width, crop top and bottom.
+        let visible = image_aspect / target_aspect;
+        let margin = (1.0 - visible) / 2.0;
+        egui::Rect::from_min_max(egui::pos2(0.0, margin), egui::pos2(1.0, 1.0 - margin))
+    }
+}
+
+/// Draws the wallpaper to fill `rect`, centred and cropped (see [`cover_uv`]).
+pub fn paint_image(painter: &egui::Painter, rect: egui::Rect, texture: &egui::TextureHandle) {
+    painter.image(
+        texture.id(),
+        rect,
+        cover_uv(texture.size(), rect.size()),
+        egui::Color32::WHITE,
+    );
 }
 
 /// Draws a handful of soft, translucent circles: the "abstract shapes" background for a
@@ -94,3 +141,6 @@ pub fn draw_shapes(painter: &egui::Painter, rect: egui::Rect, dark_mode: bool) {
         );
     }
 }
+
+#[cfg(test)]
+mod tests;
