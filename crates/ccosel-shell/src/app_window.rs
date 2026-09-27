@@ -32,8 +32,6 @@ use std::cell::RefCell;
 pub struct AppWindow<I: AppInstance> {
     pub title: String,
     pub icon: &'static str,
-    /// The app's own colour, from the registry — carried by every window of it so the desktop
-    /// can mark an app's icon with the same colour everywhere it appears.
     pub color: egui::Color32,
     pub app_id: &'static str,
     /// Distinct per *instance*, not per app: two Files windows must not share egui state, or
