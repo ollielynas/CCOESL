@@ -74,5 +74,8 @@ default — a checkout with nothing configured runs exactly as before.
    CCOSEL_KEYCLOAK_CLIENT_SECRET=... cargo xtask serve
    ```
 
+Once it's on, `/rpc`, `/upload` and `/files/...` answer `401` without a signed-in session;
+only the boot page, the shell and app modules, and `/auth/*` stay public.
+
 `--approved-users <path>` overrides the list's location. Sessions live in server memory only —
 a restart signs everyone out.

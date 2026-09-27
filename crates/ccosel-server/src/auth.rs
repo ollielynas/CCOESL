@@ -22,8 +22,9 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use axum::extract::{Query, State};
+use axum::extract::{Query, Request, State};
 use axum::http::{HeaderMap, StatusCode, header};
+use axum::middleware::Next;
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::get;
 use axum::{Json, Router};
@@ -167,6 +168,23 @@ pub fn router() -> Router<AppState> {
         .route("/auth/callback", get(callback))
         .route("/auth/logout", get(logout))
         .route("/auth/me", get(me))
+}
+
+/// Guards the routes that touch the jail (`/rpc`, `/upload`, `/files`). Without OAuth configured
+/// every request passes, exactly as before login existed; with it, a request needs a live
+/// session cookie or gets `401`. `SameSite=Lax` on that cookie is also what keeps another site
+/// from making a signed-in browser `POST` to `/rpc` on its behalf.
+pub async fn require_session(State(state): State<AppState>, req: Request, next: Next) -> Response {
+    if state.auth.oauth.is_some() {
+        let cookie = req
+            .headers()
+            .get(header::COOKIE)
+            .and_then(|v| v.to_str().ok());
+        if state.auth.session_login(cookie).is_none() {
+            return (StatusCode::UNAUTHORIZED, "sign in first: /auth/login").into_response();
+        }
+    }
+    next.run(req).await
 }
 
 /// The `Host` header of the incoming request, so the redirect URI matches however the server

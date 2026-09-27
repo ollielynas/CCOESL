@@ -297,6 +297,11 @@ async fn full_login_flow_approves_and_sets_a_session_cookie() {
     assert_eq!(me["authenticated"], true);
     assert_eq!(me["login"], "alice");
 
+    // The session opens the jail-backed routes that were closed before signing in.
+    for status in protected_statuses(&client, addr, Some(&cookie_pair)).await {
+        assert_ne!(status, reqwest::StatusCode::UNAUTHORIZED);
+    }
+
     // Logging out drops the session; the same cookie no longer authenticates.
     client
         .get(format!("http://{addr}/auth/logout"))
@@ -314,6 +319,9 @@ async fn full_login_flow_approves_and_sets_a_session_cookie() {
         .await
         .unwrap();
     assert_eq!(me_after_logout["authenticated"], false);
+    for status in protected_statuses(&client, addr, Some(&cookie_pair)).await {
+        assert_eq!(status, reqwest::StatusCode::UNAUTHORIZED);
+    }
 }
 
 #[tokio::test]
@@ -378,4 +386,65 @@ async fn callback_reports_a_provider_side_token_failure() {
         .await
         .unwrap();
     assert_eq!(callback.status(), reqwest::StatusCode::BAD_GATEWAY);
+}
+
+// ---- require_session ----
+
+/// The status of one request to each jail-backed route, sent with `cookie` if given. The bodies
+/// are junk on purpose: only whether the auth gate let the request through matters here.
+async fn protected_statuses(
+    client: &reqwest::Client,
+    addr: std::net::SocketAddr,
+    cookie: Option<&str>,
+) -> Vec<reqwest::StatusCode> {
+    let requests = [
+        client.post(format!("http://{addr}/rpc")).body("junk"),
+        client
+            .post(format!("http://{addr}/upload?path=/&filename=a.txt"))
+            .body("hi"),
+        client.get(format!("http://{addr}/files/missing.txt")),
+    ];
+    let mut statuses = Vec::new();
+    for req in requests {
+        let req = match cookie {
+            Some(c) => req.header(reqwest::header::COOKIE, c),
+            None => req,
+        };
+        statuses.push(req.send().await.unwrap().status());
+    }
+    statuses
+}
+
+#[tokio::test]
+async fn jail_routes_are_open_when_oauth_is_not_configured() {
+    let addr = spawn_app(AuthState::default()).await;
+    for status in protected_statuses(&no_redirect_client(), addr, None).await {
+        assert_ne!(status, reqwest::StatusCode::UNAUTHORIZED);
+    }
+}
+
+#[tokio::test]
+async fn jail_routes_need_a_session_when_oauth_is_configured() {
+    let provider = spawn_mock_provider("alice", false).await;
+    let addr = spawn_app(AuthState::new(
+        Some(oauth_config_for(&provider)),
+        ApprovedUsers::new(["alice".to_string()]),
+    ))
+    .await;
+    let client = no_redirect_client();
+
+    for status in protected_statuses(&client, addr, None).await {
+        assert_eq!(status, reqwest::StatusCode::UNAUTHORIZED);
+    }
+    for status in protected_statuses(&client, addr, Some("ccosel_session=forged")).await {
+        assert_eq!(status, reqwest::StatusCode::UNAUTHORIZED);
+    }
+
+    // The public side stays reachable, or the boot page could never offer the sign-in button.
+    let me = client
+        .get(format!("http://{addr}/auth/me"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(me.status(), reqwest::StatusCode::OK);
 }
