@@ -1,53 +1,200 @@
 //! The Server Dashboard app.
 //!
-//! A live stats panel: polls the server periodically and shows protocol info, storage usage,
-//! and uptime. No file browser — that's the File Browser app's job.
+//! Live graphs of how the server machine is doing: CPU load, memory in use and RPC traffic.
+//! It polls `ServerInfo` and keeps the history itself, so the server stays stateless about who
+//! is watching.
+//!
+//! Nothing on screen changes shape while a poll is in flight: the last reply stays drawn until
+//! the next one lands, and a failed poll only changes the one status line. Swapping the stats
+//! for "Refreshing…" on every poll is what made the first version flicker.
 
-use ccosel_proto::fs::{ListDir, ListDirReq};
-use ccosel_proto::info::{ServerInfo, ServerInfoReq};
-use ccosel_sdk::{App, Poll, Ui};
+use ccosel_proto::info::{ServerInfo, ServerInfoReply, ServerInfoReq};
+use ccosel_sdk::{App, Poll, Ui, Vec2};
 
-/// How often to re-ask the server, in milliseconds.
-const REFRESH_INTERVAL_MS: f64 = 3000.0;
+/// How often to ask the server, in milliseconds.
+pub const POLL_INTERVAL_MS: f64 = 2000.0;
+/// Points kept per graph: two minutes at the poll interval.
+pub const HISTORY: usize = 60;
+/// Graph height, in points. Width fills the window.
+const PLOT_HEIGHT: f32 = 48.0;
 
-pub struct ServerDashboard {
-    last_refresh_ms: f64,
-    /// Monotonic timestamp of the first successful `ServerInfo` response, for uptime.
-    started_at_ms: Option<f64>,
-    /// Cached storage stats from the last successful `ListDir("/")` response.
-    total_dirs: usize,
-    total_files: usize,
-    total_bytes: u64,
+/// The last [`HISTORY`] readings of one statistic, oldest first.
+#[derive(Default)]
+pub struct Series {
+    pub values: Vec<u64>,
 }
 
-impl Default for ServerDashboard {
-    fn default() -> Self {
-        Self {
-            last_refresh_ms: 0.0,
-            started_at_ms: None,
-            total_dirs: 0,
-            total_files: 0,
-            total_bytes: 0,
+impl Series {
+    pub fn push(&mut self, v: u64) {
+        if self.values.len() == HISTORY {
+            self.values.remove(0);
         }
+        self.values.push(v);
+    }
+
+    /// The samples scaled to `0..=255` against `max`, as `Ui::plot` takes them. Values above
+    /// `max` are pinned to the top rather than wrapping.
+    pub fn scaled(&self, max: u64) -> Vec<u8> {
+        let max = max.max(1);
+        self.values
+            .iter()
+            .map(|&v| (v.min(max) * 255 / max) as u8)
+            .collect()
+    }
+
+    pub fn peak(&self) -> u64 {
+        self.values.iter().copied().max().unwrap_or(0)
+    }
+
+    pub fn latest(&self) -> u64 {
+        self.values.last().copied().unwrap_or(0)
     }
 }
 
-/// Human-readable size without touching float `Display`.
-fn human_size(bytes: u64) -> String {
-    let (n, unit) = if bytes >= 1 << 20 {
-        (bytes / (1 << 20), "M")
-    } else if bytes >= 1 << 10 {
-        (bytes / (1 << 10), "K")
-    } else {
-        (bytes, "B")
-    };
-    let mut s = String::new();
-    s.push_str(itoa(n).as_str());
-    s.push_str(unit);
-    s
+#[derive(Default)]
+pub struct ServerDashboard {
+    /// The most recent reply. Drawn every frame, including while the next poll is in flight.
+    pub last: Option<ServerInfoReply>,
+    /// Whether the latest poll failed. Only changes the status line, never the graphs.
+    pub unreachable: bool,
+    last_poll_ms: f64,
+    /// 1-minute load as a percentage of all CPUs.
+    pub cpu: Series,
+    /// Memory in use, as a percentage of total.
+    pub mem: Series,
+    /// RPC calls per minute between consecutive polls.
+    pub rpc_rate: Series,
 }
 
-fn itoa(mut n: u64) -> String {
+impl ServerDashboard {
+    /// Fold a reply into the history. A reply for the same moment as the last one (the cached
+    /// value, seen again on a later frame) is not a new reading.
+    fn record(&mut self, info: &ServerInfoReply) {
+        if let Some(prev) = &self.last {
+            if info.uptime_ms == prev.uptime_ms {
+                self.unreachable = false;
+                return;
+            }
+            // A restarted server's counters start again from zero, so there's no rate to take.
+            if info.uptime_ms > prev.uptime_ms {
+                let calls = info.rpc_calls.saturating_sub(prev.rpc_calls);
+                let ms = info.uptime_ms - prev.uptime_ms;
+                self.rpc_rate.push(calls * 60_000 / ms);
+            }
+        }
+        if let Some(load) = info.load_milli {
+            self.cpu
+                .push(u64::from(load) / 10 / u64::from(info.cpus.max(1)));
+        }
+        if let (Some(used), Some(total)) = (info.mem_used_kib, info.mem_total_kib) {
+            self.mem.push(used * 100 / total.max(1));
+        }
+        self.last = Some(info.clone());
+        self.unreachable = false;
+    }
+}
+
+impl App for ServerDashboard {
+    fn update(&mut self, ui: &mut Ui<'_>) {
+        let now = ui.ctx().time_ms;
+
+        let settled = match ui.rpc().get::<ServerInfo>(&ServerInfoReq) {
+            Poll::Pending => false,
+            Poll::Failed(_) => {
+                self.unreachable = true;
+                true
+            }
+            Poll::Ready(info) => {
+                self.record(&info);
+                true
+            }
+        };
+        // Ask again only once the previous call has settled: invalidating an in-flight call
+        // cancels it, so a server slower than the interval would otherwise never answer.
+        if settled && now - self.last_poll_ms >= POLL_INTERVAL_MS {
+            self.last_poll_ms = now;
+            ui.rpc().invalidate::<ServerInfo>(&ServerInfoReq);
+        }
+
+        let Some(info) = self.last.clone() else {
+            ui.label(if self.unreachable {
+                "Can't reach the server. Retrying…"
+            } else {
+                "Connecting…"
+            });
+            return;
+        };
+
+        ui.label(if self.unreachable {
+            "Can't reach the server. Showing the last reading."
+        } else {
+            "Live · updates every 2 seconds"
+        });
+        ui.horizontal(|ui| {
+            ui.label("Up");
+            ui.label(&format_duration(info.uptime_ms));
+            ui.label("·");
+            ui.label(&count(u64::from(info.cpus), "CPU", "CPUs"));
+        });
+        ui.separator();
+
+        ui.horizontal(|ui| {
+            ui.label("CPU load");
+            ui.label(&match info.load_milli {
+                Some(_) => percent(self.cpu.latest()),
+                None => "unavailable".to_owned(),
+            });
+        });
+        ui.plot(&self.cpu.scaled(100), Vec2::new(0.0, PLOT_HEIGHT));
+        ui.tooltip("1-minute load average across all CPUs, over the last 2 minutes");
+
+        ui.horizontal(|ui| {
+            ui.label("Memory");
+            ui.label(&match (info.mem_used_kib, info.mem_total_kib) {
+                (Some(used), Some(total)) => {
+                    let mut s = kib(used);
+                    s.push_str(" of ");
+                    s.push_str(&kib(total));
+                    s
+                }
+                _ => "unavailable".to_owned(),
+            });
+        });
+        ui.plot(&self.mem.scaled(100), Vec2::new(0.0, PLOT_HEIGHT));
+        ui.tooltip("Memory in use, as a share of the total, over the last 2 minutes");
+
+        ui.horizontal(|ui| {
+            ui.label("Requests");
+            let mut s = itoa(self.rpc_rate.latest());
+            s.push_str("/min");
+            ui.label(&s);
+        });
+        // Scaled to the busiest moment on screen, so a quiet server still shows its shape.
+        let peak = self.rpc_rate.peak();
+        ui.plot(&self.rpc_rate.scaled(peak), Vec2::new(0.0, PLOT_HEIGHT));
+        ui.tooltip("RPC calls the server answered per minute, from every client");
+        ui.separator();
+
+        ui.horizontal(|ui| {
+            ui.label("Serving");
+            ui.label(&info.root);
+        });
+        ui.horizontal(|ui| {
+            ui.label("Protocol");
+            let mut s = "v".to_owned();
+            s.push_str(&itoa(u64::from(info.proto_version)));
+            ui.label(&s);
+        });
+    }
+
+    fn wants_repaint_after_ms(&self) -> u32 {
+        // Often enough to notice a settled poll promptly; the poll itself is still 2 s apart.
+        250
+    }
+}
+
+/// Decimal digits, without float `Display` (which alone would blow the size budget).
+pub fn itoa(mut n: u64) -> String {
     if n == 0 {
         return "0".to_owned();
     }
@@ -61,132 +208,46 @@ fn itoa(mut n: u64) -> String {
     String::from_utf8_lossy(&buf[i..]).into_owned()
 }
 
-/// Format milliseconds as `MM:SS`.
-fn format_uptime(ms: f64) -> String {
-    let secs = (ms / 1000.0) as u64;
-    let m = secs / 60;
-    let s = secs % 60;
-    let mut out = String::new();
-    out.push_str(itoa(m).as_str());
-    out.push(':');
-    if s < 10 {
-        out.push('0');
-    }
-    out.push_str(itoa(s).as_str());
-    out
+pub fn percent(n: u64) -> String {
+    let mut s = itoa(n);
+    s.push('%');
+    s
 }
 
-impl App for ServerDashboard {
-    fn update(&mut self, ui: &mut Ui<'_>) {
-        let now = ui.ctx().time_ms;
-
-        // Auto-refresh: re-ask the server periodically.
-        if now - self.last_refresh_ms >= REFRESH_INTERVAL_MS {
-            self.last_refresh_ms = now;
-            ui.rpc().invalidate::<ServerInfo>(&ServerInfoReq);
-            ui.rpc().invalidate::<ListDir>(&ListDirReq { path: "/" });
-        }
-
-        ui.label("Server Dashboard");
-        ui.separator();
-
-        // ── Server info ──
-        ui.label("Server");
-        match ui.rpc().get::<ServerInfo>(&ServerInfoReq) {
-            Poll::Pending => {
-                if self.started_at_ms.is_some() {
-                    ui.label("Refreshing…");
-                } else {
-                    ui.label("Connecting…");
-                }
-            }
-            Poll::Failed(err) => {
-                ui.label(err.message());
-                if ui.button("Retry").clicked() {
-                    ui.rpc().invalidate::<ServerInfo>(&ServerInfoReq);
-                }
-            }
-            Poll::Ready(info) => {
-                if self.started_at_ms.is_none() {
-                    self.started_at_ms = Some(now);
-                }
-                ui.horizontal(|ui| {
-                    ui.label("Protocol version");
-                    ui.label(itoa(u64::from(info.proto_version)).as_str());
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Shared root");
-                    ui.label(info.root.as_str());
-                });
-            }
-        }
-
-        // ── Uptime ──
-        if let Some(start) = self.started_at_ms {
-            ui.horizontal(|ui| {
-                ui.label("Uptime");
-                ui.label(format_uptime(now - start).as_str());
-            });
-        }
-
-        // ── Storage stats ──
-        ui.separator();
-        ui.label("Storage");
-        match ui.rpc().get::<ListDir>(&ListDirReq { path: "/" }) {
-            Poll::Pending => {
-                if self.total_dirs + self.total_files > 0 {
-                    // Show cached stats while refreshing.
-                    ui.label(
-                        format_storage(self.total_dirs, self.total_files, self.total_bytes)
-                            .as_str(),
-                    );
-                } else {
-                    ui.label("Loading…");
-                }
-            }
-            Poll::Failed(err) => {
-                ui.label(err.message());
-                if ui.button("Retry storage").clicked() {
-                    ui.rpc().invalidate::<ListDir>(&ListDirReq { path: "/" });
-                }
-            }
-            Poll::Ready(listing) => {
-                self.total_dirs = listing.entries.iter().filter(|e| e.is_dir()).count();
-                self.total_files = listing.entries.len() - self.total_dirs;
-                self.total_bytes = listing
-                    .entries
-                    .iter()
-                    .filter(|e| !e.is_dir())
-                    .map(|e| e.size)
-                    .sum();
-                ui.label(
-                    format_storage(self.total_dirs, self.total_files, self.total_bytes).as_str(),
-                );
-                if listing.truncated {
-                    ui.label("(listing truncated — more files than the server returned)");
-                }
-            }
-        }
-
-        // ── Refresh control ──
-        ui.separator();
-        if ui.button("⟳ Refresh now").clicked() {
-            self.last_refresh_ms = now;
-            ui.rpc().invalidate::<ServerInfo>(&ServerInfoReq);
-            ui.rpc().invalidate::<ListDir>(&ListDirReq { path: "/" });
-        }
-        ui.label("Auto-refreshes every 3 seconds.");
-    }
+pub fn count(n: u64, one: &str, many: &str) -> String {
+    let mut s = itoa(n);
+    s.push(' ');
+    s.push_str(if n == 1 { one } else { many });
+    s
 }
 
-fn format_storage(dirs: usize, files: usize, bytes: u64) -> String {
-    let mut out = String::new();
-    out.push_str(itoa(dirs as u64).as_str());
-    out.push_str(" folders, ");
-    out.push_str(itoa(files as u64).as_str());
-    out.push_str(" files, ");
-    out.push_str(human_size(bytes).as_str());
-    out.push_str(" total");
+/// KiB as whole MB or GB, whichever reads better.
+pub fn kib(n: u64) -> String {
+    let (v, unit) = if n >= 1 << 20 {
+        (n >> 20, " GB")
+    } else {
+        (n >> 10, " MB")
+    };
+    let mut s = itoa(v);
+    s.push_str(unit);
+    s
+}
+
+/// `3d 4h`, `4h 12m` or `12m 5s`: the two largest units, which is all an uptime needs.
+pub fn format_duration(ms: u64) -> String {
+    let secs = ms / 1000;
+    let (d, h, m, s) = (secs / 86_400, secs / 3600 % 24, secs / 60 % 60, secs % 60);
+    let (a, au, b, bu) = if d > 0 {
+        (d, "d ", h, "h")
+    } else if h > 0 {
+        (h, "h ", m, "m")
+    } else {
+        (m, "m ", s, "s")
+    };
+    let mut out = itoa(a);
+    out.push_str(au);
+    out.push_str(&itoa(b));
+    out.push_str(bu);
     out
 }
 

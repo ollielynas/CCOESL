@@ -103,6 +103,16 @@ impl<A: App> Harness<A> {
             .collect()
     }
 
+    /// Samples of every plot drawn in the last frame, in order.
+    pub fn plots(&self) -> Vec<Vec<u8>> {
+        self.commands()
+            .filter_map(|c| match c {
+                Cmd::Plot { samples, .. } => Some(samples.to_vec()),
+                _ => None,
+            })
+            .collect()
+    }
+
     pub fn has_label(&self, text: &str) -> bool {
         self.labels().iter().any(|l| l == text)
     }

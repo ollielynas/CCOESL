@@ -12,7 +12,7 @@ use ccosel_proto::fs::ListDirReq;
 use ccosel_proto::info::ServerInfoReply;
 use ccosel_proto::{Method, PROTO_VERSION, WireReply, WireRequest, WireResult, server_error};
 
-use crate::AppState;
+use crate::{AppState, stats};
 
 /// What one call produced, before it is borrowed into a `WireReply`.
 enum Outcome {
@@ -59,6 +59,7 @@ pub async fn handle(State(state): State<AppState>, body: Bytes) -> Response {
 /// A failed call is a failed *entry*, never a failed batch: one bad path must not take down
 /// the other calls that were coalesced into the same request.
 fn dispatch(state: &AppState, req: &WireRequest<'_>) -> Outcome {
+    state.stats.count_rpc();
     let Some(method) = Method::from_u16(req.method) else {
         return Outcome::Err(server_error::UNKNOWN_METHOD, String::new());
     };
@@ -78,9 +79,16 @@ fn dispatch(state: &AppState, req: &WireRequest<'_>) -> Outcome {
         }
         Method::Stat => Outcome::Err(server_error::UNKNOWN_METHOD, String::new()),
         Method::ServerInfo => {
+            let host = stats::sample_host();
             let info = ServerInfoReply {
                 proto_version: PROTO_VERSION,
                 root: state.jail.root().display().to_string(),
+                uptime_ms: state.stats.uptime_ms(),
+                rpc_calls: state.stats.rpc_calls(),
+                cpus: host.cpus,
+                load_milli: host.load_milli,
+                mem_used_kib: host.mem_used_kib,
+                mem_total_kib: host.mem_total_kib,
             };
             match postcard::to_allocvec(&info) {
                 Ok(bytes) => Outcome::Ok(bytes),

@@ -147,4 +147,14 @@ async fn reports_server_info_over_http() {
     let info: ServerInfoReply = postcard::from_bytes(bytes).unwrap();
     assert_eq!(info.proto_version, PROTO_VERSION);
     assert_eq!(info.root, root.display().to_string());
+    assert_eq!(
+        info.rpc_calls, 1,
+        "this call is the first the server has answered"
+    );
+    assert!(info.cpus >= 1);
+    if cfg!(target_os = "linux") {
+        let (used, total) = (info.mem_used_kib.unwrap(), info.mem_total_kib.unwrap());
+        assert!(used <= total && total > 0);
+        assert!(info.load_milli.is_some());
+    }
 }

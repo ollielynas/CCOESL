@@ -1,9 +1,8 @@
 //! Server-info method.
 //!
-//! What a management dashboard needs first: which server it is talking to, and what it is
-//! serving. Everything else the server manages (the shared file jail's contents) is already
-//! reachable through [`crate::fs::ListDir`]; this method exists for the state that has no
-//! other RPC to ride along on.
+//! Which server a dashboard is talking to, and a snapshot of how that machine is doing right
+//! now. A dashboard polls it and keeps the history itself, so the server stays stateless about
+//! who is watching.
 
 use alloc::string::String;
 use serde::{Deserialize, Serialize};
@@ -23,6 +22,18 @@ pub struct ServerInfoReply {
     /// it is already implied by every successful `ListDir` reply — but worth naming plainly on
     /// a dashboard instead of leaving an operator to infer it from `--root`.
     pub root: String,
+    /// How long this server process has been running.
+    pub uptime_ms: u64,
+    /// RPC calls answered since start, this one included. Its rate is the server's load.
+    pub rpc_calls: u64,
+    /// Logical CPUs on the host.
+    pub cpus: u32,
+    /// 1-minute load average ×1000, so it crosses the wire without a float. `None` where the
+    /// OS doesn't expose one.
+    pub load_milli: Option<u32>,
+    /// Memory in use and in total, in KiB. `None` where the OS doesn't expose it.
+    pub mem_used_kib: Option<u64>,
+    pub mem_total_kib: Option<u64>,
 }
 
 pub struct ServerInfo;

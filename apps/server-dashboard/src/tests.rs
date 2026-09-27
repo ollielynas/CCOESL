@@ -1,168 +1,195 @@
-use ccosel_proto::fs::{DirEntry, DirListing, EntryKind, ListDir};
 use ccosel_proto::info::{ServerInfo, ServerInfoReply};
 use ccosel_sdk::testing::{Harness, rpc_error};
 
 use super::*;
 
-fn entry(name: &str, kind: EntryKind, size: u64) -> DirEntry {
-    DirEntry {
-        name: name.to_owned(),
-        kind,
-        size,
-        mtime_s: 0,
-    }
-}
-
-fn listing(entries: Vec<DirEntry>) -> DirListing {
-    DirListing {
-        entries,
-        truncated: false,
-    }
-}
-
-fn server_info(root: &str) -> ServerInfoReply {
+fn info(uptime_ms: u64, rpc_calls: u64) -> ServerInfoReply {
     ServerInfoReply {
         proto_version: 7,
-        root: root.to_owned(),
+        root: "/srv/shared".to_owned(),
+        uptime_ms,
+        rpc_calls,
+        cpus: 4,
+        // 2.0 load over 4 CPUs: 50%.
+        load_milli: Some(2000),
+        mem_used_kib: Some(3 << 20),
+        mem_total_kib: Some(4 << 20),
     }
 }
 
-/// A dashboard that has asked for server info and `/`'s listing, been answered with both, and
-/// drawn the result.
-fn connected(listing: DirListing) -> Harness<ServerDashboard> {
+/// A dashboard that has asked once, been answered with `first`, and drawn it.
+fn connected(first: &ServerInfoReply) -> Harness<ServerDashboard> {
     let mut h = Harness::new(ServerDashboard::default());
     h.frame();
-    h.reply::<ServerInfo>(&server_info("/srv/shared"));
-    h.reply::<ListDir>(&listing);
+    h.reply::<ServerInfo>(first);
     h.frame();
     h
 }
 
-#[test]
-fn asks_server_for_info_and_listing_and_shows_loading() {
-    let mut h = Harness::new(ServerDashboard::default());
-    h.frame();
-    assert!(h.has_label("Connecting…"));
+/// Let the poll interval elapse and answer the re-ask with `next`.
+fn poll(h: &mut Harness<ServerDashboard>, next: &ServerInfoReply) {
+    h.ctx.time_ms += POLL_INTERVAL_MS;
+    h.frame(); // sees the interval has passed and invalidates
+    h.frame(); // re-asks
     assert_eq!(h.outstanding::<ServerInfo>(), 1);
-    assert_eq!(h.outstanding::<ListDir>(), 1);
-
-    // Asking every frame must not duplicate calls.
+    h.reply::<ServerInfo>(next);
     h.frame();
-    h.frame();
-    assert_eq!(h.outstanding::<ServerInfo>(), 1);
-    assert_eq!(h.outstanding::<ListDir>(), 1);
 }
 
 #[test]
-fn shows_server_info_once_connected() {
-    let h = connected(listing(vec![]));
-    assert!(h.has_label("Protocol version"));
-    assert!(h.has_label("7"));
-    assert!(h.has_label("Shared root"));
+fn says_connecting_until_the_first_reply() {
+    let mut h = Harness::new(ServerDashboard::default());
+    h.frame();
+    assert_eq!(h.labels(), vec!["Connecting…"]);
+    assert!(h.plots().is_empty());
+}
+
+#[test]
+fn draws_three_graphs_and_the_current_values() {
+    let h = connected(&info(65_000, 10));
+    assert!(h.has_label("Live · updates every 2 seconds"));
+    assert!(h.has_label("1m 5s"));
+    assert!(h.has_label("4 CPUs"));
+    assert!(h.has_label("50%"));
+    assert!(h.has_label("3 GB of 4 GB"));
     assert!(h.has_label("/srv/shared"));
+    assert!(h.has_label("v7"));
+    let plots = h.plots();
+    assert_eq!(plots.len(), 3);
+    assert_eq!(plots[0], vec![127], "50% load is half height");
+    assert_eq!(plots[1], vec![191], "75% memory");
+    assert!(plots[2].is_empty(), "no rate until there are two readings");
 }
 
 #[test]
-fn shows_uptime_after_first_response() {
-    let h = connected(listing(vec![]));
-    // Uptime should be shown in MM:SS format.
-    let labels = h.labels();
-    assert!(
-        labels.iter().any(|l| l.starts_with("0:") || l == "Uptime"),
-        "uptime should be visible"
-    );
+fn each_poll_adds_a_point_to_every_graph() {
+    let mut h = connected(&info(10_000, 0));
+    poll(&mut h, &info(12_000, 20));
+    poll(&mut h, &info(14_000, 30));
+    assert_eq!(h.app.cpu.values.len(), 3);
+    assert_eq!(h.app.mem.values.len(), 3);
+    // 20 calls in 2 s, then 10 in 2 s.
+    assert_eq!(h.app.rpc_rate.values, vec![600, 300]);
+    assert!(h.has_label("300/min"));
+    // The rate graph is scaled to its own peak.
+    assert_eq!(h.plots()[2], vec![255, 127]);
 }
 
 #[test]
-fn shows_storage_stats() {
-    let h = connected(listing(vec![
-        entry("docs", EntryKind::Dir, 0),
-        entry("notes.md", EntryKind::File, 2048),
-        entry("code.rs", EntryKind::File, 4096),
-    ]));
-    assert!(h.has_label("1 folders, 2 files, 6K total"));
+fn the_same_reply_seen_again_is_not_a_new_point() {
+    let mut h = connected(&info(10_000, 0));
+    for _ in 0..5 {
+        h.frame();
+    }
+    assert_eq!(h.app.cpu.values.len(), 1);
 }
 
 #[test]
-fn empty_storage_says_so() {
-    let h = connected(listing(vec![]));
-    assert!(h.has_label("0 folders, 0 files, 0B total"));
+fn nothing_changes_while_a_poll_is_in_flight() {
+    // The flicker regression: the in-flight frames must draw exactly what the settled ones did.
+    let mut h = connected(&info(10_000, 0));
+    let before = (h.labels(), h.plots());
+    h.ctx.time_ms += POLL_INTERVAL_MS;
+    h.frame();
+    h.frame();
+    assert_eq!(h.outstanding::<ServerInfo>(), 1, "a poll is in flight");
+    assert_eq!((h.labels(), h.plots()), before);
 }
 
 #[test]
-fn truncated_listing_says_so() {
-    let mut l = listing(vec![entry("big.bin", EntryKind::File, 1024)]);
-    l.truncated = true;
-    let h = connected(l);
-    assert!(h.has_label("(listing truncated — more files than the server returned)"));
-}
-
-#[test]
-fn failed_server_info_can_be_retried() {
-    let mut h = Harness::new(ServerDashboard::default());
-    h.frame();
-    h.fail::<ServerInfo>(rpc_error::SERVER);
-    h.reply::<ListDir>(&listing(vec![]));
-    h.frame();
-
-    assert!(h.has_label("server error"));
-    assert!(h.has_button("Retry"));
-
-    h.click("Retry");
+fn does_not_re_ask_before_the_interval() {
+    let mut h = connected(&info(10_000, 0));
+    h.ctx.time_ms += POLL_INTERVAL_MS - 1.0;
     h.frame();
     h.frame();
-    assert_eq!(h.outstanding::<ServerInfo>(), 1, "retrying asks again");
-}
-
-#[test]
-fn failed_storage_can_be_retried() {
-    let mut h = Harness::new(ServerDashboard::default());
-    h.frame();
-    h.reply::<ServerInfo>(&server_info("/srv"));
-    h.fail::<ListDir>(rpc_error::DENIED);
-    h.frame();
-
-    assert!(h.has_label("permission denied"));
-    assert!(h.has_button("Retry storage"));
-
-    h.click("Retry storage");
-    h.frame();
-    h.frame();
-    assert_eq!(h.outstanding::<ListDir>(), 1, "retrying asks again");
-}
-
-#[test]
-fn manual_refresh_asks_both_queries_again() {
-    let mut h = connected(listing(vec![]));
     assert_eq!(h.outstanding::<ServerInfo>(), 0);
-    assert_eq!(h.outstanding::<ListDir>(), 0);
-
-    h.click("⟳ Refresh now");
-    h.frame();
-    h.frame();
-    assert_eq!(h.outstanding::<ServerInfo>(), 1);
-    assert_eq!(h.outstanding::<ListDir>(), 1);
 }
 
 #[test]
-fn human_size_uses_largest_whole_unit() {
-    assert_eq!(human_size(0), "0B");
-    assert_eq!(human_size(1023), "1023B");
-    assert_eq!(human_size(1024), "1K");
-    assert_eq!(human_size(1024 * 1024 - 1), "1023K");
-    assert_eq!(human_size(5 * 1024 * 1024), "5M");
+fn a_failed_poll_keeps_the_graphs_and_says_so() {
+    let mut h = connected(&info(10_000, 0));
+    let plots = h.plots();
+    h.ctx.time_ms += POLL_INTERVAL_MS;
+    h.frame();
+    h.frame();
+    h.fail::<ServerInfo>(rpc_error::TIMEOUT);
+    h.frame();
+    assert!(h.has_label("Can't reach the server. Showing the last reading."));
+    assert_eq!(h.plots(), plots);
+
+    // And recovers on the next good reply.
+    h.ctx.time_ms += POLL_INTERVAL_MS;
+    h.frame();
+    h.frame();
+    h.reply::<ServerInfo>(&info(14_000, 5));
+    h.frame();
+    assert!(h.has_label("Live · updates every 2 seconds"));
 }
 
 #[test]
-fn itoa_handles_zero_and_wide_values() {
+fn failing_before_any_reply_says_retrying() {
+    let mut h = Harness::new(ServerDashboard::default());
+    h.frame();
+    h.fail::<ServerInfo>(rpc_error::TIMEOUT);
+    h.frame();
+    assert_eq!(h.labels(), vec!["Can't reach the server. Retrying…"]);
+}
+
+#[test]
+fn a_restarted_server_adds_no_bogus_rate() {
+    let mut h = connected(&info(100_000, 500));
+    poll(&mut h, &info(1_000, 1));
+    assert!(h.app.rpc_rate.values.is_empty());
+    assert_eq!(h.app.cpu.values.len(), 2);
+}
+
+#[test]
+fn missing_host_figures_read_unavailable() {
+    let mut r = info(10_000, 0);
+    r.load_milli = None;
+    r.mem_used_kib = None;
+    let h = connected(&r);
+    assert_eq!(h.labels().iter().filter(|l| *l == "unavailable").count(), 2);
+    assert!(h.app.cpu.values.is_empty());
+}
+
+#[test]
+fn history_is_capped() {
+    let mut s = Series::default();
+    for v in 0..(HISTORY as u64 + 5) {
+        s.push(v);
+    }
+    assert_eq!(s.values.len(), HISTORY);
+    assert_eq!(s.values[0], 5);
+}
+
+#[test]
+fn scaling_pins_overflow_and_survives_a_zero_max() {
+    let mut s = Series::default();
+    s.push(0);
+    s.push(50);
+    s.push(250);
+    assert_eq!(s.scaled(100), vec![0, 127, 255]);
+    assert_eq!(Series::default().scaled(0), Vec::<u8>::new());
+    let mut z = Series::default();
+    z.push(0);
+    assert_eq!(z.scaled(0), vec![0]);
+}
+
+#[test]
+fn formatting() {
     assert_eq!(itoa(0), "0");
-    assert_eq!(itoa(u64::MAX), "18446744073709551615");
+    assert_eq!(itoa(1234), "1234");
+    assert_eq!(format_duration(5_000), "0m 5s");
+    assert_eq!(format_duration(3 * 3_600_000 + 12 * 60_000), "3h 12m");
+    assert_eq!(format_duration(2 * 86_400_000 + 5 * 3_600_000), "2d 5h");
+    assert_eq!(kib(512 << 10), "512 MB");
+    assert_eq!(kib(16 << 20), "16 GB");
+    assert_eq!(count(1, "CPU", "CPUs"), "1 CPU");
+    assert_eq!(percent(7), "7%");
 }
 
 #[test]
-fn format_uptime_shows_mm_colon_ss() {
-    assert_eq!(format_uptime(0.0), "0:00");
-    assert_eq!(format_uptime(60_000.0), "1:00");
-    assert_eq!(format_uptime(90_000.0), "1:30");
-    assert_eq!(format_uptime(5_000.0), "0:05");
+fn polls_on_a_timer() {
+    assert_eq!(ServerDashboard::default().wants_repaint_after_ms(), 250);
 }
