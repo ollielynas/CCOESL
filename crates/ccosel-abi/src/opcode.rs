@@ -19,7 +19,7 @@ pub enum OpCode {
     /// Emitted unconditionally alongside a widget. The *shell* decides hover and draws it, so
     /// there is no one-frame delay. Guests must never branch on `hovered()` in order to draw.
     Tooltip = 0x0A,
-    // 0x0B is reserved for ProgressBar (tracked separately; see issue #21).
+    // 0x0B is reserved for ProgressBar (#21).
     /// Ask the shell to open a folder picker (or accept drag-and-drop). The shell handles the
     /// actual file selection and upload; acting on the click is out of scope here (see #19).
     UploadFolder = 0x0C,
@@ -27,6 +27,9 @@ pub enum OpCode {
     /// via `/files/{path}`. `label` is what the button shows — never the URL itself, which
     /// would be unreadable repeated next to every row of a file listing.
     OpenUrl = 0x0D,
+    /// A line graph of `samples`, each already scaled by the guest to `0..=255`. The shell draws
+    /// it, so a live chart costs one byte per point on the wire and no guest-side rendering.
+    Plot = 0x0E,
     // 0x40..0x4F reserved for subtree caching (BeginCached / EndCached / CachedRef).
     // Not implemented yet, but the space is reserved so adding it is not an ABI break.
 }
@@ -47,6 +50,7 @@ impl OpCode {
             0x0A => Some(Self::Tooltip),
             0x0C => Some(Self::UploadFolder),
             0x0D => Some(Self::OpenUrl),
+            0x0E => Some(Self::Plot),
             _ => None,
         }
     }

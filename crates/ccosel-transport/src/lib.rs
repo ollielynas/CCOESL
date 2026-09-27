@@ -73,6 +73,7 @@ fn policy(method: u16) -> (Coalesce, u32) {
     match Method::from_u16(method) {
         Some(Method::ListDir) => (Coalesce::ByArgs, 8_000),
         Some(Method::Stat) => (Coalesce::ByArgs, 4_000),
+        Some(Method::ServerInfo) => (Coalesce::ByArgs, 4_000),
         None => (Coalesce::None, 4_000),
     }
 }

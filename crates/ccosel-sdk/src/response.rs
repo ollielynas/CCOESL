@@ -62,6 +62,13 @@ impl Response {
         self.rec.value
     }
 
+    /// For an [`upload_folder`](crate::Ui::upload_folder) button: how many uploads started from
+    /// it have finished, successfully or not. Compare with the last value seen to know when to
+    /// re-list the folder.
+    pub fn uploads_finished(&self) -> u32 {
+        self.rec.aux
+    }
+
     /// Text version for a text edit — compare against your own to decide whether the shell has
     /// newer content than you do.
     pub fn text_version(&self) -> u32 {

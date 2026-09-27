@@ -135,7 +135,7 @@ cargo xtask review 10 --checkout-only    # just check it out, to read it in your
 |---|---|
 | `cargo-llvm-cov is required for the coverage gate` | `cargo install cargo-llvm-cov --locked` |
 | `wasm-bindgen` schema-version mismatch | Reinstall the CLI at the version pinned in the root `Cargo.toml` |
-| `ccosel-host-web` shows `0 passed` under `cargo test` | Expected. Its tests are wasm32-only; run `cargo xtask test-wasm` |
+| `ccosel-host-web` or `ccosel-shell` shows `0 passed` under `cargo test` | Expected. Both crates are wasm32-only; run `cargo xtask test-wasm` |
 | `has inline #[cfg(test)] code` | Move it to `src/tests.rs` and declare it with `#[cfg(test)] mod tests;` |
 | An app is under the bar | The table printed by `cargo xtask coverage` shows hits/lines per app; add tests for the branches you haven't covered |
 | `use of default to create a unit struct` | Give the app a field, or construct it as `MyApp` rather than `MyApp::default()` |

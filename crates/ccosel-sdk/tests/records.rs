@@ -25,7 +25,7 @@ impl App for Demo {
             ui.text_edit(&mut self.filter);
         });
         ui.image("/cas/abc123", Vec2::new(64.0, 64.0));
-        if ui.upload_folder().clicked() {
+        if ui.upload_folder("/Documents").clicked() {
             self.uploads += 1;
         }
         if ui.open_url("Download", "/files/notes.md").clicked() {
@@ -115,7 +115,7 @@ fn widget_ids(buf: &[u8]) -> Vec<u64> {
             | Cmd::BeginScope { id, .. }
             | Cmd::TextEditSingle { id, .. }
             | Cmd::Image { id, .. }
-            | Cmd::UploadFolder { id }
+            | Cmd::UploadFolder { id, .. }
             | Cmd::OpenUrl { id, .. } => Some(id),
             _ => None,
         })
@@ -183,7 +183,7 @@ fn upload_folder_click_is_observed_one_frame_later() {
     let id = decode(&buf)
         .into_iter()
         .find_map(|c| match c {
-            Cmd::UploadFolder { id } => Some(id),
+            Cmd::UploadFolder { id, .. } => Some(id),
             _ => None,
         })
         .unwrap();
@@ -303,4 +303,44 @@ fn deeply_nested_scopes_still_produce_a_valid_buffer() {
     let mut ui = Ui::root(&mut rec, FrameCtx::default(), &rpc);
     Deep.update(&mut ui);
     ccosel_abi::validate(rec.commands()).unwrap();
+}
+
+#[test]
+fn upload_folder_carries_its_destination() {
+    let mut app = demo();
+    let mut rec = Recorder::new();
+    let buf = record(&mut app, &mut rec);
+    let dest = decode(&buf)
+        .into_iter()
+        .find_map(|c| match c {
+            Cmd::UploadFolder { dest, .. } => Some(dest.to_owned()),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(dest, "/Documents");
+}
+
+#[test]
+fn uploads_finished_reads_the_shells_count() {
+    let mut rec = Recorder::new();
+    let rpc = RpcCtx::new();
+    // The id the button will get, found by recording it once.
+    let id = {
+        let mut ui = Ui::root(&mut rec, FrameCtx::default(), &rpc);
+        ui.upload_folder("/");
+        decode(rec.commands())
+            .into_iter()
+            .find_map(|c| match c {
+                Cmd::UploadFolder { id, .. } => Some(id),
+                _ => None,
+            })
+            .unwrap()
+    };
+    rec.set_responses(vec![RespRecord {
+        local_id: id,
+        aux: 3,
+        ..Default::default()
+    }]);
+    let mut ui = Ui::root(&mut rec, FrameCtx::default(), &rpc);
+    assert_eq!(ui.upload_folder("/").uploads_finished(), 3);
 }

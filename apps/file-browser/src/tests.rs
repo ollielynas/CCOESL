@@ -253,3 +253,67 @@ fn itoa_handles_zero_and_the_widest_value() {
     assert_eq!(itoa(0), "0");
     assert_eq!(itoa(u64::MAX), "18446744073709551615");
 }
+
+#[test]
+fn the_upload_button_targets_the_folder_on_screen() {
+    let mut h = browsing(sample());
+    assert_eq!(h.upload_buttons(), vec!["/"]);
+    press(&mut h, "docs");
+    assert_eq!(h.upload_buttons(), vec!["/docs"]);
+}
+
+#[test]
+fn a_finished_upload_re_lists_the_folder_once() {
+    let mut h = browsing(sample());
+    h.finish_upload();
+    h.frame(); // the app sees the new count and invalidates the listing
+    h.frame(); // and re-asks
+    assert_eq!(h.outstanding::<ListDir>(), 1);
+
+    h.reply::<ListDir>(&listing(vec![entry("photos", EntryKind::Dir, 0)]));
+    h.frame();
+    assert!(h.has_button("photos"), "{:?}", h.buttons());
+
+    // The same count on later frames is not another upload.
+    h.frame();
+    h.frame();
+    assert_eq!(h.outstanding::<ListDir>(), 0);
+
+    h.finish_upload();
+    h.frame();
+    h.frame();
+    assert_eq!(
+        h.outstanding::<ListDir>(),
+        1,
+        "a second upload re-lists again"
+    );
+}
+
+#[test]
+fn every_file_gets_a_download_link_and_folders_do_not() {
+    let h = browsing(sample());
+    assert_eq!(
+        h.open_urls(),
+        vec![
+            ("Download".to_owned(), "/files/notes.md".to_owned()),
+            ("Download".to_owned(), "/files/link".to_owned()),
+        ]
+    );
+}
+
+#[test]
+fn download_urls_are_percent_encoded_per_segment() {
+    assert_eq!(download_url("/", "notes.md"), "/files/notes.md");
+    assert_eq!(
+        download_url("/Documents", "notes #1.md"),
+        "/files/Documents/notes%20%231.md"
+    );
+    assert_eq!(
+        download_url("/a b/c?d", "e&f=g%h"),
+        "/files/a%20b/c%3Fd/e%26f%3Dg%25h"
+    );
+    assert_eq!(
+        download_url("/café/", "résumé.pdf"),
+        "/files/caf%C3%A9/r%C3%A9sum%C3%A9.pdf"
+    );
+}

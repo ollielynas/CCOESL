@@ -276,6 +276,7 @@ pub fn method_name(method: u32) -> String {
     let name = match Method::from_u16(method as u16) {
         Some(Method::ListDir) => "list_dir",
         Some(Method::Stat) => "stat",
+        Some(Method::ServerInfo) => "server_info",
         None => "unknown",
     };
     String::from(name)
