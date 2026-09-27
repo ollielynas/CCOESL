@@ -237,15 +237,6 @@ impl<'a> Ui<'a> {
         self.response(id)
     }
 
-    /// A button that opens `url` in a new browser tab. The shell opens it on the click itself,
-    /// so `.clicked()` is only for the app's own bookkeeping. Only `http(s)://` and
-    /// same-origin (`/...`) URLs are opened; anything else draws a button that does nothing.
-    pub fn open_url(&mut self, label: &str, url: &str) -> Response {
-        let id = self.auto_id();
-        self.rec.push(&Cmd::OpenUrl { id, label, url });
-        self.response(id)
-    }
-
     /// A single-line text field. See [`Text`] for why the buffer usually isn't sent.
     pub fn text_edit(&mut self, text: &mut Text) -> Response {
         let id = self.auto_id();
@@ -260,6 +251,31 @@ impl<'a> Ui<'a> {
             set,
         });
         text.push_pending = false;
+        self.response(id)
+    }
+
+    /// A button that opens the browser's folder picker and uploads the chosen folder into
+    /// `dest`, a server path such as `/Documents`: the folder `photos` lands at
+    /// `/Documents/photos`.
+    ///
+    /// The shell does the picking and uploading. The app learns an upload into this button's
+    /// folder finished through [`Response::uploads_finished`], a count that goes up by one each
+    /// time; that is its cue to re-list `dest`.
+    pub fn upload_folder(&mut self, dest: &str) -> Response {
+        let id = self.auto_id();
+        self.rec.push(&Cmd::UploadFolder { id, dest });
+        self.response(id)
+    }
+
+    /// Open `url` in a new browser tab. Useful for downloads: point `url` at `/files/{path}` to
+    /// stream a file out of the jail.
+    ///
+    /// `label` is what the button shows. Keep it separate from `url` on purpose — a file
+    /// listing that put the URL itself on every row would be unreadable (`/files/notes.md`
+    /// repeated next to each file); pass something like `"Download"` instead.
+    pub fn open_url(&mut self, label: &str, url: &str) -> Response {
+        let id = self.auto_id();
+        self.rec.push(&Cmd::OpenUrl { id, label, url });
         self.response(id)
     }
 }

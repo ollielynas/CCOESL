@@ -18,6 +18,7 @@ mod fullscreen;
 mod http_wire;
 mod registry;
 mod theme;
+mod upload;
 
 use wasm_bindgen::prelude::*;
 

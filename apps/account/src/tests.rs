@@ -33,7 +33,7 @@ fn shows_who_is_signed_in() {
     assert!(h.has_label("ollielynas"));
     assert!(h.has_button("Sign out"));
     assert_eq!(
-        h.links(),
+        h.open_urls(),
         [("Manage account".to_owned(), ACCOUNT_URL.to_owned())]
     );
 }
@@ -47,7 +47,7 @@ fn says_when_login_is_off() {
     });
     assert!(h.has_label("Login is turned off on this server."));
     assert!(!h.has_button("Sign out"));
-    assert!(h.links().is_empty());
+    assert!(h.open_urls().is_empty());
 }
 
 #[test]

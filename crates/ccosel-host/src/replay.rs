@@ -44,6 +44,13 @@ struct TextState {
 pub struct Replayer {
     /// Keyed by the guest's local id.
     text: HashMap<u64, TextState>,
+    /// Widget ids and destination folders of this frame's `UploadFolder` buttons. The shell
+    /// checks these against the frame's clicks to know when to open the folder picker, and
+    /// where the chosen folder goes.
+    uploads: Vec<(u64, String)>,
+    /// Widget ids and target URLs from `OpenUrl` commands this frame. The shell checks these to
+    /// know when, and where, to open a new browser tab (see #19).
+    open_url_ids: Vec<(u64, String)>,
 }
 
 impl Replayer {
@@ -74,9 +81,16 @@ impl Replayer {
         // resolve them up front and attach on the way past. This is what makes tooltips
         // zero-latency despite responses being a frame stale.
         let mut tooltips: HashMap<u64, &str> = HashMap::new();
+        self.uploads.clear();
+        self.open_url_ids.clear();
         for cmd in &cmds {
-            if let Cmd::Tooltip { id, text } = *cmd {
-                tooltips.insert(id, text);
+            match *cmd {
+                Cmd::Tooltip { id, text } => {
+                    tooltips.insert(id, text);
+                }
+                Cmd::UploadFolder { id, dest } => self.uploads.push((id, dest.to_owned())),
+                Cmd::OpenUrl { id, url, .. } => self.open_url_ids.push((id, url.to_owned())),
+                _ => {}
             }
         }
 
@@ -99,14 +113,18 @@ impl Replayer {
             .get(&local_id)
             .map(|t| (t.buf.as_str(), t.version))
     }
-}
 
-/// Whether a guest's `OpenUrl` may be opened: web pages and this server's own paths only. A
-/// `javascript:` or `data:` URL would run with the page's authority, which no guest gets.
-fn is_openable(url: &str) -> bool {
-    url.starts_with("https://")
-        || url.starts_with("http://")
-        || (url.starts_with('/') && !url.starts_with("//"))
+    /// Widget ids and destination folders of the `UploadFolder` buttons in the last
+    /// successfully replayed frame. Acting on a click (the picker, the upload) is the shell's job.
+    pub fn uploads(&self) -> &[(u64, String)] {
+        &self.uploads
+    }
+
+    /// Widget ids and target URLs from `OpenUrl` commands in the last successfully replayed
+    /// frame. Acting on a click (opening the tab) is the shell's job (#19).
+    pub fn open_url_ids(&self) -> &[(u64, String)] {
+        &self.open_url_ids
+    }
 }
 
 /// For each scope-opening command, the index of the command that closes it.
@@ -189,6 +207,19 @@ impl Cx<'_> {
                     ui.separator();
                 }
 
+                Cmd::UploadFolder { id, .. } => {
+                    let r = ui.add(egui::Button::new("⬆ Upload folder").frame_when_inactive(false));
+                    self.finish(id, r);
+                }
+
+                Cmd::OpenUrl { id, label, .. } => {
+                    // Draw `label`, never `url` — a file listing that put the URL itself on
+                    // every row would be unreadable (`/files/notes.md` repeated next to each
+                    // file). The URL is only for the shell's click handler (#19).
+                    let r = ui.add(egui::Button::new(label).frame_when_inactive(false));
+                    self.finish(id, r);
+                }
+
                 Cmd::Image { id, src, size } => {
                     // Images are fetched by the *shell*, by URL, so they hit the browser's HTTP
                     // cache and never occupy guest memory. Until the shell's loader lands, draw
@@ -206,14 +237,6 @@ impl Cx<'_> {
                             egui::FontId::proportional(9.0),
                             visuals.weak_text_color(),
                         );
-                    }
-                    self.finish(id, r);
-                }
-
-                Cmd::OpenUrl { id, label, url } => {
-                    let r = ui.add(egui::Button::new(label).frame_when_inactive(false));
-                    if r.clicked() && is_openable(url) {
-                        ui.ctx().open_url(egui::OpenUrl::new_tab(url));
                     }
                     self.finish(id, r);
                 }

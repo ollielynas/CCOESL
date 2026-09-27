@@ -38,6 +38,15 @@ pub enum PostError {
     Other(String),
 }
 
+impl std::fmt::Display for PostError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unauthorized => f.write_str("signed out; sign in again"),
+            Self::Other(e) => f.write_str(e),
+        }
+    }
+}
+
 impl From<String> for PostError {
     fn from(e: String) -> Self {
         Self::Other(e)

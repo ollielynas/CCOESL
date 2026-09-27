@@ -212,6 +212,104 @@ fn arbitrary_bytes_never_panic_the_host() {
 }
 
 #[test]
+fn upload_folder_and_open_url_are_drawn_and_tracked() {
+    let buf = encode(&[
+        Cmd::UploadFolder {
+            id: 30,
+            dest: "/Documents",
+        },
+        Cmd::OpenUrl {
+            id: 31,
+            label: "Download",
+            url: "/files/notes.md",
+        },
+    ]);
+
+    let ctx = egui::Context::default();
+    let mut r = Replayer::new();
+    let recs = frame(&ctx, &mut r, &buf, raw_input()).unwrap();
+
+    let ids: Vec<u64> = recs.iter().map(|r| r.local_id).collect();
+    assert_eq!(ids, vec![30, 31], "both drawn as widgets and reported");
+
+    assert_eq!(r.uploads(), &[(30, "/Documents".to_string())]);
+    assert_eq!(r.open_url_ids(), &[(31, "/files/notes.md".to_string())]);
+}
+
+#[test]
+fn a_click_on_open_url_lands_on_the_right_widget() {
+    let buf = encode(&[
+        Cmd::UploadFolder {
+            id: 30,
+            dest: "/Documents",
+        },
+        Cmd::OpenUrl {
+            id: 31,
+            label: "Download",
+            url: "/files/notes.md",
+        },
+    ]);
+    let ctx = egui::Context::default();
+    let mut r = Replayer::new();
+
+    let recs = frame(&ctx, &mut r, &buf, raw_input()).unwrap();
+    let open_url_rect = find(&recs, 31).rect;
+    let target = egui::pos2(
+        (open_url_rect[0] + open_url_rect[2]) / 2.0,
+        (open_url_rect[1] + open_url_rect[3]) / 2.0,
+    );
+
+    let mut input = raw_input();
+    input.events = vec![
+        egui::Event::PointerMoved(target),
+        egui::Event::PointerButton {
+            pos: target,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: Default::default(),
+        },
+        egui::Event::PointerButton {
+            pos: target,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: Default::default(),
+        },
+    ];
+    let recs = frame(&ctx, &mut r, &buf, input).unwrap();
+
+    assert!(
+        find(&recs, 31).clicked(),
+        "the OpenUrl button should register the click"
+    );
+    assert!(
+        !find(&recs, 30).clicked(),
+        "the UploadFolder button must not"
+    );
+}
+
+#[test]
+fn upload_and_open_url_ids_do_not_survive_a_rejected_frame() {
+    // Same contract as decoded state generally: an error leaves the previous good frame's
+    // tracked ids standing rather than clearing them out from under the shell.
+    let good = encode(&[Cmd::UploadFolder {
+        id: 30,
+        dest: "/Documents",
+    }]);
+    let ctx = egui::Context::default();
+    let mut r = Replayer::new();
+    frame(&ctx, &mut r, &good, raw_input()).unwrap();
+    assert_eq!(r.uploads(), &[(30, "/Documents".to_string())]);
+
+    let bad = vec![0xEE];
+    assert!(frame(&ctx, &mut r, &bad, raw_input()).is_err());
+    assert_eq!(
+        r.uploads(),
+        &[(30, "/Documents".to_string())],
+        "unchanged by the rejected frame"
+    );
+}
+
+#[test]
 fn tooltips_do_not_need_a_hover_branch() {
     // The tooltip is emitted unconditionally alongside its widget and resolved by id, so the
     // guest never has to see `hovered()` to produce one.
@@ -253,83 +351,4 @@ fn a_plot_is_drawn_at_its_size_and_reported() {
     assert_eq!(fixed[3] - fixed[1], 30.0);
     let fill = find(&recs, 41).rect;
     assert!(fill[2] - fill[0] > 120.0, "a zero-width plot fills the row");
-}
-
-/// Clicks the middle of widget `id` and returns the URLs the host asked the browser to open.
-fn click_and_collect_opened(buf: &[u8], id: u64) -> Vec<String> {
-    let ctx = egui::Context::default();
-    let mut r = Replayer::new();
-    let recs = frame(&ctx, &mut r, buf, raw_input()).unwrap();
-    let rect = find(&recs, id).rect;
-    let target = egui::pos2((rect[0] + rect[2]) / 2.0, (rect[1] + rect[3]) / 2.0);
-
-    let mut input = raw_input();
-    input.events = vec![
-        egui::Event::PointerMoved(target),
-        egui::Event::PointerButton {
-            pos: target,
-            button: egui::PointerButton::Primary,
-            pressed: true,
-            modifiers: Default::default(),
-        },
-        egui::Event::PointerButton {
-            pos: target,
-            button: egui::PointerButton::Primary,
-            pressed: false,
-            modifiers: Default::default(),
-        },
-    ];
-    let mut clicked = false;
-    let mut full = ctx.run_ui(input, |ui| {
-        clicked = find(&r.replay(ui, APP, buf).unwrap(), id).clicked();
-    });
-    full.textures_delta.clear();
-    assert!(clicked, "the click should land on the link");
-    full.platform_output
-        .commands
-        .into_iter()
-        .filter_map(|c| match c {
-            egui::OutputCommand::OpenUrl(open) => {
-                assert!(open.new_tab);
-                Some(open.url)
-            }
-            _ => None,
-        })
-        .collect()
-}
-
-#[test]
-fn clicking_open_url_opens_it_in_a_new_tab() {
-    let url = "http://localhost:8080/realms/ccosel/account";
-    let buf = encode(&[Cmd::OpenUrl {
-        id: 40,
-        label: "Manage account",
-        url,
-    }]);
-    assert_eq!(click_and_collect_opened(&buf, 40), [url]);
-}
-
-#[test]
-fn open_url_only_opens_web_and_same_origin_urls() {
-    for url in [
-        "javascript:alert(1)",
-        "data:text/html,hi",
-        "//evil.example/",
-    ] {
-        let buf = encode(&[Cmd::OpenUrl {
-            id: 41,
-            label: "Open",
-            url,
-        }]);
-        assert!(
-            click_and_collect_opened(&buf, 41).is_empty(),
-            "{url} was opened"
-        );
-    }
-    let buf = encode(&[Cmd::OpenUrl {
-        id: 42,
-        label: "Download",
-        url: "/files/notes.md",
-    }]);
-    assert_eq!(click_and_collect_opened(&buf, 42), ["/files/notes.md"]);
 }

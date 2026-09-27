@@ -22,6 +22,7 @@ use crate::fetch;
 use crate::fullscreen;
 use crate::registry::{AppEntry, catalog};
 use crate::theme;
+use crate::upload::{self, Uploads};
 
 /// Dock badge geometry, shared between `dock_item` (which paints it) and `app_menu` (which
 /// needs to know the dock's on-screen height so its popup can sit above it without overlapping).
@@ -81,6 +82,11 @@ pub struct Desktop {
     wallpaper_pending: Rc<RefCell<Option<Result<egui::ColorImage, String>>>>,
     /// Whether the app menu popup is open.
     app_menu_open: bool,
+    /// Folder uploads started from apps' `UploadFolder` buttons.
+    uploads: Uploads,
+    /// The last finished upload's summary and when to stop showing it, so "Uploaded photos:
+    /// 12 files" stays in the status bar long enough to read.
+    upload_notice: Option<(String, f64)>,
 }
 
 impl Desktop {
@@ -106,6 +112,8 @@ impl Desktop {
             wallpaper_texture: None,
             wallpaper_pending: Rc::new(RefCell::new(None)),
             app_menu_open: false,
+            uploads: Uploads::default(),
+            upload_notice: None,
         };
         // Open something on first boot: an empty desktop with no affordance is a worse first
         // impression than a window the user can close.
@@ -210,6 +218,7 @@ impl Desktop {
         }
         // Expire deadlines and reap calls belonging to windows that have gone.
         self.transport.tick(now_ms);
+        self.drain_uploads(now_ms);
 
         theme::paint_wallpaper(&ctx);
         self.paint_background(&ctx);
@@ -241,6 +250,18 @@ impl Desktop {
                         .auto_shrink([false, false])
                         .show(ui, |ui| window.ui(ui));
                 });
+
+            // Acted on in the frame the click is drawn: browsers only open a picker or a tab
+            // in response to a user action, and the next frame could be too late.
+            if let Some((widget, dest)) = window.clicked_upload() {
+                self.uploads
+                    .start(window.instance_id, widget, dest, ctx.clone());
+            }
+            if let Some(url) = window.clicked_open_url()
+                && let Err(e) = upload::open_url(&url)
+            {
+                self.errors.push(format!("{}: {e}", window.title));
+            }
 
             // Anything the guest asked for during that frame.
             let sink = window.sink();
@@ -276,6 +297,34 @@ impl Desktop {
             self.transport.forget_instance(window.instance_id);
         }
         self.windows.retain(|w| w.open);
+    }
+
+    /// Tell each finished upload's window, so its app can re-list the folder, and make the
+    /// outcome visible: a summary in the status bar, and every failed file in the error list.
+    fn drain_uploads(&mut self, now_ms: f64) {
+        for done in self.uploads.take_finished() {
+            if let Some(w) = self
+                .windows
+                .iter_mut()
+                .find(|w| w.instance_id == done.instance)
+            {
+                w.upload_finished(done.widget);
+            }
+            for f in &done.failures {
+                self.errors.push(format!("upload: {f}"));
+            }
+            self.upload_notice = Some((done.status(), now_ms + 6000.0));
+            // Nothing else may redraw by then, and the notice must still go away.
+            self.egui_ctx
+                .request_repaint_after(std::time::Duration::from_millis(6100));
+        }
+        if self
+            .upload_notice
+            .as_ref()
+            .is_some_and(|(_, until)| now_ms > *until)
+        {
+            self.upload_notice = None;
+        }
     }
 
     /// Issue #3: the photo on a connection that can afford it, drawn shapes otherwise. `Image`
@@ -350,6 +399,14 @@ impl Desktop {
                             ui.label(status_text(format!("{bytes} B/frame"), p));
                             ui.label(status_text("\u{00b7}".to_owned(), p));
                             ui.label(status_text(format!("{} running", self.windows.len()), p));
+                            let upload = self
+                                .uploads
+                                .status()
+                                .or_else(|| self.upload_notice.as_ref().map(|(s, _)| s.clone()));
+                            if let Some(text) = upload {
+                                ui.label(status_text("\u{00b7}".to_owned(), p));
+                                ui.label(egui::RichText::new(text).size(12.0).color(p.text));
+                            }
                         });
                     });
                 });
