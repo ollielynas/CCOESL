@@ -837,12 +837,7 @@ impl Desktop {
                                     .filter(|w| w.app_id == entry.id)
                                     .map(|w| w.instance_id)
                                     .collect();
-                                let item = dock_item(
-                                    ui,
-                                    entry.icon,
-                                    entry.color,
-                                    entry.name,
-                                );
+                                let item = dock_item(ui, entry.icon, entry.color, entry.name);
                                 if item.clicked() {
                                     if open.is_empty() {
                                         to_launch = Some(entry.clone());
