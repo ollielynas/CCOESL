@@ -299,10 +299,16 @@ mod tests {
         /// Seconds since the rig started. Advanced every frame, or windows never finish
         /// fading in.
         time: f64,
+        /// The size every window asks for when it opens.
+        default_size: Vec2,
     }
 
     impl Rig {
         fn new(n: usize) -> Self {
+            Self::with_default_size(n, vec2(300.0, 200.0))
+        }
+
+        fn with_default_size(n: usize, default_size: Vec2) -> Self {
             let ctx = egui::Context::default();
             theme::apply(&ctx);
             let windows = (0..n)
@@ -314,6 +320,7 @@ mod tests {
                 actions: Vec::new(),
                 shapes: Vec::new(),
                 time: 0.0,
+                default_size,
             };
             // The first frame installs fonts and lays windows out; the second is the first
             // real one.
@@ -339,6 +346,7 @@ mod tests {
             let active = active_window(&self.ctx, &ids);
             let mut actions = Vec::new();
             let windows = &mut self.windows;
+            let default_size = self.default_size;
             let mut out = self.ctx.run_ui(input, |ui| {
                 for (i, (id, placement)) in windows.iter_mut().enumerate() {
                     if placement.minimized {
@@ -350,7 +358,7 @@ mod tests {
                         *id,
                         placement,
                         DESKTOP,
-                        vec2(300.0, 200.0),
+                        default_size,
                         "@",
                         &format!("Window {i}"),
                         (active == Some(*id)).then_some(COLORS[i]),
@@ -460,6 +468,24 @@ mod tests {
             "dragged to {:?}",
             rig.rect(0)
         );
+    }
+
+    #[wasm_bindgen_test]
+    fn a_window_taller_than_the_desktop_opens_below_the_status_bar() {
+        // egui only keeps a window inside its area when it fits; one that doesn't is pushed up
+        // past the top, under the status bar (#38). A small browser window does this to any app
+        // with a tall default size.
+        let mut rig = Rig::with_default_size(2, vec2(900.0, DESKTOP.height() + 200.0));
+        for _ in 0..10 {
+            rig.frame(vec![]);
+        }
+        for i in 0..2 {
+            assert!(
+                DESKTOP.contains_rect(rig.rect(i)),
+                "window {i} opened at {:?}",
+                rig.rect(i)
+            );
+        }
     }
 
     #[wasm_bindgen_test]
