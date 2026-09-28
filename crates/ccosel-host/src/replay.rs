@@ -206,9 +206,7 @@ impl Cx<'_> {
                 }
 
                 Cmd::Button { id, text } => {
-                    // Flat at rest, framed on hover/press: modern toolbars and list rows read
-                    // as buttons without every one of them drawing a permanent box outline.
-                    let r = ui.add(egui::Button::new(text).frame_when_inactive(false));
+                    let r = add_with_shadow(ui, egui::Button::new(text));
                     self.finish(id, r);
                 }
 
@@ -217,13 +215,12 @@ impl Cx<'_> {
                 }
 
                 Cmd::UploadProject { id } => {
-                    let r =
-                        ui.add(egui::Button::new("⬆ Upload project").frame_when_inactive(false));
+                    let r = add_with_shadow(ui, egui::Button::new("⬆ Upload project"));
                     self.finish(id, r);
                 }
 
                 Cmd::UploadFolder { id, .. } => {
-                    let r = ui.add(egui::Button::new("⬆ Upload folder").frame_when_inactive(false));
+                    let r = add_with_shadow(ui, egui::Button::new("⬆ Upload folder"));
                     self.finish(id, r);
                 }
 
@@ -231,7 +228,7 @@ impl Cx<'_> {
                     // Draw `label`, never `url` — a file listing that put the URL itself on
                     // every row would be unreadable (`/files/notes.md` repeated next to each
                     // file). The URL is only for the shell's click handler (#19).
-                    let r = ui.add(egui::Button::new(label).frame_when_inactive(false));
+                    let r = add_with_shadow(ui, egui::Button::new(label));
                     self.finish(id, r);
                 }
 
@@ -281,7 +278,8 @@ impl Cx<'_> {
                         state.buf.push_str(new_text);
                         state.version = version;
                     }
-                    let r = ui.add(
+                    let r = add_with_shadow(
+                        ui,
                         egui::TextEdit::singleline(&mut state.buf)
                             .id(egui::Id::new((self.app_instance, id))),
                     );
@@ -381,6 +379,32 @@ impl Cx<'_> {
     }
 }
 
+/// How far a button's or text field's shadow sits below and to the right of it.
+const WIDGET_SHADOW_OFFSET: f32 = 3.0;
+
+/// Adds `widget` with a hard shadow painted *behind* it: a solid block in the widget outline's
+/// colour, offset by [`WIDGET_SHADOW_OFFSET`]. The shape slot is reserved before the widget is
+/// added, which is how egui paints underneath something whose rect isn't known yet.
+///
+/// A pressed widget has no shadow, so it reads as pushed in. A disabled one has none either,
+/// since there is nothing to push.
+fn add_with_shadow(ui: &mut egui::Ui, widget: impl egui::Widget) -> egui::Response {
+    let slot = ui.painter().add(egui::Shape::Noop);
+    let r = ui.add(widget);
+    if r.enabled() && !r.is_pointer_button_down_on() {
+        let style = &ui.visuals().widgets.inactive;
+        ui.painter().set(
+            slot,
+            egui::Shape::rect_filled(
+                r.rect.translate(egui::Vec2::splat(WIDGET_SHADOW_OFFSET)),
+                style.corner_radius,
+                style.bg_stroke.color,
+            ),
+        );
+    }
+    r
+}
+
 fn to_record(local_id: u64, r: &egui::Response) -> RespRecord {
     let mut flags = 0u32;
     let mut set = |cond: bool, bit: u32| {
@@ -442,8 +466,8 @@ fn paint_plot(ui: &egui::Ui, rect: egui::Rect, samples: &[u8]) {
             )
         })
         .collect();
-    // The theme's accent, which the shell sets as the link colour: saturated in both themes,
-    // unlike the selection fill, which is deliberately pale.
+    // The theme's link colour: the shell sets it to something that reads on a window's fill,
+    // unlike the selection fill, which may be pale.
     let accent = visuals.hyperlink_color;
     // Fill under the line as one quad per segment: a single polygon would be concave, which
     // egui's convex-polygon fill cannot draw correctly.
