@@ -260,7 +260,9 @@ impl Desktop {
                 window.default_size.into(),
                 window.icon,
                 &window.title.clone(),
-                active == Some(id),
+                // The active window's bar is filled with its app's colour, the same as its dock
+                // badge, so the two read as one thing.
+                (active == Some(id)).then_some(window.color),
                 |ui| {
                     // `auto_shrink(false)` claims the whole window body regardless of how much
                     // the app actually drew, so dragging the window bigger than its content

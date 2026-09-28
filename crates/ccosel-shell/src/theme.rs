@@ -30,7 +30,8 @@ pub struct Tokens {
     /// Outlines, rules and shadows. Brutal uses one ink for all three and for text.
     pub ink: Color32,
     pub text_dim: Color32,
-    /// "This one": the active window, the selection, the pressed button.
+    /// "This one": the selection and the pressed button. (The active window is marked in its
+    /// own app's colour instead.)
     pub accent: Color32,
     pub on_accent: Color32,
     pub danger: Color32,

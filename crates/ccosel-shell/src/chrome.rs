@@ -2,7 +2,7 @@
 //! egui's own (issue #42).
 //!
 //! egui's title bar can't be restyled far enough: it has no minimise or maximise button, and it
-//! fills the active window with `widgets.open`, which Brutal needs pale yellow for hover. So app
+//! fills the active window with `widgets.open`, not the app's own colour. So app
 //! windows are shown with `title_bar(false)`, and the bar here is the first thing in the body.
 //! That costs egui's title-bar drag, so the drag is rebuilt from public API: [`dragged_pos`].
 
@@ -85,7 +85,7 @@ pub fn show_window(
     default_size: Vec2,
     icon: &str,
     title: &str,
-    active: bool,
+    highlight: Option<Color32>,
     body: impl FnOnce(&mut Ui),
 ) -> TitleActions {
     let handle = title_handle(id);
@@ -110,7 +110,7 @@ pub fn show_window(
     window.show(ctx, |ui| {
         let spacing = ui.spacing().item_spacing;
         ui.spacing_mut().item_spacing.y = 0.0;
-        actions = title_bar(ui, handle, icon, title, active);
+        actions = title_bar(ui, handle, icon, title, highlight);
         ui.spacing_mut().item_spacing = spacing;
 
         // A window without egui's title bar is dragged from anywhere on its body, so a press
@@ -182,14 +182,24 @@ enum Glyph {
     Close,
 }
 
-/// The bar: yellow when `active`, white otherwise, with a rule under it. Dragging it moves the
-/// window, double-clicking it maximises, and `– □ ×` minimise, maximise and close.
-fn title_bar(ui: &mut Ui, handle: Id, icon: &str, title: &str, active: bool) -> TitleActions {
+/// The bar, with a rule under it: filled with `highlight` (the app's own colour, on the active
+/// window) or white. Its icon, title and buttons are ink or white, whichever reads on the fill.
+/// Dragging it moves the window, double-clicking it maximises, and `– □ ×` minimise, maximise
+/// and close.
+fn title_bar(
+    ui: &mut Ui,
+    handle: Id,
+    icon: &str,
+    title: &str,
+    highlight: Option<Color32>,
+) -> TitleActions {
     let t = theme::tokens();
     let (rect, _) =
         ui.allocate_exact_size(vec2(ui.available_width(), TITLE_BAR_HEIGHT), Sense::hover());
     let painter = ui.painter().clone();
-    painter.rect_filled(rect, 0, if active { t.accent } else { t.surface });
+    let fill = highlight.unwrap_or(t.surface);
+    let fg = theme::contrast_color(fill);
+    painter.rect_filled(rect, 0, fill);
     theme::paint_rule(&painter, rect, Align::Max);
 
     // Centred on the space above the rule.
@@ -207,9 +217,9 @@ fn title_bar(ui: &mut Ui, handle: Id, icon: &str, title: &str, active: bool) -> 
         );
         let r = ui.interact(button, handle.with(name), Sense::click());
         if r.hovered() {
-            painter.rect_stroke(button, 0, Stroke::new(t.stroke, t.ink), StrokeKind::Inside);
+            painter.rect_stroke(button, 0, Stroke::new(t.stroke, fg), StrokeKind::Inside);
         }
-        paint_glyph(&painter, button.center(), glyph, t.ink);
+        paint_glyph(&painter, button.center(), glyph, fg);
         *hit = r.clicked();
         right = button.left() - 2.0;
     }
@@ -227,7 +237,7 @@ fn title_bar(ui: &mut Ui, handle: Id, icon: &str, title: &str, active: bool) -> 
         egui::Align2::LEFT_CENTER,
         icon,
         egui::FontId::proportional(16.0),
-        t.ink,
+        fg,
     );
     x = icon.right() + 8.0;
     painter.text(
@@ -235,7 +245,7 @@ fn title_bar(ui: &mut Ui, handle: Id, icon: &str, title: &str, active: bool) -> 
         egui::Align2::LEFT_CENTER,
         title,
         theme::heading_font(15.0),
-        t.ink,
+        fg,
     );
 
     actions
@@ -268,6 +278,12 @@ mod tests {
     use wasm_bindgen_test::wasm_bindgen_test;
 
     use super::*;
+
+    /// Each test window's app colour: one light (ink text), one dark (white text).
+    const COLORS: [Color32; 2] = [
+        Color32::from_rgb(0xF5, 0x9E, 0x0B),
+        Color32::from_rgb(0x1D, 0x4E, 0xD8),
+    ];
 
     const SCREEN: Rect = Rect::from_min_max(Pos2::ZERO, Pos2::new(1200.0, 900.0));
     const DESKTOP: Rect = Rect::from_min_max(Pos2::new(0.0, 40.0), Pos2::new(1200.0, 820.0));
@@ -337,7 +353,7 @@ mod tests {
                         vec2(300.0, 200.0),
                         "@",
                         &format!("Window {i}"),
-                        active == Some(*id),
+                        (active == Some(*id)).then_some(COLORS[i]),
                         // As the desktop does: the body claims the whole window.
                         |ui| {
                             egui::ScrollArea::vertical()
@@ -510,20 +526,40 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
-    fn the_active_title_bar_is_yellow_and_the_rest_are_white() {
+    fn the_active_title_bar_takes_its_apps_colour_and_the_rest_are_white() {
         let mut rig = Rig::new(2);
         rig.frame(vec![]);
         let t = theme::tokens();
         // Window 1 was shown last, so it starts on top.
-        assert!(rig.filled_with(rig.title_bar(1), t.accent));
+        assert!(rig.filled_with(rig.title_bar(1), COLORS[1]));
         assert!(rig.filled_with(rig.title_bar(0), t.surface));
 
-        // Clicking window 0 raises it, and the yellow moves with it.
+        // Clicking window 0 raises it, and the colour moves with it, in window 0's own colour.
         let grip = rig.title_bar(0).left_center() + vec2(60.0, 0.0);
         rig.click(grip);
         rig.frame(vec![]);
-        assert!(rig.filled_with(rig.title_bar(0), t.accent));
+        assert!(rig.filled_with(rig.title_bar(0), COLORS[0]));
         assert!(rig.filled_with(rig.title_bar(1), t.surface));
+    }
+
+    #[wasm_bindgen_test]
+    fn the_title_reads_on_whatever_colour_the_bar_is() {
+        let mut rig = Rig::new(2);
+        rig.frame(vec![]);
+        let title_color = |title: &str| {
+            rig.shapes
+                .iter()
+                .find_map(|s| match &s.shape {
+                    egui::Shape::Text(text) if text.galley.text() == title => {
+                        Some(text.galley.job.sections[0].format.color)
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("{title:?} was not painted"))
+        };
+        // Window 1 is active on a dark blue bar; window 0 is inactive on white.
+        assert_eq!(title_color("Window 1"), Color32::WHITE);
+        assert_eq!(title_color("Window 0"), theme::tokens().ink);
     }
 
     #[wasm_bindgen_test]
