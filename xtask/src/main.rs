@@ -13,6 +13,25 @@ use anyhow::{Context, Result, bail};
 /// once and cached forever, so it is reported but not gated.
 const GUEST_BUDGET_GZIP: u64 = 100 * 1024;
 
+/// binaryen's `wasm-opt`, pinned like the toolchain so a new release can't move the size budget
+/// on its own. It is binaryen's node build: a 2 MB download that runs anywhere node does, where
+/// the native builds are over 100 MB each and per-platform. Bumping it means updating both lines.
+const BINARYEN_VERSION: &str = "version_133";
+const BINARYEN_NODE_SHA256: &str =
+    "3507aedecef25c46f2889530a7da304677e97122869274125f782b586cb508ab";
+
+/// The wasm features rustc enables by default for `wasm32-unknown-unknown`. `wasm-opt` must be
+/// told, or it rejects the module; and naming them rather than passing `--all-features` stops it
+/// emitting anything newer than the compiler would.
+const WASM_OPT_FEATURES: [&str; 6] = [
+    "--enable-bulk-memory",
+    "--enable-sign-ext",
+    "--enable-mutable-globals",
+    "--enable-nontrapping-float-to-int",
+    "--enable-reference-types",
+    "--enable-multivalue",
+];
+
 /// Line coverage every app must reach. Measured over the app's own `src/` only (not the SDK it
 /// links) and excluding its test code, so neither can inflate the number.
 const APP_COVERAGE_MIN_LINES: u64 = 70;
@@ -133,6 +152,65 @@ fn report(label: &str, path: &Path) -> Result<u64> {
     Ok(gz)
 }
 
+/// The first field of `sha256sum`/`shasum -a 256` output, which is all either prints that matters.
+fn parse_sha256(output: &str) -> Option<&str> {
+    output
+        .split_whitespace()
+        .next()
+        .filter(|h| h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
+fn sha256_of(path: &Path) -> Result<String> {
+    let file = path.to_str().unwrap();
+    let out = capture(path.parent().unwrap(), "sha256sum", &[file])
+        .or_else(|_| capture(path.parent().unwrap(), "shasum", &["-a", "256", file]))
+        .context("sha256sum or shasum is needed to check the wasm-opt download")?;
+    parse_sha256(&out)
+        .map(str::to_ascii_lowercase)
+        .with_context(|| format!("unexpected checksum output: {out:?}"))
+}
+
+/// The pinned `wasm-opt`, fetched into `target/tools/` on first use and checked against its
+/// published checksum. Returns the script to run with node.
+fn wasm_opt(root: &Path) -> Result<PathBuf> {
+    let tools = root.join("target/tools");
+    let dir = tools.join(format!("binaryen-{BINARYEN_VERSION}"));
+    let script = dir.join("wasm-opt.js");
+    if script.exists() {
+        return Ok(script);
+    }
+    std::fs::create_dir_all(&tools)?;
+    let archive = tools.join(format!("binaryen-{BINARYEN_VERSION}-node.tar.gz"));
+    let url = format!(
+        "https://github.com/WebAssembly/binaryen/releases/download/{BINARYEN_VERSION}/\
+         binaryen-{BINARYEN_VERSION}-node.tar.gz"
+    );
+    println!("fetching wasm-opt ({BINARYEN_VERSION})…");
+    run(
+        &tools,
+        "curl",
+        &[
+            "-fsSL",
+            "--retry",
+            "3",
+            "-o",
+            archive.to_str().unwrap(),
+            &url,
+        ],
+    )?;
+    let got = sha256_of(&archive)?;
+    if got != BINARYEN_NODE_SHA256 {
+        let _ = std::fs::remove_file(&archive);
+        bail!("{url} has checksum {got}, expected {BINARYEN_NODE_SHA256}");
+    }
+    run(&tools, "tar", &["xzf", archive.to_str().unwrap()])?;
+    std::fs::remove_file(&archive)?;
+    if !script.exists() {
+        bail!("the binaryen archive had no {}", script.display());
+    }
+    Ok(script)
+}
+
 fn build_web() -> Result<()> {
     let root = root();
     let dist = root.join("web/dist");
@@ -188,14 +266,31 @@ fn build_web() -> Result<()> {
         ("account", "account"),
         ("docs", "docs"),
     ];
+    // Guests only. On the shell every level `wasm-opt` offers makes the gzipped download
+    // *bigger* (2.31 MB to 2.36-2.37 MB when measured), and -Oz takes over a minute.
+    println!("optimising guest apps with wasm-opt -Oz…");
+    let wasm_opt = wasm_opt(&root)?;
     for (crate_name, served) in guests {
-        std::fs::copy(
-            root.join(format!(
-                "apps/target/wasm32-unknown-unknown/release/{crate_name}.wasm"
-            )),
-            dist.join(format!("{served}.wasm")),
+        let built = root.join(format!(
+            "apps/target/wasm32-unknown-unknown/release/{crate_name}.wasm"
+        ));
+        let out = dist.join(format!("{served}.wasm"));
+        run(
+            &root,
+            "node",
+            &[
+                &[
+                    wasm_opt.to_str().unwrap(),
+                    "-Oz",
+                    built.to_str().unwrap(),
+                    "-o",
+                    out.to_str().unwrap(),
+                ][..],
+                &WASM_OPT_FEATURES[..],
+            ]
+            .concat(),
         )
-        .with_context(|| format!("copying {crate_name}"))?;
+        .with_context(|| format!("optimising {crate_name}"))?;
     }
 
     println!("\nwire sizes (what a client actually downloads):");
@@ -220,9 +315,6 @@ fn build_web() -> Result<()> {
         );
     }
 
-    if Command::new("wasm-opt").arg("--version").output().is_err() {
-        println!("\nnote: wasm-opt is not installed — `-Oz` is the remaining lever on shell size.");
-    }
     println!("\nserve with: cargo xtask serve");
     Ok(())
 }
@@ -1013,6 +1105,16 @@ end_of_record
                 "{bad:?} gave {err:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_checksum_is_read_from_either_tool_and_nothing_else() {
+        let hash = "3507aedecef25c46f2889530a7da304677e97122869274125f782b586cb508ab";
+        assert_eq!(parse_sha256(&format!("{hash}  /x/y.tar.gz\n")), Some(hash));
+        assert_eq!(parse_sha256(&format!("{hash} *y.tar.gz")), Some(hash));
+        assert_eq!(parse_sha256(""), None);
+        assert_eq!(parse_sha256("sha256sum: y.tar.gz: No such file"), None);
+        assert_eq!(parse_sha256(&hash[1..]), None);
     }
 
     #[test]

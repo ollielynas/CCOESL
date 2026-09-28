@@ -22,7 +22,9 @@ cargo xtask ci                                              # first run also fet
 ```
 
 The Rust version, `clippy`, `rustfmt`, `llvm-tools` and the `wasm32` target come from
-`rust-toolchain.toml`, so `rustup` sets them up on first use. If `wasm-bindgen-cli` and the
+`rust-toolchain.toml`, so `rustup` sets them up on first use. `cargo xtask build-web` fetches
+the pinned `wasm-opt` (binaryen's node build) into `target/tools/` on first use and checks its
+checksum, so it needs `curl`, `tar` and `sha256sum` (or `shasum`) but no install step. If `wasm-bindgen-cli` and the
 `wasm-bindgen` crate disagree on version the build fails outright, so keep them in step.
 
 ## Layout
@@ -47,7 +49,7 @@ Each CI job is one `cargo xtask` command. To reproduce a red job, run the same c
 | `test` | `cargo xtask test` | A native test fails, in either workspace | — |
 | `test-wasm` | `cargo xtask test-wasm` | A browser-backend test fails under node | — |
 | `apps-coverage` | `cargo xtask coverage` | An app has no documentation page, or is under the coverage bar | See [Adding an app](#adding-an-app) and [Testing apps](#testing-apps) |
-| `build-web` | `cargo xtask build-web` | The build breaks, or an app exceeds 100 KiB gzipped | Trim the app; avoid float `Display` |
+| `build-web` | `cargo xtask build-web` | The build breaks, or an app exceeds 100 KiB gzipped after `wasm-opt -Oz` | Trim the app; avoid float `Display` |
 | `ci-ok` | *(GitHub only)* | Any job above did not succeed | It's the one required check |
 
 `cargo xtask ci` runs all of them in order. `cargo xtask` alone lists every command.
