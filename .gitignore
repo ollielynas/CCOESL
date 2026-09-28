@@ -4,3 +4,5 @@
 /web/dist
 # Per-machine Claude Code permissions; the shared settings.json is committed.
 /.claude/settings.local.json
+# Temporary project uploads the server makes in the jail it serves; deleted on their own.
+/data/shared/.scratch/

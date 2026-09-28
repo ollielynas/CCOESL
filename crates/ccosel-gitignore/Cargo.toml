@@ -1,0 +1,6 @@
+[package]
+name = "ccosel-gitignore"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Pure logic: which files of a picked folder .gitignore excludes, before upload."

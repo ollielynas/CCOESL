@@ -277,6 +277,7 @@ pub fn method_name(method: u32) -> String {
         Some(Method::ListDir) => "list_dir",
         Some(Method::Stat) => "stat",
         Some(Method::ServerInfo) => "server_info",
+        Some(Method::Compile) => "compile",
         None => "unknown",
     };
     String::from(name)

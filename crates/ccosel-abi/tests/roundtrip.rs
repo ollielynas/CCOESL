@@ -67,6 +67,9 @@ fn sample() -> Vec<Cmd<'static>> {
             label: "Download",
             url: "/files/notes.md",
         },
+        Cmd::UploadProject {
+            id: id::hash_str(win, "project"),
+        },
         Cmd::Plot {
             id: id::hash_str(win, "cpu"),
             size: Vec2::new(0.0, 48.0),

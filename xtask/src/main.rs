@@ -180,6 +180,7 @@ fn build_web() -> Result<()> {
         ("file_browser", "file-browser"),
         ("clock", "clock"),
         ("server_dashboard", "server-dashboard"),
+        ("rust_compiler", "rust-compiler"),
     ];
     for (crate_name, served) in guests {
         std::fs::copy(

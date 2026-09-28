@@ -87,6 +87,17 @@ async fn get(addr: SocketAddr, target: &str) -> (u16, Vec<u8>) {
     request(addr, "GET", target, &[]).await
 }
 
+/// The jail holds nothing but the server's own empty `.scratch` folder, which every server
+/// makes at start: so the request under test wrote nothing at all.
+fn wrote_nothing(dir: &std::path::Path) -> bool {
+    let names: Vec<_> = fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    names == [std::ffi::OsString::from(".scratch")]
+        && fs::read_dir(dir.join(".scratch")).unwrap().next().is_none()
+}
+
 #[tokio::test]
 async fn writes_a_file_and_creates_missing_directories() {
     let (addr, dir) = spawn().await;
@@ -146,10 +157,7 @@ async fn refuses_a_filename_containing_a_forward_slash() {
     let status = upload(addr, "/", "a%2Fb", b"x").await;
 
     assert!((400..500).contains(&status), "got {status}");
-    assert!(
-        fs::read_dir(&dir).unwrap().next().is_none(),
-        "wrote nothing"
-    );
+    assert!(wrote_nothing(&dir), "wrote nothing");
 }
 
 #[tokio::test]
@@ -159,10 +167,7 @@ async fn refuses_a_filename_containing_a_backslash() {
     let status = upload(addr, "/", "a%5Cb", b"x").await; // "a\b", percent-encoded for the wire
 
     assert!((400..500).contains(&status), "got {status}");
-    assert!(
-        fs::read_dir(&dir).unwrap().next().is_none(),
-        "wrote nothing"
-    );
+    assert!(wrote_nothing(&dir), "wrote nothing");
 }
 
 #[tokio::test]
@@ -172,10 +177,7 @@ async fn refuses_a_filename_containing_dotdot() {
     let status = upload(addr, "/", "a..b", b"x").await;
 
     assert!((400..500).contains(&status), "got {status}");
-    assert!(
-        fs::read_dir(&dir).unwrap().next().is_none(),
-        "wrote nothing"
-    );
+    assert!(wrote_nothing(&dir), "wrote nothing");
 }
 
 #[tokio::test]
@@ -185,10 +187,7 @@ async fn refuses_an_empty_filename() {
     let status = upload(addr, "/", "", b"x").await;
 
     assert!((400..500).contains(&status), "got {status}");
-    assert!(
-        fs::read_dir(&dir).unwrap().next().is_none(),
-        "wrote nothing"
-    );
+    assert!(wrote_nothing(&dir), "wrote nothing");
 }
 
 #[tokio::test]

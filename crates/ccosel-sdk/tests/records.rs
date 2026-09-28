@@ -344,3 +344,27 @@ fn uploads_finished_reads_the_shells_count() {
     let mut ui = Ui::root(&mut rec, FrameCtx::default(), &rpc);
     assert_eq!(ui.upload_folder("/").uploads_finished(), 3);
 }
+
+#[test]
+fn uploaded_project_is_none_until_the_shell_reports_a_folder() {
+    let mut rec = Recorder::new();
+    let rpc = RpcCtx::new();
+    let id = {
+        let mut ui = Ui::root(&mut rec, FrameCtx::default(), &rpc);
+        assert_eq!(ui.upload_project().uploaded_project(), None);
+        decode(rec.commands())
+            .into_iter()
+            .find_map(|c| match c {
+                Cmd::UploadProject { id } => Some(id),
+                _ => None,
+            })
+            .unwrap()
+    };
+    rec.set_responses(vec![RespRecord {
+        local_id: id,
+        aux: 1234,
+        ..Default::default()
+    }]);
+    let mut ui = Ui::root(&mut rec, FrameCtx::default(), &rpc);
+    assert_eq!(ui.upload_project().uploaded_project(), Some(1234));
+}
