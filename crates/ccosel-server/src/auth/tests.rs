@@ -584,8 +584,11 @@ async fn over_plain_http_the_cookie_is_not_secure() {
 /// call, keyed by endpoint.
 #[derive(Clone, Default)]
 struct StrictProvider {
-    calls: Arc<Mutex<Vec<(&'static str, Option<String>)>>>,
+    calls: Arc<Mutex<Vec<Call>>>,
 }
+
+/// `(endpoint, X-Forwarded-Host)` of one call to [`StrictProvider`].
+type Call = (&'static str, Option<String>);
 
 impl StrictProvider {
     fn record(&self, endpoint: &'static str, headers: &HeaderMap) -> Option<String> {
