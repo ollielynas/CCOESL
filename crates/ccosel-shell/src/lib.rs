@@ -12,6 +12,7 @@
 
 mod app_window;
 mod background;
+mod chrome;
 mod desktop;
 mod fetch;
 mod fullscreen;

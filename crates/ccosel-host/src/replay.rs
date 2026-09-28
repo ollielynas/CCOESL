@@ -310,7 +310,14 @@ impl Cx<'_> {
         } else {
             egui::TextEdit::singleline(&mut state.buf)
         };
-        let r = ui.add(edit.id(egui::Id::new((self.app_instance, id))));
+        let edit = edit.id(egui::Id::new((self.app_instance, id)));
+        // Only the single-line field is a control that sits in a row of buttons; a document
+        // editor with a shadow would read as one giant button.
+        let r = if multiline {
+            ui.add(edit)
+        } else {
+            add_with_shadow(ui, edit)
+        };
         if r.changed() {
             state.version = state.version.wrapping_add(1);
         }
@@ -346,9 +353,7 @@ impl Cx<'_> {
                 }
 
                 Cmd::Button { id, text } => {
-                    // Flat at rest, framed on hover/press: modern toolbars and list rows read
-                    // as buttons without every one of them drawing a permanent box outline.
-                    let r = ui.add(egui::Button::new(text).frame_when_inactive(false));
+                    let r = add_with_shadow(ui, egui::Button::new(text));
                     self.finish(id, r);
                 }
 
@@ -357,13 +362,12 @@ impl Cx<'_> {
                 }
 
                 Cmd::UploadProject { id } => {
-                    let r =
-                        ui.add(egui::Button::new("⬆ Upload project").frame_when_inactive(false));
+                    let r = add_with_shadow(ui, egui::Button::new("⬆ Upload project"));
                     self.finish(id, r);
                 }
 
                 Cmd::UploadFolder { id, .. } => {
-                    let r = ui.add(egui::Button::new("⬆ Upload folder").frame_when_inactive(false));
+                    let r = add_with_shadow(ui, egui::Button::new("⬆ Upload folder"));
                     self.finish(id, r);
                 }
 
@@ -371,7 +375,7 @@ impl Cx<'_> {
                     // Draw `label`, never `url` — a file listing that put the URL itself on
                     // every row would be unreadable (`/files/notes.md` repeated next to each
                     // file). The URL is only for the shell's click handler (#19).
-                    let r = ui.add(egui::Button::new(label).frame_when_inactive(false));
+                    let r = add_with_shadow(ui, egui::Button::new(label));
                     self.finish(id, r);
                 }
 
@@ -419,7 +423,22 @@ impl Cx<'_> {
                 }
 
                 Cmd::Selectable { id, text, selected } => {
-                    let r = ui.selectable_label(selected, text);
+                    // egui frames an unselected selectable only on hover, and a frame's stroke
+                    // adds to a widget's size, so hovering grew it by the stroke width and
+                    // shoved everything after it along. Always frame it instead, with the
+                    // resting outline and fill invisible: the size never changes, and hovering
+                    // only changes colour.
+                    let r = ui
+                        .scope(|ui| {
+                            let rest = &mut ui.visuals_mut().widgets.inactive;
+                            rest.bg_stroke.color = egui::Color32::TRANSPARENT;
+                            rest.bg_fill = egui::Color32::TRANSPARENT;
+                            rest.weak_bg_fill = egui::Color32::TRANSPARENT;
+                            ui.add(
+                                egui::Button::selectable(selected, text).frame_when_inactive(true),
+                            )
+                        })
+                        .inner;
                     self.finish(id, r);
                 }
 
@@ -560,6 +579,32 @@ impl Cx<'_> {
     }
 }
 
+/// How far a button's or text field's shadow sits below and to the right of it.
+const WIDGET_SHADOW_OFFSET: f32 = 3.0;
+
+/// Adds `widget` with a hard shadow painted *behind* it: a solid block in the widget outline's
+/// colour, offset by [`WIDGET_SHADOW_OFFSET`]. The shape slot is reserved before the widget is
+/// added, which is how egui paints underneath something whose rect isn't known yet.
+///
+/// A pressed widget has no shadow, so it reads as pushed in. A disabled one has none either,
+/// since there is nothing to push.
+fn add_with_shadow(ui: &mut egui::Ui, widget: impl egui::Widget) -> egui::Response {
+    let slot = ui.painter().add(egui::Shape::Noop);
+    let r = ui.add(widget);
+    if r.enabled() && !r.is_pointer_button_down_on() {
+        let style = &ui.visuals().widgets.inactive;
+        ui.painter().set(
+            slot,
+            egui::Shape::rect_filled(
+                r.rect.translate(egui::Vec2::splat(WIDGET_SHADOW_OFFSET)),
+                style.corner_radius,
+                style.bg_stroke.color,
+            ),
+        );
+    }
+    r
+}
+
 /// The egui form of a `Styled` run. Sizes are relative to the body font, so the app's
 /// headings scale with the shell's theme rather than being fixed pixel sizes.
 fn rich_text(ui: &egui::Ui, text: &str, style: TextStyle) -> egui::RichText {
@@ -598,9 +643,9 @@ fn rich_text(ui: &egui::Ui, text: &str, style: TextStyle) -> egui::RichText {
 
 /// The colour for headings and bold text.
 ///
-/// Not `RichText::strong`: egui takes that from the *active* widget's text colour, which the
-/// shell's theme sets to white so pressed accent buttons stay readable. In light mode that
-/// made every heading white on white. This takes the theme's body text colour and moves it
+/// Not `RichText::strong`: egui takes that from the *active* widget's text colour, which is
+/// the shell theme's choice for pressed buttons, not for text. A theme that once set it to
+/// white made every heading white on white. This takes the theme's body text colour and moves it
 /// halfway to full contrast instead, so strong text stands out in either mode.
 pub(crate) fn strong_color(visuals: &egui::Visuals) -> egui::Color32 {
     let body = visuals.text_color();
@@ -673,8 +718,8 @@ fn paint_plot(ui: &egui::Ui, rect: egui::Rect, samples: &[u8]) {
             )
         })
         .collect();
-    // The theme's accent, which the shell sets as the link colour: saturated in both themes,
-    // unlike the selection fill, which is deliberately pale.
+    // The theme's link colour: the shell sets it to something that reads on a window's fill,
+    // unlike the selection fill, which may be pale.
     let accent = visuals.hyperlink_color;
     // Fill under the line as one quad per segment: a single polygon would be concave, which
     // egui's convex-polygon fill cannot draw correctly.

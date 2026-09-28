@@ -22,6 +22,7 @@ use crate::http_wire::{HttpWire, Inbox};
 
 use crate::app_window::AppWindow;
 use crate::background;
+use crate::chrome;
 use crate::fetch;
 use crate::fullscreen;
 use crate::registry::{AppEntry, catalog};
@@ -31,19 +32,24 @@ use crate::upload::{self, Uploads};
 
 /// Dock badge geometry, shared between `dock_item` (which paints it) and `app_menu` (which
 /// needs to know the dock's on-screen height so its popup can sit above it without overlapping).
-const DOCK_BADGE: f32 = 42.0;
-const DOCK_LIFT: f32 = 5.0;
-/// Room under the badge for the running pill, plus the headroom the lift needs.
+const DOCK_BADGE: f32 = 40.0;
+const DOCK_LIFT: f32 = 4.0;
+/// Room under the badge for its hard shadow, plus the headroom the lift needs.
 const DOCK_GUTTER: f32 = 8.0;
-/// Matches the dock frame's `inner_margin` (`Margin::symmetric(10, 6)`): 6px top and bottom.
+/// Matches the dock frame's vertical `inner_margin`.
 const DOCK_FRAME_MARGIN_V: f32 = 6.0;
-/// Matches the dock area's own anchor offset: how far its bottom edge sits above the screen's.
-const DOCK_BOTTOM_OFFSET: f32 = 16.0;
-/// The dock's total on-screen height: badge, lift headroom, pill gutter, and the frame's
+/// The dock's total on-screen height: badge, lift headroom, shadow gutter, and the frame's
 /// vertical margin on both edges.
 const DOCK_HEIGHT: f32 = DOCK_BADGE + DOCK_LIFT + DOCK_GUTTER + DOCK_FRAME_MARGIN_V * 2.0;
+/// One dock tile's width, and the gap between tiles.
+const DOCK_ITEM_WIDTH: f32 = DOCK_BADGE + 10.0;
+const DOCK_ITEM_GAP: f32 = 4.0;
+/// The rule between the launcher and the open windows, with its margins.
+const DOCK_DIVIDER_WIDTH: f32 = 14.0;
 /// Clear space between the dock's top edge and the app menu popup above it.
 const MENU_GAP: f32 = 12.0;
+/// Space between the bars' edges and their content.
+const BAR_PAD: f32 = 14.0;
 
 /// Where the wallpaper image is served from. A plain static file under `web/`, alongside
 /// `index.html` — `ServeDir` serves it with no server changes needed.
@@ -371,28 +377,44 @@ impl Desktop {
         let apps = postcard::to_allocvec(&self.app_list()).unwrap_or_default();
         let mut new_settings: Option<Settings> = None;
 
-        theme::paint_wallpaper(&ctx);
         self.paint_background(&ctx);
         self.status_bar(&ctx);
         self.empty_state(ui);
         self.app_menu(&ctx);
         self.dock(&ctx);
 
+        let desktop = desktop_rect(&ctx);
+        let shown: Vec<egui::Id> = self
+            .windows
+            .iter()
+            .filter(|w| !w.placement.minimized)
+            .map(|w| window_id(w.instance_id))
+            .collect();
+        let active = chrome::active_window(&ctx, &shown);
+
         // Closing a window drops the instance, which is the only way to reclaim a guest's
         // memory — wasm linear memory cannot shrink, so a live instance holds its high-water
         // mark forever.
         for window in &mut self.windows {
-            let mut open = window.open;
-            // Outlined in its own app's accent, so which app a window belongs to stays legible
-            // from its edge alone once several of them overlap.
-            let frame = egui::Frame::window(&ctx.style_of(ctx.theme()))
-                .stroke(egui::Stroke::new(1.0, window.color.gamma_multiply(0.5)));
-            egui::Window::new(icon_title(window.icon, window.color, &window.title))
-                .id(egui::Id::new(("app-window", window.instance_id)))
-                .default_size(window.default_size)
-                .frame(frame)
-                .open(&mut open)
-                .show(&ctx, |ui| {
+            // A minimised app gets no frames, the same as a suspended one: its replies wait in
+            // its queue until its dock item brings it back.
+            if window.placement.minimized {
+                continue;
+            }
+            let id = window_id(window.instance_id);
+            let mut placement = std::mem::take(&mut window.placement);
+            let actions = chrome::show_window(
+                &ctx,
+                id,
+                &mut placement,
+                desktop,
+                window.default_size.into(),
+                window.icon,
+                &window.title.clone(),
+                // The active window's bar is filled with its app's colour, the same as its dock
+                // badge, so the two read as one thing.
+                (active == Some(id)).then_some(window.color),
+                |ui| {
                     // `auto_shrink(false)` claims the whole window body regardless of how much
                     // the app actually drew, so dragging the window bigger than its content
                     // leaves blank space rather than the window snapping back to fit. It also
@@ -400,7 +422,9 @@ impl Desktop {
                     egui::ScrollArea::vertical()
                         .auto_shrink([false, false])
                         .show(ui, |ui| window.ui(ui, flags));
-                });
+                },
+            );
+            window.placement = placement;
 
             // Acted on in the frame the click is drawn: browsers only open a picker or a tab
             // in response to a user action, and the next frame could be too late.
@@ -471,7 +495,7 @@ impl Desktop {
                 });
             }
 
-            if !open {
+            if actions.close {
                 window.close();
             }
         }
@@ -536,29 +560,33 @@ impl Desktop {
         }
     }
 
-    /// The menu bar: the shell's own mark on the left, system health on the right.
+    /// The menu bar: the shell's own mark on the left, system health on the right. White, with
+    /// an ink rule along the edge that faces the desktop.
     fn status_bar(&self, ctx: &egui::Context) {
-        let p = theme::palette(ctx);
+        let t = theme::tokens();
         let width = ctx.viewport_rect().width();
-        const PAD: f32 = 14.0;
 
         let frame = egui::Frame::NONE
-            .fill(theme::glass(p))
-            .inner_margin(egui::Margin::symmetric(PAD as i8, 5));
+            .fill(t.surface)
+            .inner_margin(egui::Margin::symmetric(BAR_PAD as i8, 5));
 
         egui::Area::new(egui::Id::new("status-bar"))
             .anchor(egui::Align2::LEFT_TOP, egui::vec2(0.0, 0.0))
             .order(egui::Order::Foreground)
             .show(ctx, |ui| {
-                frame.show(ui, |ui| {
-                    ui.set_width(width - PAD * 2.0);
+                let bar = frame.show(ui, |ui| {
+                    ui.set_width(width - BAR_PAD * 2.0);
                     ui.horizontal(|ui| {
                         ui.label(
                             egui::RichText::new(egui_phosphor::regular::SQUARES_FOUR)
                                 .size(15.0)
-                                .color(p.accent),
+                                .color(t.ink),
                         );
-                        ui.label(egui::RichText::new("CCOSEL").color(p.text));
+                        ui.label(
+                            egui::RichText::new("CCOSEL")
+                                .font(theme::heading_font(14.0))
+                                .color(t.ink),
+                        );
 
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             // Rightmost, like a system-tray icon: the one control here that
@@ -570,10 +598,15 @@ impl Desktop {
                             } else {
                                 egui_phosphor::regular::ARROWS_OUT
                             };
+                            // Frameless, like a tray icon: a full Brutal button would make the
+                            // bar twice as tall.
                             if ui
-                                .add(egui::Button::new(
-                                    egui::RichText::new(icon).size(13.0).color(p.text_dim),
-                                ))
+                                .add(
+                                    egui::Button::new(
+                                        egui::RichText::new(icon).size(14.0).color(t.ink),
+                                    )
+                                    .frame(false),
+                                )
                                 .on_hover_text("Toggle fullscreen")
                                 .clicked()
                             {
@@ -593,43 +626,68 @@ impl Desktop {
                             // The per-frame byte count is the number this whole architecture is
                             // organised around, so it stays on screen rather than behind a menu.
                             let bytes: usize = self.windows.iter().map(|w| w.command_bytes()).sum();
-                            ui.label(status_text(format!("{bytes} B/frame"), p));
-                            ui.label(status_text("\u{00b7}".to_owned(), p));
-                            ui.label(status_text(format!("{} running", self.windows.len()), p));
+                            ui.label(status_text(format!("{bytes} B/frame")));
+                            ui.label(status_text("\u{00b7}".to_owned()));
+                            ui.label(status_text(format!("{} running", self.windows.len())));
                             let upload = self
                                 .uploads
                                 .status()
                                 .or_else(|| self.upload_notice.as_ref().map(|(s, _)| s.clone()));
                             if let Some(text) = upload {
-                                ui.label(status_text("\u{00b7}".to_owned(), p));
-                                ui.label(egui::RichText::new(text).size(12.0).color(p.text));
+                                ui.label(status_text("\u{00b7}".to_owned()));
+                                ui.label(egui::RichText::new(text).small().color(t.ink));
                             }
                         });
                     });
                 });
+                theme::paint_rule(ui.painter(), bar.response.rect, egui::Align::Max);
             });
     }
 
     /// What the desktop says when nothing is open. A blank screen with no affordance is a
     /// worse first impression than one line pointing at the dock.
+    ///
+    /// On a card, like a window: straight onto the wallpaper, text can land on any part of a
+    /// photo and be unreadable.
     fn empty_state(&self, ui: &mut egui::Ui) {
-        let p = theme::palette(ui.ctx());
+        let t = theme::tokens();
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
             .show(ui, |ui| {
                 if !self.windows.is_empty() || *self.pending.borrow() > 0 {
                     return;
                 }
-                ui.vertical_centered(|ui| {
-                    ui.add_space(ui.available_height() * 0.30);
-                    ui.label(
-                        egui::RichText::new(egui_phosphor::regular::SQUARES_FOUR)
-                            .size(44.0)
-                            .color(p.text_dim.gamma_multiply(0.55)),
-                    );
-                    ui.add_space(6.0);
-                    ui.label(egui::RichText::new("CCOSEL").size(24.0).color(p.text));
-                    ui.label(egui::RichText::new("Pick an app from the dock").color(p.text_dim));
+                let area = ui.max_rect();
+                let card = egui::Rect::from_center_size(
+                    egui::pos2(area.center().x, area.top() + area.height() * 0.42),
+                    egui::vec2(300.0, 180.0),
+                );
+                let painter = ui.painter();
+                painter.add(t.shadow.as_shape(card, 0));
+                painter.rect(
+                    card,
+                    0,
+                    t.surface,
+                    egui::Stroke::new(t.stroke, t.ink),
+                    egui::StrokeKind::Inside,
+                );
+                ui.scope_builder(egui::UiBuilder::new().max_rect(card.shrink(24.0)), |ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.label(
+                            egui::RichText::new(egui_phosphor::regular::SQUARES_FOUR)
+                                .size(40.0)
+                                .color(t.ink),
+                        );
+                        ui.add_space(4.0);
+                        ui.label(
+                            egui::RichText::new("CCOSEL")
+                                .font(theme::heading_font(t.heading))
+                                .color(t.ink),
+                        );
+                        ui.label(
+                            egui::RichText::new("Pick an app from the dock").color(t.text_dim),
+                        );
+                    });
                 });
             });
     }
@@ -640,25 +698,18 @@ impl Desktop {
         if !self.app_menu_open {
             return;
         }
-        let p = theme::palette(ctx);
+        let t = theme::tokens();
         let mut to_launch: Option<AppEntry> = None;
 
         let frame = egui::Frame::NONE
-            .fill(theme::glass(p))
-            .stroke(egui::Stroke::new(1.0, theme::glass_border(p)))
-            .corner_radius(egui::CornerRadius::same(14))
+            .fill(t.surface)
+            .stroke(egui::Stroke::new(t.stroke, t.ink))
             .inner_margin(egui::Margin::same(10))
-            .shadow(egui::Shadow {
-                offset: [0, 8],
-                blur: 24,
-                spread: 0,
-                color: p.shadow,
-            });
+            .shadow(t.shadow);
 
-        // Anchored the same distance above the dock's own top edge (dock height + its own
-        // anchor offset) plus a fixed gap, computed from the dock's real geometry rather than a
-        // guessed constant, so the two can never drift back into overlapping.
-        let menu_bottom_offset = DOCK_BOTTOM_OFFSET + DOCK_HEIGHT + MENU_GAP;
+        // Anchored a fixed gap above the dock's top edge, computed from the dock's real
+        // geometry rather than a guessed constant, so the two can never drift into overlapping.
+        let menu_bottom_offset = DOCK_HEIGHT + MENU_GAP;
 
         egui::Area::new(egui::Id::new("app-menu"))
             .anchor(
@@ -670,41 +721,39 @@ impl Desktop {
                 frame.show(ui, |ui| {
                     ui.vertical(|ui| {
                         ui.set_min_width(200.0);
+                        ui.spacing_mut().item_spacing.y = 0.0;
                         for entry in &self.registry {
                             // Allocate the *whole* row as one click target first, then paint the
                             // badge and label into it, so there is no separate `ui.label` widget
                             // sitting on top able to swallow the click before the row sees it —
                             // any point in the row launches the app, not just the icon glyph.
-                            let row_size = egui::vec2(ui.available_width(), 32.0);
+                            let row_size = egui::vec2(ui.available_width(), 38.0);
                             let (rect, response) =
                                 ui.allocate_exact_size(row_size, egui::Sense::click());
 
                             if ui.is_rect_visible(rect) {
                                 if response.hovered() {
-                                    ui.painter().rect_filled(
-                                        rect,
-                                        egui::CornerRadius::same(8),
-                                        p.surface_hover,
-                                    );
+                                    ui.painter().rect_filled(rect, 0, t.hover);
                                 }
 
                                 let badge_rect = egui::Rect::from_center_size(
-                                    egui::pos2(rect.min.x + 16.0, rect.center().y),
-                                    egui::vec2(32.0, 32.0),
+                                    egui::pos2(rect.min.x + 17.0, rect.center().y - 1.5),
+                                    egui::vec2(26.0, 26.0),
                                 );
                                 theme::paint_badge(
                                     ui.painter(),
                                     badge_rect,
                                     entry.icon,
                                     entry.color,
+                                    !response.is_pointer_button_down_on(),
                                 );
 
                                 ui.painter().text(
                                     egui::pos2(rect.min.x + 42.0, rect.center().y),
                                     egui::Align2::LEFT_CENTER,
                                     entry.name,
-                                    egui::FontId::proportional(14.0),
-                                    p.text,
+                                    egui::FontId::proportional(t.body),
+                                    t.ink,
                                 );
                             }
 
@@ -728,10 +777,11 @@ impl Desktop {
     /// A pinned app stands for all its windows: clicking it launches the app if none is open,
     /// and otherwise raises its windows one per click.
     ///
-    /// A floating area rather than a panel, so windows pass underneath it instead of the
-    /// desktop permanently losing a full-width strip of height to mostly-empty chrome.
+    /// An area rather than a panel, so windows pass underneath it instead of the desktop
+    /// permanently losing a full-width strip of height to it.
     fn dock(&mut self, ctx: &egui::Context) {
-        let p = theme::palette(ctx);
+        let t = theme::tokens();
+        let width = ctx.viewport_rect().width();
         let mut to_focus: Option<u64> = None;
         let mut to_launch: Option<AppEntry> = None;
         let pinned: Vec<AppEntry> = self
@@ -744,36 +794,36 @@ impl Desktop {
         let is_pinned = |app_id: &str| pinned.iter().any(|e| e.id == app_id);
 
         let frame = egui::Frame::NONE
-            .fill(theme::glass(p))
-            .stroke(egui::Stroke::new(1.0, theme::glass_border(p)))
-            .corner_radius(egui::CornerRadius::same(22))
-            .inner_margin(egui::Margin::symmetric(10, DOCK_FRAME_MARGIN_V as i8))
-            .shadow(egui::Shadow {
-                offset: [0, 12],
-                blur: 36,
-                spread: 0,
-                color: p.shadow,
-            });
+            .fill(t.surface)
+            .inner_margin(egui::Margin::symmetric(
+                BAR_PAD as i8,
+                DOCK_FRAME_MARGIN_V as i8,
+            ));
+
+        // Tiles are a fixed width, so the row's width is known before it is laid out, which
+        // is what lets it be centred without a frame's delay.
+        let items = 1 + self.windows.len();
+        let divider = if self.windows.is_empty() {
+            0.0
+        } else {
+            DOCK_DIVIDER_WIDTH + DOCK_ITEM_GAP
+        };
+        let row = items as f32 * DOCK_ITEM_WIDTH + (items - 1) as f32 * DOCK_ITEM_GAP + divider;
+        let inner = width - BAR_PAD * 2.0;
 
         egui::Area::new(egui::Id::new("dock"))
-            .anchor(
-                egui::Align2::CENTER_BOTTOM,
-                egui::vec2(0.0, -DOCK_BOTTOM_OFFSET),
-            )
+            .anchor(egui::Align2::CENTER_BOTTOM, egui::Vec2::ZERO)
             .order(egui::Order::Foreground)
             .show(ctx, |ui| {
-                frame.show(ui, |ui| {
+                let bar = frame.show(ui, |ui| {
+                    ui.set_width(inner);
                     ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 4.0;
+                        ui.spacing_mut().item_spacing.x = DOCK_ITEM_GAP;
+                        ui.add_space(((inner - row) / 2.0).max(0.0));
 
-                        // Launcher icon: opens the app menu.
-                        let launcher = dock_item(
-                            ui,
-                            egui_phosphor::regular::SQUARES_FOUR,
-                            p.accent,
-                            "All apps",
-                            false,
-                        );
+                        // Launcher: opens the app menu.
+                        let launcher =
+                            dock_item(ui, egui_phosphor::regular::SQUARES_FOUR, t.ink, "All apps");
                         if launcher.clicked() {
                             self.app_menu_open = !self.app_menu_open;
                         }
@@ -792,7 +842,6 @@ impl Desktop {
                                     entry.icon,
                                     entry.color,
                                     entry.name,
-                                    !open.is_empty(),
                                 );
                                 if item.clicked() {
                                     if open.is_empty() {
@@ -813,8 +862,7 @@ impl Desktop {
                         if !unpinned.is_empty() {
                             ui.separator();
                             for window in unpinned {
-                                let item =
-                                    dock_item(ui, window.icon, window.color, &window.title, false);
+                                let item = dock_item(ui, window.icon, window.color, &window.title);
                                 if item.clicked() {
                                     to_focus = Some(window.instance_id);
                                 }
@@ -822,21 +870,21 @@ impl Desktop {
                         }
                     });
                 });
+                theme::paint_rule(ui.painter(), bar.response.rect, egui::Align::Min);
             });
 
         if let Some(entry) = to_launch {
             self.launch(&entry);
         }
         if let Some(id) = to_focus {
+            if let Some(w) = self.windows.iter_mut().find(|w| w.instance_id == id) {
+                w.placement.minimized = false;
+            }
             // egui tracks z-order per area, so "focus" is just moving that area to the top.
-            ctx.move_to_top(egui::LayerId::new(
-                egui::Order::Middle,
-                egui::Id::new(("app-window", id)),
-            ));
+            ctx.move_to_top(egui::LayerId::new(egui::Order::Middle, window_id(id)));
         }
     }
 }
-
 async fn launch_inner(
     entry: &AppEntry,
     modules: &Rc<RefCell<HashMap<&'static str, WebAssembly::Module>>>,
@@ -874,43 +922,33 @@ async fn launch_inner(
     ))
 }
 
-/// `WidgetText` for a window title or menu row: the app's badge glyph in its own color,
-/// followed by its name in whatever color the surrounding widget would normally use. Built as
-/// one `LayoutJob` rather than two widgets, so it drops into anything that takes a title —
-/// window titles included, which can't host a custom-painted child.
-fn icon_title(icon: &str, color: egui::Color32, text: &str) -> egui::WidgetText {
-    let mut job = egui::text::LayoutJob::default();
-    job.append(
-        icon,
-        0.0,
-        egui::TextFormat {
-            color,
-            ..Default::default()
-        },
-    );
-    job.append(
-        &format!("  {text}"),
-        0.0,
-        egui::TextFormat {
-            color: egui::Color32::PLACEHOLDER,
-            ..Default::default()
-        },
-    );
-    job.into()
+fn window_id(instance_id: u64) -> egui::Id {
+    egui::Id::new(("app-window", instance_id))
 }
 
-/// One dock tile: a badge that lifts and lights up under the pointer, with a pill beneath it
-/// when the app has windows open. The hover response is most of what separates a dock from a
-/// row of pictures — it is the affordance saying these are pressable.
-fn dock_item(
-    ui: &mut egui::Ui,
-    icon: &str,
-    color: egui::Color32,
-    tooltip: &str,
-    running: bool,
-) -> egui::Response {
+/// Where windows live: between the status bar and the dock. A maximised window fills it,
+/// short of its own shadow so that stays on screen.
+fn desktop_rect(ctx: &egui::Context) -> egui::Rect {
+    let mut rect = ctx.content_rect();
+    ctx.memory(|m| {
+        if let Some(bar) = m.area_rect(egui::Id::new("status-bar")) {
+            rect.min.y = bar.max.y;
+        }
+        if let Some(dock) = m.area_rect(egui::Id::new("dock")) {
+            rect.max.y = dock.min.y;
+        }
+    });
+    let [x, y] = theme::tokens().shadow.offset;
+    rect.max -= egui::vec2(f32::from(x), f32::from(y));
+    rect
+}
+
+/// One dock tile: a square badge with a hard shadow, which lifts under the pointer and loses
+/// its shadow while pressed. The hover response is most of what separates a dock from a row of
+/// pictures: it is the affordance saying these are pressable.
+fn dock_item(ui: &mut egui::Ui, icon: &str, color: egui::Color32, tooltip: &str) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(
-        egui::vec2(DOCK_BADGE + 10.0, DOCK_BADGE + DOCK_LIFT + DOCK_GUTTER),
+        egui::vec2(DOCK_ITEM_WIDTH, DOCK_BADGE + DOCK_LIFT + DOCK_GUTTER),
         egui::Sense::click(),
     );
 
@@ -918,33 +956,27 @@ fn dock_item(
         let t = ui
             .ctx()
             .animate_bool_responsive(response.id, response.hovered());
-        let size = DOCK_BADGE + 5.0 * t;
         let badge = egui::Rect::from_center_size(
             egui::pos2(
                 rect.center().x,
                 rect.bottom() - DOCK_GUTTER - DOCK_BADGE / 2.0 - DOCK_LIFT * t,
             ),
-            egui::vec2(size, size),
+            egui::vec2(DOCK_BADGE, DOCK_BADGE),
         );
-
-        theme::paint_glow(ui.painter(), badge, color, t);
-        theme::paint_badge(ui.painter(), badge, icon, color);
-
-        if running {
-            // Widens under the pointer: the same mark reads as "open" at rest and as "this is
-            // the one you are about to raise" on hover.
-            let pill = egui::Rect::from_center_size(
-                egui::pos2(rect.center().x, rect.bottom() - 3.0),
-                egui::vec2(5.0 + 13.0 * t, 3.0),
-            );
-            ui.painter()
-                .rect_filled(pill, egui::CornerRadius::same(2), color);
-        }
+        theme::paint_badge(
+            ui.painter(),
+            badge,
+            icon,
+            color,
+            !response.is_pointer_button_down_on(),
+        );
     }
 
     response.on_hover_text(tooltip)
 }
 
-fn status_text(text: String, p: &theme::Palette) -> egui::RichText {
-    egui::RichText::new(text).small().color(p.text_dim)
+fn status_text(text: String) -> egui::RichText {
+    egui::RichText::new(text)
+        .small()
+        .color(theme::tokens().text_dim)
 }

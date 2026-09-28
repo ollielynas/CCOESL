@@ -327,6 +327,17 @@ fn ids_are_stable_and_path_dependent() {
 }
 
 #[test]
+fn an_apps_first_scope_is_not_the_root() {
+    // With a root the hasher maps to itself under salt 0, the first top-level scope shares the
+    // root's id and its children collide with the top-level widgets (#44).
+    let first_scope = id::hash_id(id::ROOT, 0);
+    assert_ne!(first_scope, id::ROOT);
+    for n in 0..64 {
+        assert_ne!(id::hash_id(first_scope, n), id::hash_id(id::ROOT, n));
+    }
+}
+
+#[test]
 fn plot_claiming_more_samples_than_are_present_is_truncated_not_a_panic() {
     let buf = encode(&[Cmd::Plot {
         id: 1,

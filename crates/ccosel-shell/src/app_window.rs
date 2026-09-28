@@ -8,6 +8,8 @@ use ccosel_abi::{REPAINT_ON_INPUT_ONLY, RespRecord};
 use ccosel_host::{AppInstance, FrameArgs, Replayer};
 use ccosel_transport::EventSink;
 
+use crate::chrome::Placement;
+
 /// The delivery target for one window's RPC replies.
 ///
 /// Lives behind an `Rc` so the transport's pending table can hold a clone without owning the
@@ -39,6 +41,8 @@ pub struct AppWindow<I: AppInstance> {
     pub instance_id: u64,
     pub open: bool,
     pub default_size: [f32; 2],
+    /// Minimised or maximised, from the title bar.
+    pub placement: Placement,
     instance: I,
     replayer: Replayer,
     /// Responses from the previous frame, handed back to the guest on the next one.
@@ -75,6 +79,7 @@ impl<I: AppInstance> AppWindow<I> {
             instance_id,
             open: true,
             default_size,
+            placement: Placement::default(),
             instance,
             replayer: Replayer::new(),
             responses: Vec::new(),
