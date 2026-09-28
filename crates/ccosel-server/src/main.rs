@@ -54,7 +54,7 @@ async fn main() -> anyhow::Result<()> {
                 println!(
                     "Keycloak admin console (this machine only): {} — user admin, password in {}",
                     keycloak::admin_console_url(),
-                    keycloak::ADMIN_PASSWORD_FILE
+                    keycloak::admin_password_file().display()
                 );
                 AuthState::new(Some(OAuthConfig::proxied_keycloak(
                     keycloak::realm_url(),

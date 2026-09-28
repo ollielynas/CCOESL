@@ -3,10 +3,13 @@
 //! It runs in Docker, listening on this machine only (`127.0.0.1`), under the `/idp` path so
 //! [`crate::idp`] can forward its sign-in pages without rewriting anything. Browsers never
 //! reach it directly; its admin console is only reachable from this machine, at
-//! [`admin_console_url`], with the random password kept in [`ADMIN_PASSWORD_FILE`].
+//! [`admin_console_url`], with the random password kept in [`admin_password_file`].
 //!
-//! Its data lives in a named volume, so accounts survive the container being replaced.
+//! Its data lives in a named volume, so accounts survive the container being replaced. The
+//! container and volume have fixed names, so every checkout on a machine shares them; the
+//! admin password is kept per machine too, so they all agree on it.
 
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
@@ -31,8 +34,10 @@ const IMAGE: &str = "quay.io/keycloak/keycloak";
 const CONFIG_LABEL: &str = "ccosel.config";
 const CONFIG_VERSION: &str = "2";
 
-/// Where the admin password is kept, relative to the directory the server runs in.
-pub const ADMIN_PASSWORD_FILE: &str = "data/keycloak-admin-password";
+/// Where earlier builds kept the admin password, relative to the directory the server ran in.
+/// That gave each checkout its own password for the one Keycloak they share, so a file found
+/// here is moved to [`admin_password_file`].
+const LEGACY_PASSWORD_FILE: &str = "data/keycloak-admin-password";
 
 /// What older versions of this server wrote into `.env` after starting Keycloak themselves. A
 /// `.env` still holding it means "the managed Keycloak", not a Keycloak of the user's own.
@@ -120,24 +125,53 @@ pub async fn provision(public_url: Option<&str>, port: u16) -> anyhow::Result<()
         bail!("docker is required to start Keycloak — install it, or set CCOSEL_KEYCLOAK_URL");
     }
 
-    let password = admin_password()?;
+    let password = admin_password(&admin_password_file())?;
     ensure_running(&password).await?;
     let token = admin_token(&password).await?;
     ensure_realm(&token).await?;
     ensure_client(&token, &redirect_uris(public_url, port)).await
 }
 
-/// Reads the admin password, creating a random one the first time.
-fn admin_password() -> anyhow::Result<String> {
-    if let Ok(existing) = std::fs::read_to_string(ADMIN_PASSWORD_FILE) {
+/// Where the admin password is kept: once per user, like the Docker volume it unlocks, so every
+/// checkout on this machine uses the same one.
+pub fn admin_password_file() -> PathBuf {
+    password_file_in(|name| {
+        std::env::var_os(name)
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+    })
+}
+
+/// [`admin_password_file`], with the environment passed in so it can be tested. Without any of
+/// the usual variables (a bare service account) it falls back to the working directory.
+fn password_file_in(var: impl Fn(&str) -> Option<PathBuf>) -> PathBuf {
+    let data = if cfg!(windows) {
+        var("APPDATA")
+    } else {
+        var("XDG_DATA_HOME").or_else(|| var("HOME").map(|home| home.join(".local/share")))
+    };
+    match data {
+        Some(dir) => dir.join("ccosel").join("keycloak-admin-password"),
+        None => PathBuf::from(LEGACY_PASSWORD_FILE),
+    }
+}
+
+/// Reads the admin password from `file`, creating a random one the first time. A password left
+/// in this checkout by an earlier build is moved there instead.
+fn admin_password(file: &Path) -> anyhow::Result<String> {
+    if let Ok(existing) = std::fs::read_to_string(file) {
         return Ok(existing.trim().to_owned());
     }
-    let password: String = rand::thread_rng()
-        .sample_iter(&Alphanumeric)
-        .take(24)
-        .map(char::from)
-        .collect();
-    if let Some(dir) = std::path::Path::new(ADMIN_PASSWORD_FILE).parent() {
+    let legacy = Path::new(LEGACY_PASSWORD_FILE);
+    let password = match std::fs::read_to_string(legacy) {
+        Ok(existing) if file != legacy => existing.trim().to_owned(),
+        _ => rand::thread_rng()
+            .sample_iter(&Alphanumeric)
+            .take(24)
+            .map(char::from)
+            .collect(),
+    };
+    if let Some(dir) = file.parent() {
         std::fs::create_dir_all(dir)?;
     }
     let mut options = std::fs::OpenOptions::new();
@@ -146,11 +180,19 @@ fn admin_password() -> anyhow::Result<String> {
     std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
     std::io::Write::write_all(
         &mut options
-            .open(ADMIN_PASSWORD_FILE)
-            .with_context(|| format!("creating {ADMIN_PASSWORD_FILE}"))?,
+            .open(file)
+            .with_context(|| format!("creating {}", file.display()))?,
         password.as_bytes(),
     )?;
-    println!("created a Keycloak admin password in {ADMIN_PASSWORD_FILE}");
+    if legacy.exists() && file != legacy {
+        std::fs::remove_file(legacy)?;
+        println!(
+            "moved the Keycloak admin password from {LEGACY_PASSWORD_FILE} to {}",
+            file.display()
+        );
+    } else {
+        println!("created a Keycloak admin password in {}", file.display());
+    }
     Ok(password)
 }
 
@@ -189,36 +231,69 @@ fn docker(args: &[&str]) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Whether `docker port` output shows Keycloak published where [`upstream`] expects it.
+fn is_published(docker_port: &str) -> bool {
+    docker_port
+        .lines()
+        .any(|line| line.trim() == format!("127.0.0.1:{PORT}"))
+}
+
+/// Whether the container's port is actually published. A container can be running without it:
+/// one whose first start failed (port taken) came up later with no network at all.
+fn published() -> bool {
+    Command::new("docker")
+        .args(["port", CONTAINER, "8080/tcp"])
+        .stderr(Stdio::null())
+        .output()
+        .is_ok_and(|out| is_published(&String::from_utf8_lossy(&out.stdout)))
+}
+
 async fn ensure_running(password: &str) -> anyhow::Result<()> {
-    match inspect() {
+    let reuse = match inspect() {
         Some((label, running)) if label == CONFIG_VERSION => {
             if !running {
                 println!("starting the Keycloak container…");
                 docker(&["start", CONTAINER])?;
             }
-        }
-        existing => {
-            if existing.is_some() {
+            if published() {
+                true
+            } else {
                 println!(
-                    "replacing the {CONTAINER} container made by an older CCOSEL: it listened on \
-                     every network interface with admin/admin. Accounts created in it are not \
-                     carried over; add them again in the new admin console."
+                    "the {CONTAINER} container is running without its port published, so it \
+                     is being replaced. Accounts are kept: they live in the {VOLUME} volume."
                 );
                 docker(&["rm", "-f", CONTAINER])?;
+                false
             }
-            println!("starting Keycloak…");
-            let out = Command::new("docker")
-                .args(run_args())
-                .env("KC_BOOTSTRAP_ADMIN_PASSWORD", password)
-                .env("KEYCLOAK_ADMIN_PASSWORD", password)
-                .stdout(Stdio::null())
-                .output()?;
-            if !out.status.success() {
-                bail!(
-                    "could not start Keycloak: {}",
-                    String::from_utf8_lossy(&out.stderr).trim()
-                );
-            }
+        }
+        Some(_) => {
+            println!(
+                "replacing the {CONTAINER} container made by an older CCOSEL: it listened on \
+                 every network interface with admin/admin. Accounts created in it are not \
+                 carried over; add them again in the new admin console."
+            );
+            docker(&["rm", "-f", CONTAINER])?;
+            false
+        }
+        None => false,
+    };
+
+    if !reuse {
+        println!("starting Keycloak…");
+        let out = Command::new("docker")
+            .args(run_args())
+            .env("KC_BOOTSTRAP_ADMIN_PASSWORD", password)
+            .env("KEYCLOAK_ADMIN_PASSWORD", password)
+            .stdout(Stdio::null())
+            .output()?;
+        if !out.status.success() {
+            // `docker run` can create the container and then fail to start it (the port is
+            // taken). Left behind, it carries the current label and would be reused as is.
+            let _ = docker(&["rm", "-f", CONTAINER]);
+            bail!(
+                "could not start Keycloak: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
         }
     }
 
@@ -260,9 +335,10 @@ async fn admin_token(password: &str) -> anyhow::Result<String> {
     match resp["access_token"].as_str() {
         Some(token) => Ok(token.to_owned()),
         None => bail!(
-            "Keycloak refused the admin password in {ADMIN_PASSWORD_FILE}. If you changed it in \
-             the admin console, put the new one in that file. To start over instead (this \
-             deletes every account): docker rm -f {CONTAINER} && docker volume rm {VOLUME}"
+            "Keycloak refused the admin password in {}. If you changed it in the admin console, \
+             put the new one in that file. To start over instead (this deletes every account): \
+             docker rm -f {CONTAINER} && docker volume rm {VOLUME}",
+            admin_password_file().display()
         ),
     }
 }

@@ -61,3 +61,69 @@ fn urls_point_at_the_idp_path() {
     assert_eq!(realm_url(), "http://127.0.0.1:8080/idp/realms/ccosel");
     assert_eq!(admin_console_url(), "http://localhost:8080/idp/admin/");
 }
+
+#[test]
+fn the_admin_password_is_kept_per_user_not_per_checkout() {
+    let env = |vars: &'static [(&'static str, &'static str)]| {
+        move |name: &str| {
+            vars.iter()
+                .find(|(k, _)| *k == name)
+                .map(|(_, v)| PathBuf::from(v))
+        }
+    };
+    if cfg!(windows) {
+        assert_eq!(
+            password_file_in(env(&[("APPDATA", r"C:\Users\u\AppData\Roaming")])),
+            Path::new(r"C:\Users\u\AppData\Roaming\ccosel\keycloak-admin-password")
+        );
+    } else {
+        assert_eq!(
+            password_file_in(env(&[("HOME", "/home/u")])),
+            Path::new("/home/u/.local/share/ccosel/keycloak-admin-password")
+        );
+        assert_eq!(
+            password_file_in(env(&[("HOME", "/home/u"), ("XDG_DATA_HOME", "/data")])),
+            Path::new("/data/ccosel/keycloak-admin-password")
+        );
+    }
+    // With nowhere per-user to put it, the working directory is still better than failing.
+    assert_eq!(password_file_in(env(&[])), Path::new(LEGACY_PASSWORD_FILE));
+}
+
+#[test]
+fn a_container_without_its_port_published_is_not_reused() {
+    assert!(is_published("127.0.0.1:8080\n"));
+    // `docker port` prints nothing for a container that came up with no network.
+    assert!(!is_published(""));
+    // Published somewhere else is no use either: the server only looks on 127.0.0.1:8080.
+    assert!(!is_published("0.0.0.0:8080\n[::]:8080\n"));
+    assert!(!is_published("127.0.0.1:18080\n"));
+}
+
+#[test]
+fn an_existing_password_file_is_read_and_left_alone() {
+    let dir = std::env::temp_dir().join(format!("ccosel-kc-{}", std::process::id()));
+    let file = dir.join("ccosel").join("keycloak-admin-password");
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(&file, "s3cret\n").unwrap();
+    assert_eq!(admin_password(&file).unwrap(), "s3cret");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_new_password_file_is_created_private() {
+    let dir = std::env::temp_dir().join(format!("ccosel-kc-new-{}", std::process::id()));
+    let file = dir.join("ccosel").join("keycloak-admin-password");
+    let password = admin_password(&file).unwrap();
+    assert_eq!(password.len(), 24);
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), password);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&file).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+    // Asking again gives the same password rather than a new one.
+    assert_eq!(admin_password(&file).unwrap(), password);
+    std::fs::remove_dir_all(&dir).unwrap();
+}

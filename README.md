@@ -50,7 +50,8 @@ admin console is never forwarded.
 
 - **Admin console:** `http://localhost:8080/idp/admin/`, on the server machine only. The user
   is `admin`; the password is generated on first start and kept in
-  `data/keycloak-admin-password`.
+  `~/.local/share/ccosel/keycloak-admin-password` (`%APPDATA%\ccosel\` on Windows). It is per
+  machine, like the container, so every checkout signs in to the same Keycloak with it.
 - **Adding a user:** in the admin console, switch to the **ccosel** realm (top left), then
   **Users → Add user**. Fill in email, first and last name too, or Keycloak asks for them at
   first sign-in. Set a password under **Credentials**.
