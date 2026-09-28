@@ -1,4 +1,6 @@
 //! Acting on `UploadFolder` and `OpenUrl` clicks: the folder picker, the upload, the new tab.
+//! Also files and folders dropped onto an app window, which upload exactly as if they had been
+//! picked with that window's upload button.
 //!
 //! An app can't reach the browser, so it draws a button and the shell does the work when it's
 //! clicked. The decisions (where each file goes, how its URL is encoded, which URLs an app may
@@ -11,7 +13,10 @@ use std::rc::Rc;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
-use web_sys::{File, HtmlInputElement};
+use web_sys::{
+    DragEvent, File, FileSystemDirectoryEntry, FileSystemEntry, FileSystemFileEntry,
+    HtmlInputElement,
+};
 
 use crate::fetch;
 
@@ -87,6 +92,94 @@ pub fn project_files(paths: &[String], gitignores: &[(String, String)]) -> Vec<b
         .collect()
 }
 
+/// A dropped file or folder, read into a tree. Generic over the file handle so flattening it
+/// can be tested without a browser.
+#[derive(Debug, PartialEq)]
+pub enum Entry<F> {
+    File(String, F),
+    Dir(String, Vec<Entry<F>>),
+}
+
+/// Every file under `entries`, with its path relative to where they were dropped:
+/// `photos/2024/a.jpg` for a dropped `photos` folder, `a.jpg` for a dropped file. That is the
+/// same shape as a picked folder's `webkitRelativePath`, so both go through [`upload_target`].
+/// Empty folders contribute nothing: there is no file to upload.
+pub fn flatten<F>(entries: Vec<Entry<F>>) -> Vec<(String, F)> {
+    fn walk<F>(prefix: &str, entries: Vec<Entry<F>>, out: &mut Vec<(String, F)>) {
+        for entry in entries {
+            match entry {
+                Entry::File(name, f) => out.push((format!("{prefix}{name}"), f)),
+                Entry::Dir(name, children) => walk(&format!("{prefix}{name}/"), children, out),
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk("", entries, &mut out);
+    out
+}
+
+/// What an upload is called in the status bar: the folder or file, when one thing was chosen,
+/// otherwise how many.
+pub fn upload_label(relative: &[String]) -> String {
+    let mut tops: Vec<&str> = relative
+        .iter()
+        .filter_map(|r| r.split('/').next())
+        .collect();
+    tops.sort_unstable();
+    tops.dedup();
+    match tops.as_slice() {
+        [] => "folder".to_owned(),
+        [one] => (*one).to_owned(),
+        many => format!("{} items", many.len()),
+    }
+}
+
+/// Why a file of `size` bytes won't be sent, if it won't. Checked before the file is read, so an
+/// oversized file never lands in memory. See [`ccosel_proto::upload`] for why this is a cap
+/// rather than chunking.
+pub fn refuse_size(size: u64) -> Option<String> {
+    let max = ccosel_proto::upload::MAX_FILE_BYTES;
+    (size > max).then(|| {
+        format!(
+            "{} is over the {} upload limit",
+            human_bytes(size),
+            human_bytes(max)
+        )
+    })
+}
+
+/// A byte count for people: `512 B`, `12.3 KB`, `4.0 MB`, `1.2 GB`.
+pub fn human_bytes(n: u64) -> String {
+    const UNITS: [&str; 3] = ["KB", "MB", "GB"];
+    if n < 1024 {
+        return format!("{n} B");
+    }
+    let mut value = n as f64 / 1024.0;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    format!("{value:.1} {}", UNITS[unit])
+}
+
+/// Where a drop on a window goes: the same place as a click on that window's upload button.
+/// A window with several goes to the first; one with none can't take a drop.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DropTarget {
+    /// An `UploadFolder` button: its widget id and destination folder.
+    Folder(u64, String),
+    /// An `UploadProject` button: its widget id.
+    Project(u64),
+}
+
+pub fn drop_target(folders: &[(u64, String)], projects: &[u64]) -> Option<DropTarget> {
+    folders
+        .first()
+        .map(|(id, dest)| DropTarget::Folder(*id, dest.clone()))
+        .or_else(|| projects.first().map(|&id| DropTarget::Project(id)))
+}
+
 /// Whether the shell may open this `OpenUrl` target in a new tab.
 ///
 /// The URL comes from an app, and an app is untrusted code, so this is deliberately narrow: a
@@ -120,6 +213,10 @@ pub struct Upload {
     pub folder: String,
     pub done: usize,
     pub total: usize,
+    /// Bytes of the files done so far, sent or failed, and of all of them. Advances a file at a
+    /// time: `fetch` reports no progress within one request.
+    pub bytes_done: u64,
+    pub bytes_total: u64,
     pub failures: Vec<String>,
     pub finished: bool,
     /// A project upload (`UploadProject`) rather than a folder upload (`UploadFolder`).
@@ -143,15 +240,39 @@ impl Upload {
             n => format!(", {n} ignored"),
         };
         if !self.finished {
-            return format!("Uploading {name}: {}/{}{skipped}", self.done, self.total);
+            return format!(
+                "Uploading {name}: {}/{} files, {} of {}{skipped}",
+                self.done,
+                self.total,
+                human_bytes(self.bytes_done),
+                human_bytes(self.bytes_total)
+            );
         }
         match self.failures.len() {
-            0 => format!("Uploaded {name}: {} files{skipped}", self.done),
+            0 => format!(
+                "Uploaded {name}: {} files, {}{skipped}",
+                self.done,
+                human_bytes(self.bytes_total)
+            ),
             n => format!(
                 "Uploaded {name}: {} of {} files, {n} failed{skipped}",
                 self.done.saturating_sub(n),
                 self.total
             ),
+        }
+    }
+
+    /// How far along it is, from 0 to 1: by bytes, or by files while no sizes are known yet
+    /// (before the picker returns, or for a folder of empty files).
+    pub fn fraction(&self) -> f32 {
+        if self.finished {
+            1.0
+        } else if self.bytes_total > 0 {
+            (self.bytes_done as f64 / self.bytes_total as f64) as f32
+        } else if self.total > 0 {
+            self.done as f32 / self.total as f32
+        } else {
+            0.0
         }
     }
 }
@@ -184,6 +305,62 @@ impl Uploads {
         }
     }
 
+    /// How far along everything running is, for the status bar's progress bar.
+    pub fn progress(&self) -> Option<f32> {
+        let all = self.all.borrow();
+        if all.is_empty() {
+            return None;
+        }
+        let (done, total) = all
+            .iter()
+            .fold((0, 0), |(d, t), u| (d + u.bytes_done, t + u.bytes_total));
+        Some(if total > 0 {
+            (done as f64 / total as f64) as f32
+        } else {
+            all.iter().map(Upload::fraction).sum::<f32>() / all.len() as f32
+        })
+    }
+
+    /// Upload what was dropped on a window, as if it had been picked with that window's
+    /// `target` button.
+    pub fn start_dropped(
+        &self,
+        instance: u64,
+        target: DropTarget,
+        entries: Vec<FileSystemEntry>,
+        ctx: egui::Context,
+    ) {
+        let target = self.target(instance, target);
+        let all = self.all.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            let mut tree = Vec::new();
+            let mut unreadable = Vec::new();
+            for entry in entries {
+                match read_entry(entry.clone()).await {
+                    Ok(e) => tree.push(e),
+                    Err(e) => unreadable.push(format!("{}: couldn't read it: {e}", entry.name())),
+                }
+            }
+            let (relative, files): (Vec<String>, Vec<File>) = flatten(tree).into_iter().unzip();
+            upload_all(all, target, files, relative, unreadable, ctx).await;
+        });
+    }
+
+    fn target(&self, instance: u64, target: DropTarget) -> Target {
+        let seq = self.next_seq.get();
+        self.next_seq.set(seq + 1);
+        let (widget, dest) = match target {
+            DropTarget::Folder(widget, dest) => (widget, Dest::Folder(dest)),
+            DropTarget::Project(widget) => (widget, Dest::Scratch),
+        };
+        Target {
+            seq,
+            instance,
+            widget,
+            dest,
+        }
+    }
+
     /// Open the folder picker for a click on an `UploadFolder` button, then upload what's
     /// picked into `dest`.
     ///
@@ -200,15 +377,14 @@ impl Uploads {
     }
 
     fn pick(&self, instance: u64, widget: u64, dest: Dest, ctx: egui::Context) {
-        let seq = self.next_seq.get();
-        self.next_seq.set(seq + 1);
-        let target = Target {
-            seq,
+        let target = self.target(
             instance,
-            widget,
-            dest,
-        };
-        let project = matches!(target.dest, Dest::Scratch);
+            match dest {
+                Dest::Folder(dest) => DropTarget::Folder(widget, dest),
+                Dest::Scratch => DropTarget::Project(widget),
+            },
+        );
+        let (seq, project) = (target.seq, matches!(target.dest, Dest::Scratch));
         if let Err(e) = open_picker(self.all.clone(), target, ctx) {
             self.all.borrow_mut().push(Upload {
                 seq,
@@ -262,7 +438,15 @@ fn open_picker(
             .map(|list| (0..list.length()).filter_map(|i| list.get(i)).collect())
             .unwrap_or_default();
         if !files.is_empty() {
-            wasm_bindgen_futures::spawn_local(upload_all(all, target, files, ctx));
+            let relative = files.iter().map(relative_path).collect();
+            wasm_bindgen_futures::spawn_local(upload_all(
+                all,
+                target,
+                files,
+                relative,
+                Vec::new(),
+                ctx,
+            ));
         }
     });
     input.add_event_listener_with_callback("change", on_change.as_ref().unchecked_ref())?;
@@ -281,26 +465,25 @@ fn open_picker(
 }
 
 /// Upload `files` one at a time, so memory holds one file's bytes at a time, reporting progress
-/// into `all` as each one lands.
+/// into `all` as each one lands. `relative` lines up with `files`; `failures` are problems found
+/// before the upload started (a dropped entry that couldn't be read), reported with the rest.
 async fn upload_all(
     all: Rc<RefCell<Vec<Upload>>>,
     target: Target,
     files: Vec<File>,
+    relative: Vec<String>,
+    failures: Vec<String>,
     ctx: egui::Context,
 ) {
-    let relative: Vec<String> = files.iter().map(relative_path).collect();
-    let folder = relative
-        .first()
-        .and_then(|r| r.split('/').next())
-        .unwrap_or_default()
-        .to_owned();
     all.borrow_mut().push(Upload {
         seq: target.seq,
         instance: target.instance,
         widget: target.widget,
         project: matches!(target.dest, Dest::Scratch),
-        folder,
+        folder: upload_label(&relative),
         total: files.len(),
+        bytes_total: total_size(&files),
+        failures,
         ..Default::default()
     });
     let update = |f: &mut dyn FnMut(&mut Upload)| {
@@ -336,9 +519,11 @@ async fn upload_all(
                 }
             };
             let kept = files.len();
+            let bytes = total_size(&files);
             update(&mut |u| {
                 u.skipped = u.total - kept;
                 u.total = kept;
+                u.bytes_total = bytes;
                 u.scratch = Some(id);
             });
             (files, relative, ccosel_proto::scratch::path(id))
@@ -346,9 +531,11 @@ async fn upload_all(
     };
 
     for (file, rel) in files.iter().zip(&relative) {
-        let result = match upload_target(&dest, rel) {
-            None => Err(format!("{rel}: not a valid path")),
-            Some((dir, name)) => match read(file).await {
+        let size = file_size(file);
+        let result = match (upload_target(&dest, rel), refuse_size(size)) {
+            (None, _) => Err(format!("{rel}: not a valid path")),
+            (_, Some(why)) => Err(format!("{rel}: {why}")),
+            (Some((dir, name)), None) => match read(file).await {
                 Err(e) => Err(format!("{rel}: couldn't read it: {e}")),
                 Ok(bytes) => fetch::post_bytes(&upload_url(&dir, &name), &bytes)
                     .await
@@ -358,6 +545,7 @@ async fn upload_all(
         };
         update(&mut |u| {
             u.done += 1;
+            u.bytes_done += size;
             if let Err(e) = &result {
                 u.failures.push(e.clone());
             }
@@ -408,6 +596,138 @@ fn relative_path(file: &File) -> String {
         .and_then(|v| v.as_string())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| file.name())
+}
+
+fn file_size(file: &File) -> u64 {
+    file.size() as u64
+}
+
+fn total_size(files: &[File]) -> u64 {
+    files.iter().map(file_size).sum()
+}
+
+/// Read a dropped entry, and everything under it if it's a folder, into an [`Entry`] tree.
+async fn read_entry(entry: FileSystemEntry) -> Result<Entry<File>, String> {
+    let name = entry.name();
+    if entry.is_file() {
+        let entry: FileSystemFileEntry = entry.unchecked_into();
+        let file = callback_promise(|ok, err| {
+            entry.file_with_callback_and_callback(ok, err);
+            Ok(())
+        })
+        .await?
+        .unchecked_into();
+        return Ok(Entry::File(name, file));
+    }
+    let dir: FileSystemDirectoryEntry = entry.unchecked_into();
+    let reader = dir.create_reader();
+    let mut children = Vec::new();
+    // `readEntries` hands a folder over in batches (100 at a time in Chrome), and an empty
+    // batch means the end.
+    loop {
+        let batch: js_sys::Array =
+            callback_promise(|ok, err| reader.read_entries_with_callback_and_callback(ok, err))
+                .await?
+                .unchecked_into();
+        if batch.length() == 0 {
+            break;
+        }
+        for child in batch.iter() {
+            // Boxed: an async fn can't recurse into itself directly.
+            let child = Box::pin(read_entry(child.unchecked_into())).await?;
+            children.push(child);
+        }
+    }
+    Ok(Entry::Dir(name, children))
+}
+
+/// Await one of the callback-style File System Entry APIs. One that throws instead of calling
+/// back rejects, the same as one that calls its error callback.
+async fn callback_promise(
+    call: impl Fn(&js_sys::Function, &js_sys::Function) -> Result<(), JsValue>,
+) -> Result<JsValue, String> {
+    let promise = js_sys::Promise::new(&mut |ok, err: js_sys::Function| {
+        if let Err(thrown) = call(&ok, &err) {
+            let _ = err.call1(&JsValue::NULL, &thrown);
+        }
+    });
+    JsFuture::from(promise).await.map_err(|e| format!("{e:?}"))
+}
+
+/// Things dropped on the page, waiting for the desktop to route them to the window underneath.
+#[derive(Clone, Default)]
+pub struct Drops {
+    queue: Rc<RefCell<Vec<Dropped>>>,
+}
+
+/// One drop: where it landed, in egui points, and the entries it carried.
+pub struct Dropped {
+    pub pos: egui::Pos2,
+    pub entries: Vec<FileSystemEntry>,
+}
+
+impl Drops {
+    pub fn take(&self) -> Vec<Dropped> {
+        std::mem::take(&mut *self.queue.borrow_mut())
+    }
+
+    /// Listen for drops on the page. Registered on the window in the capture phase so it runs
+    /// before eframe's own handler, which it then stops: eframe would read every dropped file
+    /// into memory at once, and can't see into folders anyway.
+    pub fn listen(&self, ctx: egui::Context) -> Result<(), JsValue> {
+        let window = web_sys::window().ok_or("no window")?;
+        let options = web_sys::AddEventListenerOptions::new();
+        options.set_capture(true);
+
+        let on_over = Closure::<dyn FnMut(DragEvent)>::new(|event: DragEvent| {
+            // Without this the browser opens the dropped file itself instead of dropping it.
+            event.prevent_default();
+            event.stop_propagation();
+            if let Some(dt) = event.data_transfer() {
+                dt.set_drop_effect("copy");
+            }
+        });
+        window.add_event_listener_with_callback_and_add_event_listener_options(
+            "dragover",
+            on_over.as_ref().unchecked_ref(),
+            &options,
+        )?;
+        on_over.forget();
+
+        let queue = self.queue.clone();
+        let on_drop = Closure::<dyn FnMut(DragEvent)>::new(move |event: DragEvent| {
+            event.prevent_default();
+            event.stop_propagation();
+            // The entries must be taken now: a drop's data is gone once its handler returns.
+            let Some(items) = event.data_transfer().map(|dt| dt.items()) else {
+                return;
+            };
+            let entries: Vec<FileSystemEntry> = (0..items.length())
+                .filter_map(|i| items.get(i))
+                .filter(|item| item.kind() == "file")
+                .filter_map(|item| item.webkit_get_as_entry().ok().flatten())
+                .collect();
+            if entries.is_empty() {
+                return;
+            }
+            // Client pixels to egui points. The canvas fills the page from its top-left corner.
+            let zoom = ctx.zoom_factor();
+            let pos = egui::pos2(
+                event.client_x() as f32 / zoom,
+                event.client_y() as f32 / zoom,
+            );
+            queue.borrow_mut().push(Dropped { pos, entries });
+            ctx.request_repaint();
+        });
+        window.add_event_listener_with_callback_and_add_event_listener_options(
+            "drop",
+            on_drop.as_ref().unchecked_ref(),
+            &options,
+        )?;
+        // For the life of the page, like the shell itself.
+        on_drop.forget();
+        Ok(())
+    }
 }
 
 async fn read(file: &File) -> Result<Vec<u8>, String> {
