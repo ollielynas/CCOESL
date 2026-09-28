@@ -247,3 +247,38 @@ fn typing_into_a_missing_field_panics() {
     h.frame();
     h.type_text(3, "x");
 }
+
+#[derive(Default)]
+struct Picker {
+    picked: Option<&'static str>,
+}
+
+impl App for Picker {
+    fn update(&mut self, ui: &mut Ui<'_>) {
+        for name in ["a", "b"] {
+            let selected = self.picked == Some(name);
+            if ui.selectable(selected, name).clicked() {
+                self.picked = Some(name);
+            }
+        }
+        ui.indent(|ui| ui.label("nested"));
+    }
+}
+
+#[test]
+fn selectable_rows_are_listed_and_clicked_like_buttons() {
+    let mut h = Harness::new(Picker::default());
+    h.frame();
+    assert_eq!(
+        h.selectables(),
+        vec![("a".into(), false), ("b".into(), false)]
+    );
+    h.click("b");
+    h.frame();
+    h.frame();
+    assert_eq!(
+        h.selectables(),
+        vec![("a".into(), false), ("b".into(), true)]
+    );
+    assert!(h.has_label("nested"));
+}

@@ -21,6 +21,11 @@ pub enum ScopeKind {
     /// A fixed-width column followed by a vertical rule. Meant as the first child of a
     /// top-aligned horizontal scope, with the main content as the second.
     Sidebar = 5,
+    /// Children indented by one step of the shell's indent width, for nested lists and trees.
+    Indent = 6,
+    /// A region that scrolls on its own, filling the rest of the window's height. Two side by
+    /// side (a sidebar and a page) scroll independently.
+    Scroll = 7,
 }
 
 impl ScopeKind {
@@ -32,6 +37,8 @@ impl ScopeKind {
             3 => Some(Self::Frame),
             4 => Some(Self::Wrapped),
             5 => Some(Self::Sidebar),
+            6 => Some(Self::Indent),
+            7 => Some(Self::Scroll),
             _ => None,
         }
     }

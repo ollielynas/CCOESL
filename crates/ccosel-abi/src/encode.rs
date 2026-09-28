@@ -181,6 +181,12 @@ impl Encoder {
                 self.str(text);
                 self.u8(style.0);
             }
+            Cmd::Selectable { id, text, selected } => {
+                self.u8(OpCode::Selectable as u8);
+                self.u64(id);
+                self.str(text);
+                self.u8(u8::from(selected));
+            }
         }
     }
 }

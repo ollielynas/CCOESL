@@ -4,7 +4,7 @@
 //! and each run carries its own formatting. The shell knows nothing of Markdown; it only draws
 //! styled text.
 
-use ccosel_sdk::{TextStyle, Ui};
+use ccosel_sdk::{TextStyle, Ui, icons};
 
 use crate::markdown::{self, Block, Inline};
 use crate::paths;
@@ -52,8 +52,8 @@ fn block(ui: &mut Ui<'_>, path: &str, block: &Block) -> Option<Follow> {
             inlines,
         } => ui.wrapped(|ui| {
             let marker = match (checked, number) {
-                (Some(true), _) => "☑ ".to_owned(),
-                (Some(false), _) => "☐ ".to_owned(),
+                (Some(true), _) => format!("{} ", icons::CHECK_SQUARE),
+                (Some(false), _) => format!("{} ", icons::SQUARE),
                 (None, Some(n)) => format!("{n}. "),
                 (None, None) => "• ".to_owned(),
             };
@@ -67,7 +67,7 @@ fn block(ui: &mut Ui<'_>, path: &str, block: &Block) -> Option<Follow> {
             runs(ui, path, inlines, style)
         }),
         Block::Quote(inlines) => ui.wrapped(|ui| {
-            ui.styled("▎ ", TextStyle::WEAK);
+            ui.styled(&format!("{}  ", icons::QUOTES), TextStyle::WEAK);
             runs(ui, path, inlines, TextStyle::WEAK | TextStyle::ITALIC)
         }),
         Block::Code { lang, text } => {
@@ -100,7 +100,7 @@ fn block(ui: &mut Ui<'_>, path: &str, block: &Block) -> Option<Follow> {
                         let mut follow = None;
                         for (c, cell) in row.iter().enumerate() {
                             if c > 0 {
-                                ui.styled("  │  ", TextStyle::WEAK);
+                                ui.styled("   |   ", TextStyle::WEAK);
                             }
                             if let Some(f) = runs(ui, path, cell, base) {
                                 follow = Some(f);
@@ -140,7 +140,7 @@ fn runs(ui: &mut Ui<'_>, path: &str, inlines: &[Inline], base: TextStyle) -> Opt
             }
             // The web and email: only the shell can open a tab.
             Some(target) if markdown::is_external(target) => {
-                ui.open_url(&format!("🔗 {}", run.text), target);
+                ui.open_url(&crate::label(icons::LINK, &run.text), target);
                 ui.tooltip(target);
             }
             Some(target) => match paths::resolve(path, target) {
@@ -153,7 +153,10 @@ fn runs(ui: &mut Ui<'_>, path: &str, inlines: &[Inline], base: TextStyle) -> Opt
                 }
                 // Any other file on the server: the browser downloads it.
                 Some(to) => {
-                    ui.open_url(&format!("📎 {}", run.text), &paths::download_url(&to));
+                    ui.open_url(
+                        &crate::label(icons::PAPERCLIP, &run.text),
+                        &paths::download_url(&to),
+                    );
                     ui.tooltip(&to);
                 }
                 // `[top](#top)`: in-page anchors have nowhere to go yet.

@@ -239,6 +239,16 @@ impl<A: App> Harness<A> {
             .collect()
     }
 
+    /// Text and selected state of every selectable row drawn in the last frame, in order.
+    pub fn selectables(&self) -> Vec<(String, bool)> {
+        self.commands()
+            .filter_map(|c| match c {
+                Cmd::Selectable { text, selected, .. } => Some((text.to_string(), selected)),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// Samples of every plot drawn in the last frame, in order.
     pub fn plots(&self) -> Vec<Vec<u8>> {
         self.commands()
@@ -326,19 +336,24 @@ impl<A: App> Harness<A> {
         self.buttons().iter().any(|b| b == text)
     }
 
-    /// Clicks the first button with this label in the last frame. The app observes it on the
-    /// next [`frame`](Self::frame). Panics, listing what was drawn, if there is no such button.
+    /// Clicks the first button, or selectable row, with this label in the last frame. The app
+    /// observes it on the next [`frame`](Self::frame). Panics, listing what was drawn, if there
+    /// is no such widget.
     pub fn click(&mut self, text: &str) {
         let id = self
             .commands()
             .find_map(|c| match c {
-                Cmd::Button { id, text: t } if t == text => Some(id),
+                Cmd::Button { id, text: t } | Cmd::Selectable { id, text: t, .. } if t == text => {
+                    Some(id)
+                }
                 _ => None,
             })
             .unwrap_or_else(|| {
                 panic!(
-                    "no button labelled {text:?} in the last frame; buttons were {:?}",
-                    self.buttons()
+                    "no button labelled {text:?} in the last frame; buttons were {:?}, \
+                     selectable rows {:?}",
+                    self.buttons(),
+                    self.selectables()
                 )
             });
         self.press(id);

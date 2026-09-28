@@ -188,6 +188,17 @@ impl<'a> Ui<'a> {
         self.scope(ScopeKind::Sidebar, Align::Min, add)
     }
 
+    /// A region that scrolls by itself, taking the rest of the window's height. Use one for each
+    /// column that should scroll on its own, such as a sidebar and the page beside it.
+    pub fn scroll<R>(&mut self, add: impl FnOnce(&mut Ui<'_>) -> R) -> R {
+        self.scope(ScopeKind::Scroll, Align::Min, add)
+    }
+
+    /// Children indented one step, for nested lists and trees.
+    pub fn indent<R>(&mut self, add: impl FnOnce(&mut Ui<'_>) -> R) -> R {
+        self.scope(ScopeKind::Indent, Align::Min, add)
+    }
+
     /// A visually framed group.
     pub fn group<R>(&mut self, add: impl FnOnce(&mut Ui<'_>) -> R) -> R {
         self.scope(ScopeKind::Frame, Align::Min, add)
@@ -297,6 +308,14 @@ impl<'a> Ui<'a> {
             Cmd::TextEditSingle { id, version, set }
         });
         text.push_pending = false;
+        self.response(id)
+    }
+
+    /// A clickable row that shows whether it is the selected one: an entry in a file tree or a
+    /// list you pick from.
+    pub fn selectable(&mut self, selected: bool, text: &str) -> Response {
+        let id = self.auto_id();
+        self.rec.push(&Cmd::Selectable { id, text, selected });
         self.response(id)
     }
 

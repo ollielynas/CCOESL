@@ -8,7 +8,8 @@
 //! Blocks: ATX (`#`) and setext (`===`/`---`) headings, paragraphs, `-`/`*`/`+` and numbered
 //! lists with nesting and `[ ]`/`[x]` tasks, `>` quotes, fenced code, rules and pipe tables.
 //! Inline: `**strong**`, `*em*`/`_em_`, `` `code` ``, `~~strike~~`, `[links](target)`,
-//! `![images](src)`, `<autolinks>` and backslash escapes.
+//! `![images](src)`, `<autolinks>`, backslash escapes, and `:icon_name:` shortcodes for any
+//! [Phosphor](https://phosphoricons.com) icon (see `phosphor.rs`), the way Discord does emoji.
 
 /// Inline style bits. Kept apart from the ABI's `TextStyle` so the parser is plain data that
 /// tests can compare, and the renderer decides how each maps onto the screen.
@@ -327,13 +328,23 @@ impl InlineParser {
                 let mut label = inlines(text);
                 if label.is_empty() || image {
                     let alt = if text.is_empty() { target } else { text };
-                    label = vec![Inline::plain(&format!("🖼 {alt}"))];
+                    label = vec![Inline::plain(&format!(
+                        "{} {alt}",
+                        ccosel_sdk::icons::IMAGE
+                    ))];
                 }
                 for mut run in label {
                     run.style |= self.style;
                     run.link = Some(target.to_owned());
                     self.out.push(run);
                 }
+                i += len;
+                continue;
+            }
+
+            if let Some((len, glyph)) = shortcode(rest) {
+                // Joins the text around it, in the same style: an icon is just a character.
+                self.text.push(glyph);
                 i += len;
                 continue;
             }
@@ -403,6 +414,21 @@ fn link(s: &str) -> Option<(usize, &str, &str)> {
     // An optional title, `[a](url "title")`, is dropped.
     let target = after[..end].split_whitespace().next().unwrap_or("");
     Some((start + 1 + close + 2 + end + 1, text, target))
+}
+
+/// `:name:` naming a Phosphor icon: the bytes consumed and the icon. Anything else, such as
+/// the time `10:30:00` or an unknown name, is left as text.
+fn shortcode(s: &str) -> Option<(usize, char)> {
+    let body = s.strip_prefix(':')?;
+    let end = body.find(':')?;
+    let name = &body[..end];
+    if !name
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    {
+        return None;
+    }
+    crate::phosphor::lookup(name).map(|glyph| (end + 2, glyph))
 }
 
 /// `<https://...>`: the URL, if this is one.

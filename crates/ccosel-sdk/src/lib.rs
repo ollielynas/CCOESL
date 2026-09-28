@@ -19,6 +19,7 @@
 
 extern crate alloc;
 
+pub mod icons;
 mod recorder;
 mod response;
 pub mod rpc;

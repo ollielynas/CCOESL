@@ -95,6 +95,11 @@ pub enum Cmd<'a> {
         text: &'a str,
         style: TextStyle,
     },
+    Selectable {
+        id: u64,
+        text: &'a str,
+        selected: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -243,6 +248,15 @@ impl<'a> Decoder<'a> {
                 id: self.u64()?,
                 text: self.str()?,
                 style: TextStyle(self.u8()?),
+            },
+            OpCode::Selectable => Cmd::Selectable {
+                id: self.u64()?,
+                text: self.str()?,
+                selected: match self.u8()? {
+                    0 => false,
+                    1 => true,
+                    _ => return Err(DecodeError::InvalidEnum),
+                },
             },
             OpCode::Image => {
                 let id = self.u64()?;

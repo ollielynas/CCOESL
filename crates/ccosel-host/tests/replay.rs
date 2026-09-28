@@ -577,3 +577,81 @@ fn a_sidebar_is_a_fixed_column_beside_top_aligned_content() {
     );
     assert_eq!(side.rect[1], main.rect[1], "both start at the top");
 }
+
+#[test]
+fn selectable_rows_click_and_indent_steps_in() {
+    let ctx = egui::Context::default();
+    let mut r = Replayer::new();
+    let buf = encode(&[
+        Cmd::Selectable {
+            id: 70,
+            text: "Folder",
+            selected: false,
+        },
+        Cmd::BeginScope {
+            id: 71,
+            layout: Layout::new(ScopeKind::Indent, Align::Min),
+        },
+        Cmd::Selectable {
+            id: 72,
+            text: "doc",
+            selected: true,
+        },
+        Cmd::EndScope { id: 71 },
+    ]);
+    let recs = frame(&ctx, &mut r, &buf, raw_input()).unwrap();
+    let (outer, inner) = (find(&recs, 70), find(&recs, 72));
+    assert!(inner.rect[0] > outer.rect[0] + 4.0, "the child is indented");
+    let recs = frame(&ctx, &mut r, &buf, click_at(centre(&inner))).unwrap();
+    assert!(find(&recs, 72).clicked());
+}
+
+#[test]
+fn a_scroll_region_is_bounded_by_the_window_and_scrolls_on_its_own() {
+    let ctx = egui::Context::default();
+    let mut r = Replayer::new();
+    let mut cmds = vec![
+        Cmd::BeginScope {
+            id: 80,
+            layout: Layout::new(ScopeKind::Horizontal, Align::Min),
+        },
+        Cmd::BeginScope {
+            id: 81,
+            layout: Layout::new(ScopeKind::Scroll, Align::Min),
+        },
+    ];
+    let labels: Vec<String> = (0..200).map(|i| format!("line {i}")).collect();
+    for (i, text) in labels.iter().enumerate() {
+        cmds.push(Cmd::Label {
+            id: 1000 + i as u64,
+            text,
+        });
+    }
+    cmds.push(Cmd::EndScope { id: 81 });
+    cmds.push(Cmd::EndScope { id: 80 });
+    cmds.push(Cmd::Label {
+        id: 90,
+        text: "after",
+    });
+    let buf = encode(&cmds);
+
+    // Inside a window-sized scroll area, as the shell draws every app.
+    let mut out = Vec::new();
+    let mut full = ctx.run_ui(raw_input(), |ui| {
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| out = r.replay(ui, APP, &buf).unwrap());
+    });
+    full.textures_delta.clear();
+
+    // Two hundred lines would run far past a 600px window; the region stops at its bottom.
+    let after = find(&out, 90);
+    assert!(after.rect[1] <= 610.0, "bounded: {:?}", after.rect);
+    let last = find(&out, 1199);
+    assert!(
+        last.rect[1] > 600.0,
+        "its content is taller, so it scrolls: {:?} {:?}",
+        last.rect,
+        find(&out, 1000).rect
+    );
+}

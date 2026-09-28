@@ -16,10 +16,11 @@ use ccosel_proto::fs::{
 };
 use std::collections::BTreeSet;
 
-use ccosel_sdk::{App, CallId, Poll, Text, TextStyle, Ui};
+use ccosel_sdk::{App, CallId, Poll, Text, TextStyle, Ui, icons};
 
 pub mod markdown;
 pub mod paths;
+pub mod phosphor;
 pub mod render;
 
 use render::Follow;
@@ -37,6 +38,22 @@ impl View {
             Self::Browse(p) | Self::Read(p) | Self::Edit(p) => Some(p),
             Self::Search(_) => None,
         }
+    }
+}
+
+/// A label with an icon in front: how every button in this app is written.
+pub fn label(icon: &str, text: &str) -> String {
+    format!("{icon}  {text}")
+}
+
+/// The sidebar's name for a place, with its icon.
+pub fn place_label(root: &str, user: Option<&str>) -> String {
+    if root == DOCS_ROOT {
+        label(icons::BOOK_OPEN, "Documentation")
+    } else if user.is_some_and(|u| root == paths::join("/home", u)) {
+        label(icons::HOUSE, "My documents")
+    } else {
+        label(icons::USERS, "Shared")
     }
 }
 
@@ -199,49 +216,39 @@ impl Docs {
             ui.text_edit(&mut self.search);
             ui.tooltip("Search document names and text");
             let query = self.search.as_str().trim();
-            if ui.button("🔍").clicked() && !query.is_empty() {
+            if ui.button(icons::MAGNIFYING_GLASS).clicked() && !query.is_empty() {
                 act.go = Some(View::Search(query.to_owned()));
             }
             ui.tooltip("Search");
         });
         ui.separator();
 
-        let here = self.section.as_str();
-        let place = |ui: &mut Ui<'_>, label: &str, root: &str, tip: &str, act: &mut Actions| {
-            let r = if here == root {
-                ui.styled(label, TextStyle::STRONG);
-                false
-            } else {
-                ui.button(label).clicked()
-            };
-            ui.tooltip(tip);
-            if r {
-                act.go = Some(View::Browse(root.to_owned()));
-            }
-        };
-        place(
-            ui,
-            "📘 Documentation",
-            DOCS_ROOT,
-            "How to use each app. Maintained by the developers, read-only here.",
-            act,
-        );
-        place(
-            ui,
-            "🗂 Shared",
-            "/",
-            "Everything on the server you can see",
-            act,
-        );
-        ui.push_id("home", |ui| match user {
-            Some(name) => place(
-                ui,
-                "🏠 My documents",
-                &paths::join("/home", name),
-                "Your private folder. Only you can see what is in it.",
-                act,
+        // The places, as rows of the same kind as the tree below, with the one you are in
+        // highlighted.
+        let mut places = vec![
+            (
+                DOCS_ROOT.to_owned(),
+                "How to use each app. Maintained by the developers, read-only here.",
             ),
-            None => {
+            ("/".to_owned(), "Everything on the server you can see"),
+        ];
+        if let Some(name) = user {
+            places.push((
+                paths::join("/home", name),
+                "Your private folder. Only you can see what is in it.",
+            ));
+        }
+        for (root, tip) in &places {
+            ui.push_id(root, |ui| {
+                let here = self.section == *root;
+                if ui.selectable(here, &place_label(root, user)).clicked() {
+                    act.go = Some(View::Browse(root.clone()));
+                }
+                ui.tooltip(tip);
+            });
+        }
+        ui.push_id("signed-out", |ui| {
+            if user.is_none() {
                 ui.styled("Sign in for a private folder", TextStyle::WEAK);
             }
         });
@@ -249,8 +256,10 @@ impl Docs {
 
         let root = self.section.clone();
         let current = self.view.path().map(str::to_owned);
+        // Only the tree scrolls, and on its own: search and the places stay put, and scrolling
+        // a long document does not move the sidebar.
         ui.push_id("tree", |ui| {
-            self.tree(ui, &root, 0, current.as_deref(), act);
+            ui.scroll(|ui| self.tree(ui, &root, 0, current.as_deref(), act));
         });
     }
 
@@ -266,73 +275,87 @@ impl Docs {
         let listing = match ui.rpc().get::<ListDir>(&ListDirReq { path: dir }) {
             Poll::Ready(listing) => listing,
             Poll::Pending => {
-                ui.styled(&format!("{}…", "  ".repeat(depth)), TextStyle::WEAK);
+                ui.styled("Loading…", TextStyle::WEAK);
                 return;
             }
             // The main column says what went wrong; the sidebar just leaves the folder empty.
             Poll::Failed(_) => return,
         };
-        let indent = "    ".repeat(depth);
-        if listing.truncated {
-            ui.styled(&format!("{indent}(more not shown)"), TextStyle::WEAK);
-        }
+        let mut shown = 0;
         for entry in &listing.entries {
             let is_dir = entry.kind == EntryKind::Dir;
             if !is_dir && !paths::is_doc(&entry.name) {
                 continue;
             }
+            // Documentation and the home folders have places of their own above, so the
+            // Shared tree does not show them a second time.
+            if dir == "/" && is_dir && (entry.name == DOCS_ROOT[1..] || entry.name == "home") {
+                continue;
+            }
+            shown += 1;
             let path = paths::join(dir, &entry.name);
             let open = is_dir && self.expanded.contains(&path);
+            let here = current == Some(path.as_str());
             ui.push_id(&entry.name, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(&indent);
-                    if is_dir {
-                        if ui.button(if open { "▾" } else { "▸" }).clicked() {
-                            act.toggle = Some(path.clone());
-                        }
-                        ui.tooltip(if open { "Close" } else { "Open" });
-                    }
-                    let label = if is_dir {
-                        format!("📁 {}", entry.name)
+                let text = if is_dir {
+                    label(
+                        if open {
+                            icons::FOLDER_OPEN
+                        } else {
+                            icons::FOLDER
+                        },
+                        &entry.name,
+                    )
+                } else {
+                    label(icons::FILE_TEXT, paths::title(&entry.name))
+                };
+                if ui.selectable(here, &text).clicked() {
+                    if is_dir && here {
+                        // A second click on the folder you are in opens or closes it.
+                        act.toggle = Some(path.clone());
                     } else {
-                        format!("📄 {}", paths::title(&entry.name))
-                    };
-                    if current == Some(path.as_str()) {
-                        // Where you are, as text rather than a button to itself.
-                        ui.styled(&label, TextStyle::STRONG);
-                    } else if ui.button(&label).clicked() {
                         act.go = Some(if is_dir {
                             View::Browse(path.clone())
                         } else {
                             View::Read(path.clone())
                         });
                     }
-                });
+                }
                 if open && depth + 1 < TREE_DEPTH {
-                    self.tree(ui, &path, depth + 1, current, act);
+                    ui.indent(|ui| self.tree(ui, &path, depth + 1, current, act));
                 }
             });
         }
+        if shown == 0 {
+            ui.styled("Empty", TextStyle::WEAK | TextStyle::ITALIC);
+        }
+        if listing.truncated {
+            ui.styled("(more not shown)", TextStyle::WEAK);
+        }
     }
 
-    /// A clickable trail from the root to `path`.
-    fn crumbs(ui: &mut Ui<'_>, path: &str, act: &mut Actions) {
+    /// A clickable trail from the place `path` is in down to it. The last step, where you are,
+    /// is plain text.
+    fn crumbs(&self, ui: &mut Ui<'_>, path: &str, user: Option<&str>, act: &mut Actions) {
+        let root = section_root(path, user);
         ui.horizontal(|ui| {
-            if ui.button("/").clicked() {
-                act.go = Some(View::Browse("/".to_owned()));
+            let segments: Vec<&str> = path[root.len()..]
+                .split('/')
+                .filter(|s| !s.is_empty())
+                .collect();
+            let place = place_label(&root, user);
+            if segments.is_empty() {
+                ui.styled(&place, TextStyle::STRONG);
+            } else if ui.button(&place).clicked() {
+                act.go = Some(View::Browse(root.clone()));
             }
-            let mut acc = String::new();
-            let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+            let mut acc = root.clone();
             for (i, seg) in segments.iter().enumerate() {
-                acc.push('/');
-                acc.push_str(seg);
-                if i > 0 {
-                    ui.label("›");
-                }
+                acc = paths::join(&acc, seg);
+                ui.label("›");
                 ui.push_id(&acc, |ui| {
-                    let last = i + 1 == segments.len();
-                    if last {
-                        ui.styled(seg, TextStyle::STRONG);
+                    if i + 1 == segments.len() {
+                        ui.styled(paths::title(seg), TextStyle::STRONG);
                     } else if ui.button(seg).clicked() {
                         act.go = Some(View::Browse(acc.clone()));
                     }
@@ -343,8 +366,8 @@ impl Docs {
 
     /// A folder, picked in the sidebar. The sidebar already lists what is in it, so this does
     /// not: it offers what can be done here, and shows the folder's README if it has one.
-    fn browse(&mut self, ui: &mut Ui<'_>, dir: &str, act: &mut Actions) {
-        Self::crumbs(ui, dir, act);
+    fn browse(&mut self, ui: &mut Ui<'_>, dir: &str, user: Option<&str>, act: &mut Actions) {
+        self.crumbs(ui, dir, user, act);
         let writable = matches!(
             ui.rpc().get::<Access>(&PathReq { path: dir }),
             Poll::Ready(a) if a.write
@@ -355,15 +378,24 @@ impl Docs {
                 ui.horizontal(|ui| {
                     ui.label("Name");
                     ui.text_edit(&mut self.new_name);
-                    if ui.button("📄 New document").clicked() {
+                    if ui
+                        .button(&label(icons::FILE_PLUS, "New document"))
+                        .clicked()
+                    {
                         act.new_doc = true;
                     }
-                    if ui.button("📁 New folder").clicked() {
+                    if ui
+                        .button(&label(icons::FOLDER_PLUS, "New folder"))
+                        .clicked()
+                    {
                         act.new_folder = true;
                     }
                 });
             } else {
-                ui.styled("🔒 Read-only folder", TextStyle::WEAK);
+                ui.styled(
+                    &label(icons::LOCK_SIMPLE, "Read-only folder"),
+                    TextStyle::WEAK,
+                );
                 ui.tooltip("You can read what is here but not add to it.");
             }
         });
@@ -375,7 +407,7 @@ impl Docs {
             }
             Poll::Failed(e) => {
                 ui.label(e.message());
-                if ui.button("Retry").clicked() {
+                if ui.button(&label(icons::ARROW_CLOCKWISE, "Retry")).clicked() {
                     act.refresh = true;
                 }
             }
@@ -424,27 +456,26 @@ impl Docs {
         }
     }
 
-    fn read(ui: &mut Ui<'_>, path: &str, act: &mut Actions) {
+    fn read(&self, ui: &mut Ui<'_>, path: &str, user: Option<&str>, act: &mut Actions) {
         let doc = ui.rpc().get::<ReadFile>(&PathReq { path });
+        self.crumbs(ui, path, user, act);
         ui.horizontal(|ui| {
-            if ui.button("📂 Folder").clicked() {
-                act.go = Some(View::Browse(paths::parent(path)));
-            }
-            ui.tooltip(&paths::parent(path));
-            ui.styled(paths::title(path), TextStyle::STRONG);
             ui.push_id("mode", |ui| match &doc {
                 Poll::Ready(file) if file.writable => {
-                    if ui.button("✏ Edit").clicked() {
+                    if ui.button(&label(icons::PENCIL_SIMPLE, "Edit")).clicked() {
                         act.edit = true;
                     }
                 }
                 Poll::Ready(_) => {
-                    ui.styled("🔒 Read-only", TextStyle::WEAK);
+                    ui.styled(&label(icons::LOCK_SIMPLE, "Read-only"), TextStyle::WEAK);
                     ui.tooltip("You can read this document but not change it.");
                 }
                 _ => {}
             });
-            ui.open_url("⬇ Download", &paths::download_url(path));
+            ui.open_url(
+                &label(icons::DOWNLOAD_SIMPLE, "Download"),
+                &paths::download_url(path),
+            );
         });
         ui.separator();
         match doc {
@@ -453,7 +484,7 @@ impl Docs {
             }
             Poll::Failed(e) => {
                 ui.label(e.message());
-                if ui.button("Retry").clicked() {
+                if ui.button(&label(icons::ARROW_CLOCKWISE, "Retry")).clicked() {
                     act.refresh = true;
                 }
             }
@@ -491,48 +522,52 @@ impl Docs {
             let dirty = self.dirty();
             ui.push_id("unsaved", |ui| {
                 if dirty {
-                    ui.styled("● unsaved", TextStyle::WEAK);
+                    ui.styled("• Unsaved changes", TextStyle::WEAK);
                 }
             });
             ui.push_id("save", |ui| {
                 if saving {
                     ui.label("Saving…");
-                } else if ui.button("💾 Save").clicked() {
+                } else if ui.button(&label(icons::FLOPPY_DISK, "Save")).clicked() {
                     act.save = true;
                 }
             });
-            if ui.button("✔ Done").clicked() {
+            if ui.button(&label(icons::CHECK, "Done")).clicked() {
                 act.close_editor = true;
             }
             ui.tooltip("Back to reading");
             ui.push_id("discard", |ui| {
-                if dirty && ui.button("🗑 Discard changes").clicked() {
+                if dirty && ui.button(&label(icons::TRASH, "Discard changes")).clicked() {
                     act.discard = true;
                 }
             });
-            let label = if self.preview {
-                "Hide preview"
+            let toggle = if self.preview {
+                label(icons::EYE_SLASH, "Hide preview")
             } else {
-                "Show preview"
+                label(icons::EYE, "Show preview")
             };
-            if ui.button(label).clicked() {
+            if ui.button(&toggle).clicked() {
                 self.preview = !self.preview;
             }
         });
         // Markdown snippets, added at the end of the document: the shell does not tell apps
         // where the cursor is.
         ui.horizontal(|ui| {
-            for (label, tip, snippet) in [
-                ("H", "Heading", "\n## Heading\n"),
-                ("B", "Bold", "**bold**"),
-                ("I", "Italic", "*italic*"),
-                ("🔗", "Link to a page or file", "[text](other-document.md)"),
-                ("•", "Bulleted list", "\n- item\n"),
-                ("1.", "Numbered list", "\n1. item\n"),
-                ("☐", "Task", "\n- [ ] task\n"),
-                ("{}", "Code block", "\n```\ncode\n```\n"),
+            for (icon, tip, snippet) in [
+                (icons::TEXT_H, "Heading", "\n## Heading\n"),
+                (icons::TEXT_B, "Bold", "**bold**"),
+                (icons::TEXT_ITALIC, "Italic", "*italic*"),
+                (
+                    icons::LINK,
+                    "Link to a page or file",
+                    "[text](other-document.md)",
+                ),
+                (icons::LIST_BULLETS, "Bulleted list", "\n- item\n"),
+                (icons::LIST_NUMBERS, "Numbered list", "\n1. item\n"),
+                (icons::CHECK_SQUARE, "Task", "\n- [ ] task\n"),
+                (icons::CODE_BLOCK, "Code block", "\n```\ncode\n```\n"),
             ] {
-                if ui.button(label).clicked() {
+                if ui.button(icon).clicked() {
                     act.insert = Some(snippet);
                 }
                 ui.tooltip(tip);
@@ -583,7 +618,7 @@ impl Docs {
                     ui.push_id(&hit.path, |ui| {
                         ui.group(|ui| {
                             if ui
-                                .button(&format!("📄 {}", paths::title(&hit.path)))
+                                .button(&label(icons::FILE_TEXT, paths::title(&hit.path)))
                                 .clicked()
                             {
                                 act.go = Some(View::Read(hit.path.clone()));
@@ -811,7 +846,9 @@ impl App for Docs {
             ui.side_column(|ui| self.sidebar(ui, user.as_deref(), &mut act));
             ui.vertical(|ui| {
                 ui.push_id("back", |ui| {
-                    if !self.history.is_empty() && ui.button("← Back").clicked() {
+                    if !self.history.is_empty()
+                        && ui.button(&label(icons::ARROW_LEFT, "Back")).clicked()
+                    {
                         act.back = true;
                     }
                 });
@@ -822,12 +859,21 @@ impl App for Docs {
                         ui.styled(status, TextStyle::ITALIC);
                     }
                 });
-                match self.view.clone() {
-                    View::Browse(dir) => self.browse(ui, &dir, &mut act),
-                    View::Read(path) => Self::read(ui, &path, &mut act),
-                    View::Edit(path) => self.edit(ui, &path, &mut act),
-                    View::Search(query) => Self::results(ui, &query, &mut act),
-                }
+                // The page scrolls by itself, separately from the sidebar. Keyed by what is open,
+                // so each document starts at its top rather than where the last one was left.
+                let view = self.view.clone();
+                let key = match &view {
+                    View::Browse(p) | View::Read(p) | View::Edit(p) => p.clone(),
+                    View::Search(q) => format!("search:{q}"),
+                };
+                ui.push_id(&key, |ui| {
+                    ui.scroll(|ui| match view {
+                        View::Browse(dir) => self.browse(ui, &dir, user.as_deref(), &mut act),
+                        View::Read(path) => self.read(ui, &path, user.as_deref(), &mut act),
+                        View::Edit(path) => self.edit(ui, &path, &mut act),
+                        View::Search(query) => Self::results(ui, &query, &mut act),
+                    })
+                });
             });
         });
         self.apply(ui, act);

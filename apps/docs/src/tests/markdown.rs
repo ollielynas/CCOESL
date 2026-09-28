@@ -118,9 +118,20 @@ fn links_images_and_autolinks() {
     );
     assert_eq!(
         inlines("![a cat](cat.png)"),
-        vec![linked("🖼 a cat", 0, "cat.png")]
+        vec![linked(
+            &format!("{} a cat", ccosel_sdk::icons::IMAGE),
+            0,
+            "cat.png"
+        )]
     );
-    assert_eq!(inlines("[](x.md)"), vec![linked("🖼 x.md", 0, "x.md")]);
+    assert_eq!(
+        inlines("[](x.md)"),
+        vec![linked(
+            &format!("{} x.md", ccosel_sdk::icons::IMAGE),
+            0,
+            "x.md"
+        )]
+    );
     assert_eq!(
         inlines("<https://example.com> <not a link>"),
         vec![
@@ -213,4 +224,62 @@ fn quotes_code_and_tables() {
 fn empty_input_is_no_blocks() {
     assert!(parse("").is_empty());
     assert!(parse("\n\n  \n").is_empty());
+}
+
+#[test]
+fn shortcodes_become_phosphor_icons() {
+    let house = ccosel_sdk::icons::HOUSE;
+    assert_eq!(
+        inlines(":house: Home"),
+        vec![plain(&format!("{house} Home"))]
+    );
+    // Phosphor's own kebab-case names work too, and case does not matter.
+    assert_eq!(
+        inlines(":folder-open: and :FOLDER_OPEN:"),
+        vec![plain(&format!(
+            "{f} and {f}",
+            f = ccosel_sdk::icons::FOLDER_OPEN
+        ))]
+    );
+    // An icon takes the style it sits in.
+    assert_eq!(inlines("**:house:**"), vec![styled(house, STRONG)]);
+    // Not icons: unknown names, times, spaces, a lone colon, and code.
+    for text in [
+        ":nope:",
+        "10:30:00",
+        ": house :",
+        "a: b",
+        "ends with :",
+        ":house",
+    ] {
+        assert_eq!(inlines(text), vec![plain(text)], "{text:?}");
+    }
+    assert_eq!(inlines("`:house:`"), vec![styled(":house:", CODE)]);
+}
+
+#[test]
+fn the_icon_table_is_sorted_and_matches_the_font() {
+    use crate::phosphor::{CODES, NAMES, lookup};
+    let names: Vec<&str> = NAMES.split('\n').collect();
+    assert_eq!(names.len(), CODES.len(), "one codepoint per name");
+    assert!(
+        names.windows(2).all(|w| w[0] < w[1]),
+        "sorted, no duplicates"
+    );
+    assert!(names.len() > 1000, "the whole set, not a sample");
+    // Spot checks against the icons the SDK already verifies against the font.
+    for (name, icon) in [
+        ("house", ccosel_sdk::icons::HOUSE),
+        ("book_open", ccosel_sdk::icons::BOOK_OPEN),
+        ("magnifying_glass", ccosel_sdk::icons::MAGNIFYING_GLASS),
+        ("check_square", ccosel_sdk::icons::CHECK_SQUARE),
+    ] {
+        assert_eq!(
+            lookup(name).map(String::from).as_deref(),
+            Some(icon),
+            "{name}"
+        );
+    }
+    assert_eq!(lookup(""), None);
+    assert_eq!(lookup(&"a".repeat(41)), None);
 }

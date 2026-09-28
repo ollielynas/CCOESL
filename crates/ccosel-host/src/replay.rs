@@ -418,6 +418,11 @@ impl Cx<'_> {
                     self.text_edit(ui, id, version, set, true);
                 }
 
+                Cmd::Selectable { id, text, selected } => {
+                    let r = ui.selectable_label(selected, text);
+                    self.finish(id, r);
+                }
+
                 Cmd::Styled { id, text, style } => {
                     let rich = rich_text(ui, text, style);
                     let r = if style.contains(TextStyle::LINK) {
@@ -490,6 +495,31 @@ impl Cx<'_> {
                                     self.render(ui, cmds, closes, inner.clone())
                                 });
                                 ui.separator();
+                            }
+                            (ScopeKind::Scroll, _) => {
+                                // The shell already scrolls the whole window, which gives its
+                                // content unbounded height; this bounds it to what is actually
+                                // visible below here, so the region scrolls instead of the
+                                // window, and two of them side by side scroll separately.
+                                let visible = ui.clip_rect().bottom() - ui.cursor().top();
+                                let height = (visible - ui.spacing().item_spacing.y).max(80.0);
+                                egui::ScrollArea::vertical()
+                                    .id_salt(self.egui_id(id))
+                                    .auto_shrink([false, false])
+                                    .max_height(height)
+                                    .min_scrolled_height(height)
+                                    .show(ui, |ui| {
+                                        // Top to bottom, whatever row it sits in: a scroll area
+                                        // otherwise inherits its parent's direction.
+                                        ui.vertical(|ui| {
+                                            self.render(ui, cmds, closes, inner.clone())
+                                        })
+                                    });
+                            }
+                            (ScopeKind::Indent, _) => {
+                                ui.indent(self.egui_id(id), |ui| {
+                                    self.render(ui, cmds, closes, inner.clone())
+                                });
                             }
                             (ScopeKind::Wrapped, _) => {
                                 ui.horizontal_wrapped(|ui| {

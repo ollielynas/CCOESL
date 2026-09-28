@@ -92,6 +92,18 @@ fn sample() -> Vec<Cmd<'static>> {
         Cmd::EndScope {
             id: id::hash_str(win, "para"),
         },
+        Cmd::Selectable {
+            id: id::hash_str(win, "row"),
+            text: "notes.md",
+            selected: true,
+        },
+        Cmd::BeginScope {
+            id: id::hash_str(win, "nested"),
+            layout: Layout::new(ScopeKind::Indent, Align::Min),
+        },
+        Cmd::EndScope {
+            id: id::hash_str(win, "nested"),
+        },
         Cmd::TextEditMulti {
             id: id::hash_str(win, "body"),
             version: 3,

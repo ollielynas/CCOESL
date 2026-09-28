@@ -40,6 +40,8 @@ pub enum OpCode {
     /// A label with typographic style (heading level, bold, italic, code, link, ...), so an app
     /// can render formatted text such as Markdown without the shell knowing any markup.
     Styled = 0x11,
+    /// A clickable row that shows whether it is the selected one, like an entry in a file tree.
+    Selectable = 0x12,
     // 0x40..0x4F reserved for subtree caching (BeginCached / EndCached / CachedRef).
     // Not implemented yet, but the space is reserved so adding it is not an ABI break.
 }
@@ -64,6 +66,7 @@ impl OpCode {
             0x0F => Some(Self::UploadProject),
             0x10 => Some(Self::TextEditMulti),
             0x11 => Some(Self::Styled),
+            0x12 => Some(Self::Selectable),
             _ => None,
         }
     }
