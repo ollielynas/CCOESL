@@ -32,6 +32,7 @@ The Rust version, `clippy`, `rustfmt`, `llvm-tools` and the `wasm32` target come
 | `crates/`, `xtask/` | The root cargo workspace: ABI, protocol, SDK, hosts, server, shell. |
 | `apps/` | A **separate** cargo workspace of guest apps. It has its own `Cargo.lock` and a size-optimised release profile (`[profile]` is workspace-global, so it can't share one). Run cargo for an app from inside `apps/`. |
 | `web/` | The static page that boots the shell. |
+| `data/shared/` | What `cargo xtask serve` serves as the server's files. `Docs/` in it is the user documentation the Docs app shows. |
 
 `ARCHITECTURE.md` explains the design and `README.md` the goals.
 
@@ -45,7 +46,7 @@ Each CI job is one `cargo xtask` command. To reproduce a red job, run the same c
 | `clippy` | `cargo xtask clippy` | Any warning (`-D warnings`), native or wasm32 | Fix the lint. Use `#[allow]` only with a reason in a comment |
 | `test` | `cargo xtask test` | A native test fails, in either workspace | — |
 | `test-wasm` | `cargo xtask test-wasm` | A browser-backend test fails under node | — |
-| `apps-coverage` | `cargo xtask coverage` | An app is under the coverage bar | See [Testing apps](#testing-apps) |
+| `apps-coverage` | `cargo xtask coverage` | An app has no documentation page, or is under the coverage bar | See [Adding an app](#adding-an-app) and [Testing apps](#testing-apps) |
 | `build-web` | `cargo xtask build-web` | The build breaks, or an app exceeds 100 KiB gzipped | Trim the app; avoid float `Display` |
 | `ci-ok` | *(GitHub only)* | Any job above did not succeed | It's the one required check |
 
@@ -77,7 +78,15 @@ Real examples: `apps/clock/src/tests.rs` (time as an input) and `apps/file-brows
 2. Wire the remaining pieces:
    - Register it in `crates/ccosel-shell/src/registry.rs` (the catalog) and in the `guests`
      list in `build_web()` in `xtask/src/main.rs`. Neither is checked automatically yet.
-3. Give the app real state to test: clippy rejects `MyApp::default()` on a unit struct.
+3. **Write its user documentation** in `data/shared/Docs/Apps/<name>.md`, and link it from the
+   list in `data/shared/Docs/README.md`. `new-app` creates a stub; replace it. This is what
+   people read in the Docs app, so write it for them: what the app is for and how to use each
+   part of it, not how it is built. `cargo xtask coverage` fails for an app without a page.
+   - These pages are **read-only in the app** (`data/shared/Docs/.access` says `read: *` and
+     grants no `write`). They change only by editing the files in the repository, through a
+     pull request like any other change. Update the page in the same PR as any change to what
+     the app does.
+4. Give the app real state to test: clippy rejects `MyApp::default()` on a unit struct.
 
 ## Tickets
 
@@ -137,6 +146,7 @@ cargo xtask review 10 --checkout-only    # just check it out, to read it in your
 | `wasm-bindgen` schema-version mismatch | Reinstall the CLI at the version pinned in the root `Cargo.toml` |
 | `ccosel-host-web` or `ccosel-shell` shows `0 passed` under `cargo test` | Expected. Both crates are wasm32-only; run `cargo xtask test-wasm` |
 | `has inline #[cfg(test)] code` | Move it to `src/tests.rs` and declare it with `#[cfg(test)] mod tests;` |
+| `no user documentation for: <app>` | Write `data/shared/Docs/Apps/<app>.md` (see [Adding an app](#adding-an-app)) |
 | An app is under the bar | The table printed by `cargo xtask coverage` shows hits/lines per app; add tests for the branches you haven't covered |
 | `use of default to create a unit struct` | Give the app a field, or construct it as `MyApp` rather than `MyApp::default()` |
 | `has uncommitted changes, so it was left alone` (from `cargo xtask review`) | The review checkout holds edits; commit or discard them, or remove it as the message says |

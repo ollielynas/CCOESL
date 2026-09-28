@@ -434,3 +434,22 @@ async fn a_symlink_cannot_lend_a_private_folder_public_permissions() {
         "secret"
     );
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn search_does_not_follow_a_symlink_back_to_its_own_folder() {
+    let s = site().await;
+    std::os::unix::fs::symlink(s.root.join("Shared"), s.root.join("Shared/again")).unwrap();
+    let found = call::<Search>(
+        s.anon,
+        &SearchReq {
+            path: "/Shared",
+            query: "milk",
+            suffix: ".md",
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(found.hits.len(), 1);
+    assert!(!found.truncated);
+}

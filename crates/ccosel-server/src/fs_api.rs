@@ -221,6 +221,15 @@ impl Jail {
                 } else {
                     format!("{rel}/{name}")
                 };
+                // Everything looked at counts, not just candidate files, so a big tree of
+                // other files cannot keep a search going either.
+                searched += 1;
+                if searched > MAX_SEARCHED || reply.hits.len() >= MAX_HITS {
+                    reply.truncated = true;
+                    return Ok(reply);
+                }
+                // `DirEntry::metadata` does not follow symlinks, so a symlinked folder is never
+                // entered: a link back to its own ancestor cannot make the walk loop.
                 let Ok(meta) = item.metadata() else { continue };
                 if meta.is_dir() {
                     if self.authorize(&path, user, Need::Read).is_ok() {
@@ -230,11 +239,6 @@ impl Jail {
                 }
                 if !meta.is_file() || !name.ends_with(req.suffix) {
                     continue;
-                }
-                searched += 1;
-                if searched > MAX_SEARCHED || reply.hits.len() >= MAX_HITS {
-                    reply.truncated = true;
-                    return Ok(reply);
                 }
                 let line = if meta.len() <= MAX_TEXT_BYTES as u64 {
                     std::fs::read_to_string(item.path()).ok().and_then(|text| {

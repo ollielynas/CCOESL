@@ -69,7 +69,9 @@ Consequences worth knowing before writing an app:
 - Tooltips are declarative (`Tooltip { id, text }` emitted unconditionally). Never branch on
   `hovered()` in order to draw.
 - Sliders: the shell owns the live value during a drag; the guest sees the committed one.
-- Text edit uses a delta protocol — the buffer is not resent each frame.
+- Text edit uses a delta protocol in both directions: the guest sends its text only when it
+  calls `Text::set`, and the shell sends back only the changed range (`TEXT_DELTA`) after the
+  user types. Neither side resends the buffer each frame.
 - `available_width` is last frame's. Use the shell-side responsive helpers, or add hysteresis,
   or layout will oscillate.
 
@@ -195,6 +197,21 @@ It earns its place with the first real push: compile progress, or filesystem cha
 Headless Chrome against `ccosel-server`: the File Browser lists `data/shared`, entering
 `Documents` shows its contents, and going back **costs no request at all** — boot 1 POST,
 navigate 2, return 2. Three windows (two File Browsers plus the Clock) totalled 2 posts.
+
+## Who may see what
+
+Permissions live on the **server** and cover every route (`/rpc`, `/files`, `/upload`), so no
+app can get around them and none has to reimplement them. They are set per folder in an
+`.access` file (`read:` and `write:` lines naming users, `@users` or `*`) and inherited by
+everything below it until a folder sets its own. With no `.access` anywhere, everything is open,
+as before. `/home/{user}` is built in and private to its owner. `.access` files themselves are
+hidden and cannot be read or written through the server. `ccosel-server/src/access.rs` has
+the details.
+
+The caller is a `User` request extension. Until sign-in lands, `--user NAME` sets it for every
+request. A session layer only has to insert the same extension. Apps ask the server what they
+may do (`Access`, `FileText::writable`) so they can hide buttons that would fail, but the
+server re-checks every write.
 
 ## Replay, concretely
 

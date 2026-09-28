@@ -19,6 +19,10 @@ const APP_COVERAGE_MIN_LINES: u64 = 70;
 
 const WASM: &str = "wasm32-unknown-unknown";
 
+/// Where each app's user documentation lives, as `<app>.md`: the read-only `/Docs/Apps` folder
+/// the Docs app shows. Every app must have a page here; see [`missing_app_docs`].
+const APP_DOCS_DIR: &str = "data/shared/Docs/Apps";
+
 fn main() -> Result<()> {
     match std::env::args()
         .nth(1)
@@ -180,6 +184,7 @@ fn build_web() -> Result<()> {
         ("file_browser", "file-browser"),
         ("clock", "clock"),
         ("server_dashboard", "server-dashboard"),
+        ("docs", "docs"),
     ];
     for (crate_name, served) in guests {
         std::fs::copy(
@@ -539,6 +544,18 @@ fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
     Ok(())
 }
 
+/// The apps in `names` with no documentation page, or an empty one, in `docs_dir`.
+fn missing_app_docs(docs_dir: &Path, names: &[String]) -> Vec<String> {
+    names
+        .iter()
+        .filter(|name| {
+            std::fs::read_to_string(docs_dir.join(format!("{name}.md")))
+                .map_or(true, |text| text.trim().is_empty())
+        })
+        .cloned()
+        .collect()
+}
+
 /// Every directory under `apps/` with a `Cargo.toml` is an app. Found by scanning rather than
 /// listed anywhere, so a new app is gated the moment it exists with no CI edit to forget.
 fn app_names(apps: &Path) -> Result<Vec<String>> {
@@ -572,6 +589,16 @@ fn coverage() -> Result<()> {
         bail!(
             "no apps found under {} — refusing to pass a coverage gate that measured nothing",
             apps.display()
+        );
+    }
+
+    // Documentation is part of an app being covered: checked first, because it is quick.
+    let undocumented = missing_app_docs(&root().join(APP_DOCS_DIR), &names);
+    if !undocumented.is_empty() {
+        bail!(
+            "no user documentation for: {}. Write {APP_DOCS_DIR}/<app>.md for each (see \
+             \"Adding an app\" in CONTRIBUTING.md) and link it from data/shared/Docs/README.md",
+            undocumented.join(", ")
         );
     }
 
@@ -763,6 +790,18 @@ fn new_app(name: &str) -> Result<()> {
         ),
     )?;
 
+    let doc = root.join(APP_DOCS_DIR).join(format!("{name}.md"));
+    if !doc.exists() {
+        std::fs::write(
+            &doc,
+            format!(
+                "# {struct_name}\n\n\
+                 TODO: what this app is for, and how to use each part of it. Written for the \
+                 people using it, not for developers.\n"
+            ),
+        )?;
+    }
+
     add_workspace_member(&root.join("apps/Cargo.toml"), name)?;
 
     let crate_name = name.replace('-', "_");
@@ -771,6 +810,10 @@ fn new_app(name: &str) -> Result<()> {
     println!("  1. crates/ccosel-shell/src/registry.rs — add an AppEntry to catalog()");
     println!(
         "  2. xtask/src/main.rs, build_web()'s `guests` array — add (\"{crate_name}\", \"{name}\")"
+    );
+    println!(
+        "  3. {APP_DOCS_DIR}/{name}.md — replace the stub with real documentation, and link it \
+         from data/shared/Docs/README.md"
     );
     Ok(())
 }
@@ -856,6 +899,28 @@ end_of_record
     #[test]
     fn an_app_absent_from_the_report_measures_nothing() {
         assert_eq!(measure(LCOV, "missing"), Measure::default());
+    }
+
+    #[test]
+    fn apps_without_a_documentation_page_are_named() {
+        let dir = std::env::temp_dir().join(format!("ccosel-xtask-docs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("clock.md"), "# Clock\n").unwrap();
+        std::fs::write(dir.join("blank.md"), "  \n").unwrap();
+        let names = ["blank", "clock", "files"].map(String::from);
+        assert_eq!(missing_app_docs(&dir, &names), vec!["blank", "files"]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn every_app_in_the_repository_is_documented() {
+        let names = app_names(&root().join("apps")).unwrap();
+        assert!(!names.is_empty());
+        assert_eq!(
+            missing_app_docs(&root().join(APP_DOCS_DIR), &names),
+            Vec::<String>::new()
+        );
     }
 
     #[test]
