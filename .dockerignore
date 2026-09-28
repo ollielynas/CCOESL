@@ -1,0 +1,10 @@
+# Build output and local state: the image builds its own, and data/ is a volume.
+target/
+apps/target/
+web/dist/
+data/
+# ...except the app documentation, which the image starts the file store with.
+!data/shared/Docs/
+.env
+.git/
+.claude/
