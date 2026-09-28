@@ -9,7 +9,7 @@ description = "The CCOSEL server: hosts the shell, serves app modules, answers R
 ccosel-proto = { workspace = true, features = ["std"] }
 anyhow = { workspace = true }
 axum = "0.8"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "fs"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "fs", "time"] }
 tower-http = { version = "0.6", features = ["fs", "compression-br", "compression-gzip"] }
 postcard = { workspace = true, features = ["use-std"] }
 serde = { workspace = true, features = ["std"] }

@@ -364,3 +364,131 @@ fn finished_build_shows_full_progress() {
     let s = status_succeeded(vec![]);
     assert_eq!(s.fraction(), 1.0);
 }
+
+/// A compiler whose upload of `hello` into scratch folder 42 has just finished, answered all
+/// the way to the project's own listing.
+fn uploaded_hello() -> Harness<RustCompiler> {
+    let mut h = Harness::new(RustCompiler::default());
+    h.frame();
+    h.reply::<ListDir>(&listing(vec![]));
+    h.frame();
+    assert!(h.has_project_upload());
+    h.finish_project_upload(42);
+    h.frame(); // sees the upload, switches to /.scratch/42
+    h.frame(); // asks for its listing
+    h.reply::<ListDir>(&listing(vec![dir("hello")]));
+    h.frame(); // sees the single project, opens it
+    h.frame(); // asks for the project's listing
+    h.reply::<ListDir>(&listing(vec![file("Cargo.toml"), dir("src")]));
+    h.frame();
+    h
+}
+
+#[test]
+fn has_an_upload_project_button() {
+    let mut h = Harness::new(RustCompiler::default());
+    h.frame();
+    assert!(h.has_project_upload());
+}
+
+#[test]
+fn a_finished_upload_opens_the_project_ready_to_build() {
+    let h = uploaded_hello();
+    assert_eq!(h.app.path, "/.scratch/42/hello");
+    assert!(h.has_button("\u{1f528} Build"));
+    assert!(h.has_label("Uploaded for this build only: deleted after an hour unused."));
+}
+
+#[test]
+fn the_scratch_folder_shows_as_one_uploaded_crumb() {
+    let mut h = uploaded_hello();
+    assert!(h.has_button("⬆ Uploaded: hello"), "{:?}", h.buttons());
+    assert!(!h.has_button(".scratch") && !h.has_button("42"));
+    h.click("src");
+    h.frame();
+    assert_eq!(h.app.path, "/.scratch/42/hello/src");
+    h.click("⬆ Uploaded: hello");
+    h.frame();
+    assert_eq!(h.app.path, "/.scratch/42/hello");
+}
+
+#[test]
+fn going_up_out_of_an_uploaded_project_goes_home() {
+    let mut h = uploaded_hello();
+    h.click("⬆ Up");
+    h.frame();
+    assert_eq!(h.app.path, "/");
+    // Not bounced back in on later frames (`/`'s listing is still cached from the start).
+    h.frame();
+    h.frame();
+    assert_eq!(h.app.path, "/");
+}
+
+#[test]
+fn up_from_deeper_inside_steps_one_level() {
+    let mut h = uploaded_hello();
+    h.click("src");
+    h.frame();
+    h.click("⬆ Up");
+    h.frame();
+    assert_eq!(h.app.path, "/.scratch/42/hello");
+}
+
+#[test]
+fn the_same_upload_is_opened_once_not_every_frame() {
+    let mut h = uploaded_hello();
+    h.click("⬆ Up");
+    h.frame();
+    for _ in 0..3 {
+        h.frame();
+    }
+    assert_eq!(
+        h.app.path, "/",
+        "the upload's count is unchanged, so no re-open"
+    );
+}
+
+#[test]
+fn a_new_upload_replaces_the_last_build() {
+    let mut h = uploaded_hello();
+    h.click("\u{1f528} Build");
+    h.frame();
+    assert!(h.app.building.is_some());
+    h.finish_project_upload(43);
+    h.frame();
+    assert_eq!(h.app.path, "/.scratch/43");
+    assert!(h.app.building.is_none());
+}
+
+#[test]
+fn a_scratch_folder_with_more_than_one_thing_is_left_to_the_user() {
+    let mut h = Harness::new(RustCompiler::default());
+    h.frame();
+    h.finish_project_upload(7);
+    h.frame();
+    h.frame();
+    h.reply::<ListDir>(&listing(vec![dir("a"), dir("b")]));
+    h.frame();
+    h.frame();
+    assert_eq!(h.app.path, "/.scratch/7");
+}
+
+#[test]
+fn scratch_helpers() {
+    assert_eq!(scratch_root("/.scratch/5"), Some(5));
+    assert_eq!(scratch_root("/.scratch/5/"), Some(5));
+    assert_eq!(scratch_root("/.scratch/5/p"), None);
+    assert_eq!(scratch_root("/x"), None);
+    assert_eq!(scratch_dir(), "/.scratch");
+}
+
+#[test]
+fn an_uploaded_build_names_the_project_not_the_scratch_folder() {
+    let mut h = uploaded_hello();
+    h.click("\u{1f528} Build");
+    h.frame();
+    assert!(h.has_label("⬆ Uploaded: hello"), "{:?}", h.labels());
+    assert!(!h.labels().iter().any(|l| l.contains(".scratch")));
+    assert_eq!(display_path("/proj"), "/proj");
+    assert_eq!(display_path("/.scratch/9/p/q"), "⬆ Uploaded: p/q");
+}

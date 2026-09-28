@@ -39,6 +39,7 @@ pub async fn upload(
     if !valid_filename(&params.filename) {
         return StatusCode::BAD_REQUEST.into_response();
     }
+    state.scratch.touch(&params.path);
 
     let dir = match resolve_dir_create(state.jail.root(), &params.path).await {
         Ok(dir) => dir,

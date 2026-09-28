@@ -165,3 +165,83 @@ fn finished_uploads_are_handed_over_once_and_running_ones_stay() {
     assert!(uploads.take_finished().is_empty());
     assert_eq!(uploads.status().as_deref(), Some("Uploading a: 1/4"));
 }
+
+fn strings(xs: &[&str]) -> Vec<String> {
+    xs.iter().map(|s| (*s).to_owned()).collect()
+}
+
+#[wasm_bindgen_test]
+fn a_project_upload_leaves_out_gitignored_files_and_git_itself() {
+    let paths = strings(&[
+        "hello/Cargo.toml",
+        "hello/.gitignore",
+        "hello/src/main.rs",
+        "hello/target/release/hello",
+        "hello/target/debug/deps/x.d",
+        "hello/.git/HEAD",
+        "hello/.git/objects/ab/cdef",
+        "hello/notes.log",
+        "hello/web/.gitignore",
+        "hello/web/node_modules/pkg/index.js",
+        "hello/web/dist/app.js",
+        "hello/web/keep.log",
+    ]);
+    let gitignores = vec![
+        (
+            "hello/web/.gitignore".to_owned(),
+            "dist/\n!*.log\n".to_owned(),
+        ),
+        (
+            "hello/.gitignore".to_owned(),
+            "/target\n*.log\nnode_modules/\n".to_owned(),
+        ),
+    ];
+    let keep = project_files(&paths, &gitignores);
+    let kept: Vec<&str> = paths
+        .iter()
+        .zip(&keep)
+        .filter_map(|(p, k)| k.then_some(p.as_str()))
+        .collect();
+    assert_eq!(
+        kept,
+        vec![
+            "hello/Cargo.toml",
+            "hello/.gitignore",
+            "hello/src/main.rs",
+            "hello/web/.gitignore",
+            "hello/web/keep.log",
+        ]
+    );
+}
+
+#[wasm_bindgen_test]
+fn without_a_gitignore_only_git_is_left_out() {
+    let paths = strings(&[
+        "p/src/main.rs",
+        "p/target/x",
+        "p/.git/config",
+        "p/.github/ci.yml",
+    ]);
+    assert_eq!(project_files(&paths, &[]), vec![true, true, false, true]);
+}
+
+#[wasm_bindgen_test]
+fn status_mentions_ignored_files() {
+    let mut u = Upload {
+        folder: "hello".into(),
+        project: true,
+        total: 3,
+        done: 1,
+        skipped: 120,
+        ..Default::default()
+    };
+    assert_eq!(u.status(), "Uploading hello: 1/3, 120 ignored");
+    u.done = 3;
+    u.finished = true;
+    assert_eq!(u.status(), "Uploaded hello: 3 files, 120 ignored");
+    u.failures = vec!["x".into()];
+    assert_eq!(
+        u.status(),
+        "Uploaded hello: 2 of 3 files, 1 failed, 120 ignored"
+    );
+}

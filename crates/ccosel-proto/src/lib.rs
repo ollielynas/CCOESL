@@ -16,6 +16,7 @@ extern crate alloc;
 pub mod build;
 pub mod fs;
 pub mod info;
+pub mod scratch;
 
 use serde::{Deserialize, Serialize};
 

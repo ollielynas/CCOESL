@@ -70,11 +70,21 @@ fn dispatch(state: &AppState, req: &WireRequest<'_>) -> Outcome {
             let Ok(args) = postcard::from_bytes::<ListDirReq>(req.args) else {
                 return Outcome::Err(server_error::MALFORMED, String::new());
             };
+            state.scratch.touch(args.path);
             match state.jail.list_dir(&args) {
-                Ok(listing) => match postcard::to_allocvec(&listing) {
-                    Ok(bytes) => Outcome::Ok(bytes),
-                    Err(_) => Outcome::Err(server_error::IO, String::new()),
-                },
+                Ok(mut listing) => {
+                    // Temporary project folders are the Compiler's business, not a folder
+                    // anyone browses to.
+                    if args.path.trim_matches('/').is_empty() {
+                        listing
+                            .entries
+                            .retain(|e| e.name != ccosel_proto::scratch::DIR);
+                    }
+                    match postcard::to_allocvec(&listing) {
+                        Ok(bytes) => Outcome::Ok(bytes),
+                        Err(_) => Outcome::Err(server_error::IO, String::new()),
+                    }
+                }
                 Err(code) => Outcome::Err(code, args.path.to_owned()),
             }
         }
@@ -83,6 +93,7 @@ fn dispatch(state: &AppState, req: &WireRequest<'_>) -> Outcome {
             let Ok(args) = postcard::from_bytes::<CompileReq>(req.args) else {
                 return Outcome::Err(server_error::MALFORMED, String::new());
             };
+            state.scratch.touch(args.path);
             match crate::build_api::compile(&state.jail, &state.jobs, &args) {
                 Ok(status) => match postcard::to_allocvec(&status) {
                     Ok(bytes) => Outcome::Ok(bytes),

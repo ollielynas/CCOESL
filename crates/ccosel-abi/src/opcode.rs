@@ -30,6 +30,10 @@ pub enum OpCode {
     /// A line graph of `samples`, each already scaled by the guest to `0..=255`. The shell draws
     /// it, so a live chart costs one byte per point on the wire and no guest-side rendering.
     Plot = 0x0E,
+    /// A button that has the shell upload a project folder from this computer into a new
+    /// temporary server folder, leaving out what its `.gitignore`s exclude. The response's
+    /// `aux` is that folder's id once the upload finishes.
+    UploadProject = 0x0F,
     // 0x40..0x4F reserved for subtree caching (BeginCached / EndCached / CachedRef).
     // Not implemented yet, but the space is reserved so adding it is not an ABI break.
 }
@@ -51,6 +55,7 @@ impl OpCode {
             0x0C => Some(Self::UploadFolder),
             0x0D => Some(Self::OpenUrl),
             0x0E => Some(Self::Plot),
+            0x0F => Some(Self::UploadProject),
             _ => None,
         }
     }

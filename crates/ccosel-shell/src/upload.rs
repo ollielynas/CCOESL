@@ -68,6 +68,25 @@ fn percent_encode(s: &str, out: &mut String) {
     }
 }
 
+/// Which of `paths` a project upload sends: everything except what the `.gitignore` files among
+/// them exclude, and anything inside `.git/` (the repository itself, never wanted for a build
+/// and often the biggest thing in the folder). `gitignores` are `(path, contents)` of those
+/// files; the result lines up with `paths`.
+pub fn project_files(paths: &[String], gitignores: &[(String, String)]) -> Vec<bool> {
+    let mut sorted: Vec<&(String, String)> = gitignores.iter().collect();
+    // Shallowest first: deeper files take precedence, and the filter gives later rules it.
+    sorted.sort_by_key(|(p, _)| p.matches('/').count());
+    let mut filter = ccosel_gitignore::Filter::new();
+    for (path, contents) in sorted {
+        let base = path.rsplit_once('/').map_or("", |(dir, _)| dir);
+        filter.add(base, contents);
+    }
+    paths
+        .iter()
+        .map(|p| !p.split('/').any(|part| part == ".git") && !filter.is_ignored(p))
+        .collect()
+}
+
 /// Whether the shell may open this `OpenUrl` target in a new tab.
 ///
 /// The URL comes from an app, and an app is untrusted code, so this is deliberately narrow: a
@@ -103,6 +122,12 @@ pub struct Upload {
     pub total: usize,
     pub failures: Vec<String>,
     pub finished: bool,
+    /// A project upload (`UploadProject`) rather than a folder upload (`UploadFolder`).
+    pub project: bool,
+    /// Project uploads: files left out by `.gitignore` or for being in `.git/`.
+    pub skipped: usize,
+    /// Project uploads: the temporary folder it went into, once there is one.
+    pub scratch: Option<u32>,
 }
 
 impl Upload {
@@ -113,14 +138,18 @@ impl Upload {
         } else {
             self.folder.as_str()
         };
+        let skipped = match self.skipped {
+            0 => String::new(),
+            n => format!(", {n} ignored"),
+        };
         if !self.finished {
-            return format!("Uploading {name}: {}/{}", self.done, self.total);
+            return format!("Uploading {name}: {}/{}{skipped}", self.done, self.total);
         }
         match self.failures.len() {
-            0 => format!("Uploaded {name}: {} files", self.done),
+            0 => format!("Uploaded {name}: {} files{skipped}", self.done),
             n => format!(
-                "Uploaded {name}: {} of {} files, {n} failed",
-                self.done - n,
+                "Uploaded {name}: {} of {} files, {n} failed{skipped}",
+                self.done.saturating_sub(n),
                 self.total
             ),
         }
@@ -161,6 +190,16 @@ impl Uploads {
     /// Browsers only open a picker in response to a user action. The desktop calls this in the
     /// same frame the click is drawn, which is well inside that allowance.
     pub fn start(&self, instance: u64, widget: u64, dest: String, ctx: egui::Context) {
+        self.pick(instance, widget, Dest::Folder(dest), ctx);
+    }
+
+    /// Open the folder picker for a click on an `UploadProject` button, then upload what's
+    /// picked, minus what `.gitignore` excludes, into a new temporary folder on the server.
+    pub fn start_project(&self, instance: u64, widget: u64, ctx: egui::Context) {
+        self.pick(instance, widget, Dest::Scratch, ctx);
+    }
+
+    fn pick(&self, instance: u64, widget: u64, dest: Dest, ctx: egui::Context) {
         let seq = self.next_seq.get();
         self.next_seq.set(seq + 1);
         let target = Target {
@@ -169,11 +208,13 @@ impl Uploads {
             widget,
             dest,
         };
+        let project = matches!(target.dest, Dest::Scratch);
         if let Err(e) = open_picker(self.all.clone(), target, ctx) {
             self.all.borrow_mut().push(Upload {
                 seq,
                 instance,
                 widget,
+                project,
                 finished: true,
                 failures: vec![format!("couldn't open the folder picker: {e:?}")],
                 ..Default::default()
@@ -187,7 +228,14 @@ struct Target {
     seq: u64,
     instance: u64,
     widget: u64,
-    dest: String,
+    dest: Dest,
+}
+
+enum Dest {
+    /// Into this jail folder, everything picked.
+    Folder(String),
+    /// Into a new temporary folder, minus what `.gitignore` excludes.
+    Scratch,
 }
 
 fn open_picker(
@@ -250,6 +298,7 @@ async fn upload_all(
         seq: target.seq,
         instance: target.instance,
         widget: target.widget,
+        project: matches!(target.dest, Dest::Scratch),
         folder,
         total: files.len(),
         ..Default::default()
@@ -262,8 +311,42 @@ async fn upload_all(
     };
     ctx.request_repaint();
 
+    let (files, relative, dest) = match target.dest {
+        Dest::Folder(dest) => (files, relative, dest),
+        Dest::Scratch => {
+            let (files, relative) = match only_project_files(files, relative).await {
+                Ok(kept) => kept,
+                Err(e) => {
+                    update(&mut |u| {
+                        u.failures.push(e.clone());
+                        u.finished = true;
+                    });
+                    return;
+                }
+            };
+            let id = match new_scratch().await {
+                Ok(id) => id,
+                Err(e) => {
+                    update(&mut |u| {
+                        u.failures
+                            .push(format!("couldn't make a folder to upload into: {e}"));
+                        u.finished = true;
+                    });
+                    return;
+                }
+            };
+            let kept = files.len();
+            update(&mut |u| {
+                u.skipped = u.total - kept;
+                u.total = kept;
+                u.scratch = Some(id);
+            });
+            (files, relative, ccosel_proto::scratch::path(id))
+        }
+    };
+
     for (file, rel) in files.iter().zip(&relative) {
-        let result = match upload_target(&target.dest, rel) {
+        let result = match upload_target(&dest, rel) {
             None => Err(format!("{rel}: not a valid path")),
             Some((dir, name)) => match read(file).await {
                 Err(e) => Err(format!("{rel}: couldn't read it: {e}")),
@@ -281,6 +364,39 @@ async fn upload_all(
         });
     }
     update(&mut |u| u.finished = true);
+}
+
+/// Drop what [`project_files`] leaves out. Reads every `.gitignore` among `files` first,
+/// which is the only reading done before the upload proper.
+async fn only_project_files(
+    files: Vec<File>,
+    relative: Vec<String>,
+) -> Result<(Vec<File>, Vec<String>), String> {
+    let mut gitignores = Vec::new();
+    for (file, rel) in files.iter().zip(&relative) {
+        if rel.rsplit('/').next() == Some(".gitignore") {
+            let bytes = read(file)
+                .await
+                .map_err(|e| format!("{rel}: couldn't read it: {e}"))?;
+            gitignores.push((rel.clone(), String::from_utf8_lossy(&bytes).into_owned()));
+        }
+    }
+    let keep = project_files(&relative, &gitignores);
+    Ok(files
+        .into_iter()
+        .zip(relative)
+        .zip(keep)
+        .filter_map(|(pair, keep)| keep.then_some(pair))
+        .unzip())
+}
+
+/// `POST /scratch`: a new temporary folder on the server, as its id.
+async fn new_scratch() -> Result<u32, String> {
+    let body = fetch::post_bytes("/scratch", &[]).await?;
+    String::from_utf8_lossy(&body)
+        .trim()
+        .parse()
+        .map_err(|_| "the server's answer wasn't a folder id".to_owned())
 }
 
 /// `File.webkitRelativePath`, which `web-sys` doesn't bind.

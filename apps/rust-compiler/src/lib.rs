@@ -1,8 +1,11 @@
 //! The Rust Compiler app.
 //!
-//! Browse to a directory on the server, press Build, watch it compile, download the binary the
-//! server's own toolchain produced. Getting a project onto the server is the Files app's job
-//! (Upload folder); this app starts from a directory that is already there.
+//! Upload a project from this computer, or browse to one already on the server, press Build,
+//! watch it compile, download the binary the server's own toolchain produced.
+//!
+//! An uploaded project is temporary: it goes into a scratch folder the server deletes after an
+//! hour unused (`ccosel_proto::scratch`), leaving out whatever its `.gitignore` excludes, so
+//! `target/` never crosses the network and nothing lingers in the shared folder.
 //!
 //! A build takes minutes, so `Compile` is not a call that waits for one — it is a **poll**.
 //! The first request for a `(path, generation)` starts the job server-side; every later one
@@ -18,6 +21,7 @@ use std::rc::Rc;
 
 use ccosel_proto::build::{Compile, CompileReq, CompileStatus};
 use ccosel_proto::fs::{ListDir, ListDirReq};
+use ccosel_proto::scratch;
 use ccosel_sdk::{App, Poll, Ui};
 
 const MANIFEST: &str = "Cargo.toml";
@@ -35,6 +39,9 @@ pub struct RustCompiler {
     /// Drives `wants_repaint_after_ms`. Without a timer the app would only re-run on input,
     /// and a build would appear to stop the moment you stopped moving the mouse.
     polling: bool,
+    /// The scratch folder of the last finished upload the app has acted on, so each one is
+    /// opened once rather than every frame.
+    uploaded: Option<u32>,
 }
 
 impl Default for RustCompiler {
@@ -45,6 +52,7 @@ impl Default for RustCompiler {
             generation: 0,
             last_status: None,
             polling: false,
+            uploaded: None,
         }
     }
 }
@@ -61,6 +69,31 @@ fn human_size(bytes: u64) -> String {
     s.push_str(itoa(n).as_str());
     s.push_str(unit);
     s
+}
+
+/// `path` as the user should read it: an uploaded project's `/.scratch/<id>` prefix becomes
+/// "Uploaded: ", the same wording as its breadcrumb.
+fn display_path(path: &str) -> String {
+    let Some(id) = scratch::id_of(path) else {
+        return path.to_owned();
+    };
+    let rest = &path[scratch::path(id).len()..];
+    let mut s = String::from("⬆ Uploaded: ");
+    s.push_str(rest.trim_start_matches('/'));
+    s
+}
+
+/// `/.scratch`, the directory holding every scratch folder.
+fn scratch_dir() -> String {
+    let mut s = String::from("/");
+    s.push_str(scratch::DIR);
+    s
+}
+
+/// The id if `path` is exactly a scratch folder (`/.scratch/<id>`), not something inside one.
+fn scratch_root(path: &str) -> Option<u32> {
+    let id = scratch::id_of(path)?;
+    (path.trim_end_matches('/') == scratch::path(id)).then_some(id)
 }
 
 /// `/files/<path>`, each segment percent-encoded. `path` is jail-relative and its segments come
@@ -108,6 +141,11 @@ impl RustCompiler {
             Some(0) | None => self.path = "/".to_owned(),
             Some(i) => self.path.truncate(i),
         }
+        // A scratch folder holds only the uploaded project and would open it straight back up,
+        // so going up out of the project lands at the top instead.
+        if scratch_root(&self.path).is_some() || self.path == scratch_dir() {
+            self.path = "/".to_owned();
+        }
     }
 
     fn enter(&mut self, name: &str) {
@@ -120,10 +158,24 @@ impl RustCompiler {
     /// The path as a chain of `(label, full path)` breadcrumbs, root first. Mirrors the File
     /// Browser's `crumbs`: a project worth building is often a few directories deep, and
     /// getting there — or back to an ancestor — should be one click, not a string of "Up"s.
+    ///
+    /// Inside an uploaded project, `/.scratch/<id>` is an implementation detail: it shows as a
+    /// single "Uploaded" crumb that leads to the project itself.
     fn crumbs(&self) -> Vec<(String, String)> {
         let mut out = vec![("🏠".to_owned(), "/".to_owned())];
         let mut acc = String::new();
-        for seg in self.path.split('/').filter(|s| !s.is_empty()) {
+        let mut segs = self.path.split('/').filter(|s| !s.is_empty()).peekable();
+        if let Some(id) = scratch::id_of(&self.path) {
+            acc = scratch::path(id);
+            segs.next();
+            segs.next();
+            if let Some(project) = segs.next() {
+                acc.push('/');
+                acc.push_str(project);
+                out.push((format!("⬆ Uploaded: {project}"), acc.clone()));
+            }
+        }
+        for seg in segs {
             acc.push('/');
             acc.push_str(seg);
             out.push((seg.to_owned(), acc.clone()));
@@ -204,12 +256,28 @@ impl App for RustCompiler {
         let mut enter: Option<String> = None;
         let mut build = false;
 
+        let mut uploaded: Option<u32> = None;
         ui.horizontal(|ui| {
             if ui.button("⬆ Up").clicked() {
                 go_up = true;
             }
             ui.tooltip("Go to parent directory");
+            let r = ui.upload_project();
+            ui.tooltip(
+                "Upload a Rust project from this computer to build it. Files its .gitignore \
+                 excludes are left out, and the upload is deleted after an hour unused.",
+            );
+            if r.uploaded_project() != self.uploaded {
+                uploaded = r.uploaded_project();
+            }
         });
+        if let Some(id) = uploaded {
+            // A new upload landed: open it, and drop whatever the last build was of.
+            self.uploaded = Some(id);
+            self.path = scratch::path(id);
+            self.building = None;
+            self.last_status = None;
+        }
 
         // A clickable trail, not just a path label: reaching a project a few directories deep
         // — or backing out to one on the way — is one click instead of several "Up"s.
@@ -233,6 +301,7 @@ impl App for RustCompiler {
         let listing = ui.rpc().get::<ListDir>(&ListDirReq { path: &self.path });
 
         let mut is_project = false;
+        let in_scratch_root = scratch_root(&self.path).is_some();
         match listing {
             Poll::Pending => {
                 ui.label("Loading…");
@@ -248,6 +317,12 @@ impl App for RustCompiler {
 
                 // Only directories: this picker exists to choose a project, and listing every
                 // source file in a crate would bury the one thing you can actually click.
+                // A scratch folder holds just the uploaded project: open it rather than make
+                // the user click the only thing there.
+                let mut only = listing.entries.iter().filter(|e| e.is_dir());
+                if in_scratch_root && let (Some(project), None) = (only.next(), only.next()) {
+                    enter = Some(project.name.clone());
+                }
                 let mut dirs = 0usize;
                 for entry in listing.entries.iter().filter(|e| e.is_dir()) {
                     dirs += 1;
@@ -282,6 +357,9 @@ impl App for RustCompiler {
         } else {
             ui.label("No Cargo.toml here — open a crate directory to build it.");
         }
+        if scratch::id_of(&self.path).is_some() {
+            ui.label("Uploaded for this build only: deleted after an hour unused.");
+        }
 
         if go_up {
             self.go_up();
@@ -308,7 +386,7 @@ impl App for RustCompiler {
         ui.separator();
         ui.horizontal(|ui| {
             ui.label("Build:");
-            ui.label(target.as_str());
+            ui.label(&display_path(&target));
         });
 
         let req = CompileReq {

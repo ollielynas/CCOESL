@@ -6,6 +6,7 @@
 pub mod build_api;
 pub mod fs_api;
 pub mod rpc;
+pub mod scratch;
 pub mod stats;
 pub mod upload_api;
 
@@ -29,11 +30,37 @@ pub struct AppState {
     /// any one call. See `build_api`.
     pub jobs: Arc<build_api::Jobs>,
     pub stats: Arc<stats::Stats>,
+    /// Temporary project folders. See `scratch`.
+    pub scratch: Arc<scratch::Scratch>,
 }
 
 /// Build the router. Separated from `serve` so tests can drive it on an ephemeral port.
+///
+/// Panics if it can't create `.scratch` in the jail: a server that can't write to its own jail
+/// can't accept uploads either, and failing at start is clearer than failing on first use.
 pub fn app(jail: Jail, web_dir: PathBuf) -> Router {
+    let scratch = Arc::new(
+        scratch::Scratch::new(jail.root()).expect("create the .scratch directory in the jail"),
+    );
+    // Deletes unused scratch folders even when nobody is using the server, so an uploaded
+    // project doesn't wait for the next request to be cleaned up. Only when there is a runtime
+    // to run on, which is always true of `serve` and of the async tests.
+    if let Ok(rt) = tokio::runtime::Handle::try_current() {
+        let scratch = Arc::downgrade(&scratch);
+        rt.spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(60));
+            loop {
+                tick.tick().await;
+                // The router, and with it the state, is gone: stop.
+                let Some(scratch) = scratch.upgrade() else {
+                    return;
+                };
+                scratch.sweep(std::time::Instant::now());
+            }
+        });
+    }
     let state = AppState {
+        scratch,
         jail: Arc::new(jail),
         jobs: Arc::new(build_api::Jobs::new()),
         stats: Arc::new(stats::Stats::new()),
@@ -46,6 +73,7 @@ pub fn app(jail: Jail, web_dir: PathBuf) -> Router {
             post(upload_api::upload).layer(DefaultBodyLimit::max(upload_api::MAX_UPLOAD_BYTES)),
         )
         .route("/files/{*path}", get(download))
+        .route("/scratch", post(new_scratch))
         .fallback_service(
             // Precompressed assets are served as-is when the client accepts them: compressing
             // a 5 MB shell on every request would be absurd, and `xtask` can do it once at
@@ -63,6 +91,7 @@ pub fn app(jail: Jail, web_dir: PathBuf) -> Router {
 /// than `ListDir` already does: anything under the jail is already fair game to enumerate, this
 /// just answers "and can I have the bytes."
 async fn download(State(state): State<AppState>, AxPath(path): AxPath<String>) -> Response {
+    state.scratch.touch(&path);
     let Ok(real) = state.jail.resolve(&path) else {
         return StatusCode::FORBIDDEN.into_response();
     };
@@ -86,6 +115,18 @@ async fn download(State(state): State<AppState>, AxPath(path): AxPath<String>) -
         bytes,
     )
         .into_response()
+}
+
+/// `POST /scratch`: a new temporary project folder. Answers with its id as decimal text; the
+/// folder is at `ccosel_proto::scratch::path(id)`.
+async fn new_scratch(State(state): State<AppState>) -> Response {
+    match state.scratch.create() {
+        Ok(id) => id.to_string().into_response(),
+        Err(e) => {
+            eprintln!("scratch: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
 }
 
 pub async fn serve(addr: SocketAddr, jail: Jail, web_dir: PathBuf) -> anyhow::Result<()> {
