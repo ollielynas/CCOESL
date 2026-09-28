@@ -253,6 +253,17 @@ algorithm: exact for one convex solid and good for the boxy shapes push/pull mak
 overlapping non-convex parts can occasionally draw in the wrong order. Edges are cut against a
 software depth buffer instead, so hidden edges are hidden exactly.
 
+**Sketches** follow the same split. A sketch is data (`ccosel-proto::sketch`, numbered as
+FreeCAD's Sketcher numbers it): the app owns it and the selection, and sends both each frame.
+The shell solves it and runs the Sketcher's tools against the pointer, re-solving at display
+rate while a point is dragged, with `ccosel-sketch`: least-change Levenberg–Marquardt, degrees
+of freedom and redundant or conflicting constraints from the rank of the Jacobian, and trim,
+extend, split, fillet and offset that keep constraints sensible. Every finished edit goes back
+to the app whole (`SKETCH` events); the app also uses `ccosel-sketch` to turn a selection into
+constraints, so both sides agree. Closing a sketch makes it a step, which the server builds as
+a real `Sketcher::SketchObject` solved by FreeCAD's own solver, the final word; its closed
+profiles become faces, and Pad and Pocket are push/pulls of them.
+
 FreeCAD runs as one long-lived worker process (`freecadcmd`, found on `PATH` or named by
 `CCOSEL_FREECADCMD`) that caches every step prefix it has built. **A server without FreeCAD
 installs it itself** the first time someone uses the Modeller (`freecad_install.rs`): the

@@ -755,6 +755,7 @@ version = "0.1.0"
 dependencies = [
  "ccosel-abi",
  "ccosel-proto",
+ "ccosel-sketch",
  "ccosel-view3d",
  "egui",
  "postcard",

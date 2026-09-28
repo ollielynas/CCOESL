@@ -56,6 +56,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "ccosel-sketch"
+version = "0.1.0"
+dependencies = [
+ "ccosel-proto",
+]
+
+[[package]]
 name = "clock"
 version = "0.1.0"
 dependencies = [
@@ -105,6 +112,8 @@ version = "0.1.0"
 dependencies = [
  "ccosel-proto",
  "ccosel-sdk",
+ "ccosel-sketch",
+ "postcard",
 ]
 
 [[package]]
