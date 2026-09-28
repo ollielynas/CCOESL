@@ -207,3 +207,26 @@ fn refuses_to_climb_out_of_the_jail() {
     .unwrap_err();
     assert!(err == server_error::DENIED || err == server_error::NOT_FOUND);
 }
+
+/// What `cargo xtask serve` and `cargo xtask review` actually do: serve `data/shared` from
+/// inside this repository, whose own `Cargo.toml` is a workspace. A project put there (by an
+/// upload, say) must build as its own package, not be claimed by that workspace. This failed
+/// with "current package believes it's in a workspace when it's not" until `data` was added
+/// to the workspace's `exclude`.
+#[test]
+fn builds_a_project_inside_this_repositorys_data_folder() {
+    let shared = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/shared");
+    fs::create_dir_all(&shared).unwrap();
+    let name = format!(".build-test-{}", std::process::id());
+    let dir = shared.join(&name);
+    let _ = fs::remove_dir_all(&dir);
+    write_crate(&dir.join("proj"), "proj", "fn main() {}");
+
+    let jail = Jail::new(&shared).unwrap();
+    let status = build_to_completion(&jail, &Jobs::new(), &format!("/{name}/proj"), 1);
+    let _ = fs::remove_dir_all(&dir);
+
+    let result = status.result.unwrap();
+    assert!(result.success, "build failed:\n{}", result.output);
+    assert_eq!(result.binaries.len(), 1);
+}
