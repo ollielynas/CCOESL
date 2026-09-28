@@ -38,7 +38,7 @@ fn bytes_span_the_range() {
 #[test]
 fn numbers_read_like_percent_g() {
     assert_eq!(fmt_num(0.0), "0");
-    assert_eq!(fmt_num(6.283185), "6.2832");
+    assert_eq!(fmt_num(3.456789), "3.4568");
     assert_eq!(fmt_num(-2.0), "-2");
     assert_eq!(fmt_num(1.5e7), "1.500e7");
     assert_eq!(fmt_num(0.0001), "1.000e-4");
