@@ -18,6 +18,10 @@ Requests:
 Operations:
   {"kind": "polygon", "points": [[x, y, z], ...], "normal": [x, y, z]}
   {"kind": "pushpull", "after": k, "face": f, "distance": d}
+  {"kind": "sketch", "sketch": {...}}   a ccosel_proto::sketch::Sketch, as serde writes it
+
+A sketch becomes a real Sketcher::SketchObject, solved by FreeCAD's own solver; its closed
+profiles become loose faces, ready to push or pull like a drawn rectangle.
 """
 
 import json
@@ -28,6 +32,7 @@ from collections import OrderedDict
 
 import FreeCAD
 import Part
+import Sketcher
 
 TOL = 1e-6
 CACHE_LIMIT = 256
@@ -42,10 +47,20 @@ def lst(v):
 
 
 class Model:
-    """The shapes a model is made of: solids, and loose faces not yet pushed or pulled."""
+    """The shapes a model is made of: solids, and loose faces not yet pushed or pulled.
 
-    def __init__(self, shapes=()):
+    `added` is how many shapes at the end the last operation made, whose faces are the new
+    faces Pad and Pocket act on; `sketches` are the sketches so far, for a FreeCAD export.
+    """
+
+    def __init__(self, shapes=(), added=0, sketches=()):
         self.shapes = list(shapes)
+        self.added = added
+        self.sketches = list(sketches)
+
+    def new_faces(self):
+        before = sum(len(s.Faces) for s in self.shapes[: len(self.shapes) - self.added])
+        return list(range(before, sum(len(s.Faces) for s in self.shapes)))
 
     def faces(self):
         """Every face, numbered in this order. The mesh uses the same numbering."""
@@ -93,7 +108,7 @@ def polygon(model, op):
     n = flat_normal(face)
     if n is not None and n.dot(vec(op["normal"])) < 0:
         face.reverse()
-    return Model(model.shapes + [face])
+    return Model(model.shapes + [face], 1, model.sketches)
 
 
 def push_pull(model, op, history):
@@ -110,7 +125,7 @@ def push_pull(model, op, history):
         raise ValueError("only flat faces can be pushed or pulled")
     d = float(op["distance"])
     if abs(d) <= TOL:
-        return Model(model.shapes)
+        return Model(model.shapes, 0, model.sketches)
     prism = face.extrude(n * d)
 
     shapes = [s for s in model.shapes if not (is_loose(s) and s.isSame(face))]
@@ -123,9 +138,128 @@ def push_pull(model, op, history):
             shapes[i] = result
         else:
             del shapes[i]
-        return Model(shapes)
+        return Model(shapes, 0, model.sketches)
     shapes.append(prism)
-    return Model(shapes)
+    return Model(shapes, 0, model.sketches)
+
+
+POS = {"Edge": 0, "Start": 1, "End": 2, "Mid": 3}
+
+_work_doc = None
+
+
+def work_doc():
+    """A document to build sketches in. Sketcher objects need one."""
+    global _work_doc
+    if _work_doc is None:
+        _work_doc = FreeCAD.newDocument("ccosel_work")
+    return _work_doc
+
+
+def plane_placement(plane):
+    x = vec(plane["x_dir"]).normalize()
+    n = vec(plane["normal"]).normalize()
+    y = n.cross(x)
+    m = FreeCAD.Matrix(x.x, y.x, n.x, 0, x.y, y.y, n.y, 0, x.z, y.z, n.z, 0, 0, 0, 0, 1)
+    return FreeCAD.Placement(vec(plane["origin"]), FreeCAD.Rotation(m))
+
+
+def v2(p):
+    return FreeCAD.Vector(float(p[0]), float(p[1]), 0)
+
+
+def geometry(curve):
+    (kind, val), = curve.items()
+    if kind == "Point":
+        return Part.Point(v2(val))
+    if kind == "Line":
+        return Part.LineSegment(v2(val[0]), v2(val[1]))
+    circle = Part.Circle(v2(val["center"]), FreeCAD.Vector(0, 0, 1), float(val["radius"]))
+    if kind == "Circle":
+        return circle
+    return Part.ArcOfCircle(circle, float(val["start"]), float(val["end"]))
+
+
+def pt(r):
+    return [int(r["geo"]), POS[r["pos"]]]
+
+
+def constraint(c):
+    """A ccosel constraint as FreeCAD's Sketcher.Constraint arguments."""
+    (kind, v), = c.items()
+    if kind == "Coincident":
+        return ["Coincident"] + pt(v[0]) + pt(v[1])
+    if kind == "PointOnObject":
+        return ["PointOnObject"] + pt(v[0]) + [int(v[1])]
+    if kind in ("Horizontal", "Vertical"):
+        return [kind, int(v)]
+    if kind in ("HorizontalPoints", "VerticalPoints"):
+        return [kind.replace("Points", "")] + pt(v[0]) + pt(v[1])
+    if kind in ("Parallel", "Perpendicular", "Tangent", "Equal"):
+        return [kind, int(v[0]), int(v[1])]
+    if kind == "Symmetric":
+        return ["Symmetric"] + pt(v[0]) + pt(v[1]) + [int(v[2])]
+    if kind == "SymmetricPoint":
+        return ["Symmetric"] + pt(v[0]) + pt(v[1]) + pt(v[2])
+    if kind == "Distance":
+        return ["Distance", int(v[0]), float(v[1])]
+    if kind == "DistancePoints":
+        return ["Distance"] + pt(v[0]) + pt(v[1]) + [float(v[2])]
+    if kind == "DistancePointLine":
+        return ["Distance"] + pt(v[0]) + [int(v[1]), float(v[2])]
+    if kind in ("DistanceX", "DistanceY"):
+        return [kind] + pt(v[0]) + pt(v[1]) + [float(v[2])]
+    if kind in ("Radius", "Diameter"):
+        return [kind, int(v[0]), float(v[1])]
+    if kind == "Angle":
+        return ["Angle", int(v[0]), float(v[1])]
+    if kind == "AngleBetween":
+        return ["Angle", int(v[0]), int(v[1]), float(v[2])]
+    raise ValueError("unknown constraint %r" % kind)
+
+
+def sketch_object(doc, sk, name="Sketch"):
+    """`sk` as a Sketcher::SketchObject in `doc`, solved by FreeCAD."""
+    obj = doc.addObject("Sketcher::SketchObject", name)
+    obj.Placement = plane_placement(sk["plane"])
+    for g in sk["geos"]:
+        obj.addGeometry(geometry(g["curve"]), bool(g["construction"]))
+    cons = [Sketcher.Constraint(*constraint(c)) for c in sk["constraints"]]
+    cons += [Sketcher.Constraint("Block", i) for i, g in enumerate(sk["geos"]) if g["fixed"]]
+    if cons:
+        obj.addConstraint(cons)
+    rc = obj.solve()
+    if rc == -2:
+        raise ValueError("the sketch has redundant constraints")
+    if rc == -3:
+        raise ValueError("the sketch has conflicting constraints")
+    if rc != 0:
+        raise ValueError(
+            "FreeCAD could not solve the sketch: its constraints conflict or cannot all hold"
+        )
+    doc.recompute()
+    return obj
+
+
+def sketch_op(model, op):
+    sk = op["sketch"]
+    doc = work_doc()
+    obj = sketch_object(doc, sk)
+    try:
+        shape = obj.Shape.copy()
+    finally:
+        doc.removeObject(obj.Name)
+    closed = [w for w in shape.Wires if w.isClosed()]
+    faces = []
+    if closed:
+        made = Part.makeFace(closed, "Part::FaceMakerBullseye")
+        n = vec(sk["plane"]["normal"])
+        for f in made.Faces:
+            fn = flat_normal(f)
+            if fn is not None and fn.dot(n) < 0:
+                f.reverse()
+            faces.append(f)
+    return Model(model.shapes + faces, len(faces), model.sketches + [sk])
 
 
 def op_key(ops, n):
@@ -168,6 +302,8 @@ class Builder:
                     model = polygon(history[-1], op)
                 elif kind == "pushpull":
                     model = push_pull(history[-1], op, history)
+                elif kind == "sketch":
+                    model = sketch_op(history[-1], op)
                 else:
                     raise ValueError("unknown operation %r" % kind)
             except Exception as e:  # noqa: BLE001 - every failure is reported, not fatal
@@ -222,6 +358,7 @@ def tessellate(model):
     solids = sum(len(s.Solids) for s in shapes)
     volume = sum(sol.Volume for s in shapes for sol in s.Solids)
     return {
+        "new_faces": model.new_faces(),
         "mesh": {
             "positions": positions,
             "triangles": triangles,
@@ -240,7 +377,7 @@ def tessellate(model):
 
 def export(model, fmt, path):
     shapes = model.shapes
-    if not shapes:
+    if not shapes and not (fmt == "fcstd" and model.sketches):
         raise ValueError("the model is empty")
     compound = Part.makeCompound(shapes)
     if fmt == "step":
@@ -253,6 +390,9 @@ def export(model, fmt, path):
             for i, s in enumerate(shapes):
                 obj = doc.addObject("Part::Feature", "Shape%d" % i)
                 obj.Shape = s
+            # The sketches too, editable in FreeCAD's Sketcher.
+            for i, sk in enumerate(model.sketches):
+                sketch_object(doc, sk, "Sketch%d" % i)
             doc.recompute()
             doc.saveAs(path)
         finally:

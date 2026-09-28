@@ -9,7 +9,8 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use ccosel_proto::cad::{CadOp, ExportFormat, ExportReq, MeshData, RegenResult};
+use ccosel_proto::cad::{CadOp, ExportFormat, ExportReq, MeshData, Model, RegenResult};
+use ccosel_proto::sketch::{Constraint, Curve, Geo, Plane, PointRef, Pos, Sketch};
 use ccosel_server::cad_api::{Cad, Launch};
 use ccosel_server::fs_api::Jail;
 
@@ -20,22 +21,149 @@ fn square(z: f32, lo: f32, hi: f32) -> CadOp {
     }
 }
 
-#[test]
-fn a_box_with_a_pocket_has_the_volume_freecad_says() {
-    let temp = std::env::temp_dir().join(format!("ccosel-freecad-{}", std::process::id()));
+/// The CAD service on a FreeCAD already here, or `None` (loudly) where there is none. It
+/// never sets off the 820 MB auto-install.
+fn freecad(name: &str) -> Option<(Arc<Cad>, std::path::PathBuf)> {
+    let temp = std::env::temp_dir().join(format!("ccosel-freecad-{}-{name}", std::process::id()));
     let _ = std::fs::remove_dir_all(&temp);
     std::fs::create_dir_all(&temp).unwrap();
-    // Only a FreeCAD already here: this test must never set off the 820 MB auto-install.
     let cad = Arc::new(Cad::with_installer(None, &temp).unwrap());
     if !cad.available() {
-        let script = temp.join("worker.py");
-        assert!(Launch::freecad(&script).is_none());
+        assert!(Launch::freecad(&temp.join("worker.py")).is_none());
         eprintln!(
             "\n*** SKIPPED: FreeCAD is not installed (no freecadcmd on PATH, CCOSEL_FREECADCMD \
              unset). The CAD geometry was NOT checked against FreeCAD. ***\n"
         );
-        return;
+        return None;
     }
+    Some((cad, temp))
+}
+
+fn build(cad: &Arc<Cad>, ops: &[CadOp]) -> RegenResult {
+    let deadline = Instant::now() + Duration::from_secs(120);
+    loop {
+        if let Some(result) = cad.regenerate(ops).unwrap().result {
+            return result;
+        }
+        assert!(Instant::now() < deadline, "FreeCAD never finished");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn built(r: RegenResult) -> Model {
+    match r {
+        RegenResult::Ok(m) => m,
+        RegenResult::Failed { op, message } => panic!("op {op}: {message}"),
+    }
+}
+
+/// A 100 × 60 rectangle from the origin, fully constrained, with a circle of radius 10 at
+/// (50, 30): a plate with a hole, as a FreeCAD sketch.
+fn plate_sketch() -> Sketch {
+    let mut sk = Sketch::new(Plane::GROUND);
+    let ids = ccosel_sketch_like_rectangle(&mut sk, [0.0, 0.0], [90.0, 50.0]);
+    sk.geos.push(Geo::new(Curve::Circle {
+        center: [45.0, 25.0],
+        radius: 8.0,
+    }));
+    sk.constraints.extend([
+        Constraint::Coincident(PointRef::new(ids[0], Pos::Start), PointRef::ORIGIN),
+        Constraint::Distance(ids[0], 100.0),
+        Constraint::Distance(ids[1], 60.0),
+        Constraint::Radius(4, 10.0),
+        Constraint::DistanceX(PointRef::ORIGIN, PointRef::new(4, Pos::Mid), 50.0),
+        Constraint::DistanceY(PointRef::ORIGIN, PointRef::new(4, Pos::Mid), 30.0),
+    ]);
+    sk
+}
+
+/// The same rectangle FreeCAD's tool makes: four joined lines, two level, two plumb.
+fn ccosel_sketch_like_rectangle(sk: &mut Sketch, a: [f64; 2], c: [f64; 2]) -> [i32; 4] {
+    let corners = [a, [c[0], a[1]], c, [a[0], c[1]]];
+    for i in 0..4 {
+        sk.geos
+            .push(Geo::new(Curve::Line(corners[i], corners[(i + 1) % 4])));
+    }
+    for i in 0..4i32 {
+        sk.constraints.push(Constraint::Coincident(
+            PointRef::new(i, Pos::End),
+            PointRef::new((i + 1) % 4, Pos::Start),
+        ));
+    }
+    sk.constraints.extend([
+        Constraint::Horizontal(0),
+        Constraint::Horizontal(2),
+        Constraint::Vertical(1),
+        Constraint::Vertical(3),
+    ]);
+    [0, 1, 2, 3]
+}
+
+#[test]
+fn a_sketched_plate_with_a_hole_pads_to_the_volume_freecad_says() {
+    let Some((cad, temp)) = freecad("sketch") else {
+        return;
+    };
+    // Not solved here: FreeCAD's solver puts it right.
+    let mut ops = vec![CadOp::Sketch(plate_sketch())];
+    let sketched = built(build(&cad, &ops));
+    assert_eq!(
+        sketched.new_faces.len(),
+        1,
+        "one profile: the plate, with the hole in it"
+    );
+    // Pad it 5 mm, as the Modeller's Pad does.
+    ops.push(CadOp::PushPull {
+        after: 1,
+        face: sketched.new_faces[0],
+        distance: 5.0,
+    });
+    let padded = built(build(&cad, &ops));
+    assert_eq!(padded.solids, 1);
+    let expected = (100.0 * 60.0 - std::f64::consts::PI * 100.0) * 5.0;
+    assert!(
+        (padded.volume_mm3 as f64 - expected).abs() < 2.0,
+        "{} vs {expected}",
+        padded.volume_mm3
+    );
+
+    // Saved as a FreeCAD document, the sketch is there to edit.
+    let jail_dir = temp.join("jail");
+    std::fs::create_dir_all(&jail_dir).unwrap();
+    let jail = Jail::new(&jail_dir).unwrap();
+    cad.export(
+        &jail,
+        None,
+        &ExportReq {
+            ops: ops.clone(),
+            format: ExportFormat::FreeCad,
+            path: "/plate.FCStd".to_owned(),
+        },
+    )
+    .unwrap();
+    let doc = std::fs::read(jail_dir.join("plate.FCStd")).unwrap();
+    assert!(doc.starts_with(b"PK"), "an FCStd is a zip");
+
+    // A sketch FreeCAD cannot solve is the step that failed, with FreeCAD's reason.
+    let mut bad = plate_sketch();
+    bad.constraints.push(Constraint::Vertical(0));
+    match build(&cad, &[CadOp::Sketch(bad)]) {
+        RegenResult::Failed { op, message } => {
+            assert_eq!(op, 0);
+            assert!(
+                message.contains("conflict") || message.contains("redundant"),
+                "{message}"
+            );
+        }
+        RegenResult::Ok(_) => panic!("a horizontal line cannot also be vertical"),
+    }
+}
+
+#[test]
+fn a_box_with_a_pocket_has_the_volume_freecad_says() {
+    let Some((cad, temp)) = freecad("pocket") else {
+        return;
+    };
 
     // Draw a 100 mm square, pull it into a cube, draw a 40 mm square on top, push it 30 mm in.
     let mut ops = vec![square(0.0, 0.0, 100.0)];

@@ -83,6 +83,7 @@ fn a_rebuild_stores_its_mesh_and_says_where() {
     let model = ok(finish(&cad, &[square()]));
     assert!(model.mesh.starts_with("/cad/mesh/"));
     assert_eq!((model.faces, model.solids, model.triangles), (1, 0, 2));
+    assert_eq!(model.new_faces, vec![0]);
 
     let hash = model.mesh.rsplit('/').next().unwrap();
     let bytes = cad.mesh_bytes(hash).expect("stored");
@@ -171,6 +172,14 @@ fn nonsense_op_lists_are_refused_before_freecad_sees_them() {
         distance: f32::INFINITY,
     };
     assert_eq!(cad.regenerate(&[far]), Err(server_error::MALFORMED));
+    let mut broken = ccosel_proto::sketch::Sketch::new(ccosel_proto::sketch::Plane::GROUND);
+    broken
+        .constraints
+        .push(ccosel_proto::sketch::Constraint::Horizontal(3));
+    assert_eq!(
+        cad.regenerate(&[CadOp::Sketch(broken)]),
+        Err(server_error::MALFORMED)
+    );
     let many = vec![square(); MAX_OPS + 1];
     assert_eq!(cad.regenerate(&many), Err(server_error::TOO_LARGE));
     let corners = CadOp::Polygon {

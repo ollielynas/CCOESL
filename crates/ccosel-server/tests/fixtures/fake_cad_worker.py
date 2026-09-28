@@ -48,7 +48,8 @@ for line in sys.stdin:
         continue
     if req["cmd"] == "regen":
         rebuilds += 1
-        answer({"id": rid, "ok": True, "mesh": SQUARE, "faces": 1, "solids": 0, "volume": rebuilds})
+        answer({"id": rid, "ok": True, "mesh": SQUARE, "faces": 1, "new_faces": [0],
+                "solids": 0, "volume": rebuilds})
     elif req["cmd"] == "export":
         data = ("FAKE " + req["format"] + " of %d ops\n" % len(req["ops"])).encode()
         with open(req["path"], "wb") as f:

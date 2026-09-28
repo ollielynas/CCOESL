@@ -445,6 +445,16 @@ impl Cad {
             mesh: format!("{MESH_PATH}/{hash}"),
             triangles,
             faces: count("faces"),
+            new_faces: answer
+                .get("new_faces")
+                .and_then(Value::as_array)
+                .map(|v| {
+                    v.iter()
+                        .filter_map(Value::as_u64)
+                        .filter_map(|f| u32::try_from(f).ok())
+                        .collect()
+                })
+                .unwrap_or_default(),
             solids: count("solids"),
             volume_mm3: answer
                 .get("volume")
@@ -574,6 +584,12 @@ fn check_ops(ops: &[CadOp]) -> Result<(), u32> {
                     return Err(server_error::MALFORMED);
                 }
             }
+            // Ids in range, numbers finite, within the size limits.
+            CadOp::Sketch(sketch) => {
+                if !sketch.is_valid() {
+                    return Err(server_error::MALFORMED);
+                }
+            }
         }
     }
     Ok(())
@@ -598,6 +614,11 @@ fn ops_json(ops: &[CadOp]) -> Value {
                     "after": after,
                     "face": face,
                     "distance": distance,
+                }),
+                // serde's own shape for it, which the worker reads as is.
+                CadOp::Sketch(sketch) => json!({
+                    "kind": "sketch",
+                    "sketch": sketch,
                 }),
             })
             .collect(),
