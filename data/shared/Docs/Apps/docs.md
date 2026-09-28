@@ -16,9 +16,10 @@ Under them is a tree of the place you are in. Press **▸** next to a folder to 
 it, and **▾** to hide it again. Click a folder's name to open it, and a document to read it.
 The document you are reading is shown in bold, and the tree opens itself to show where you are.
 
-The main page shows the folder or document you picked. The trail at the top of a folder shows
-where you are, and each part of it is a button back to that folder. **← Back** returns to where
-you were before.
+The main page shows the document you picked. For a folder, it shows the folder's `README.md`
+if it has one, and the buttons for adding to it. The trail at the top of a folder shows where
+you are, and each part of it is a button back to that folder. **← Back** returns to where you
+were before.
 
 Docs only shows folders and Markdown (`.md`) documents. Use [Files](file-browser.md) for
 everything else.

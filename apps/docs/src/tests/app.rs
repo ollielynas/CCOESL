@@ -54,7 +54,7 @@ fn started(write: bool) -> Harness<Docs> {
     grant(&mut h, write, Some("alice"));
     h.reply::<ListDir>(&listing(&[
         ("Apps", EntryKind::Dir),
-        ("README.md", EntryKind::File),
+        ("Guide.md", EntryKind::File),
         ("logo.png", EntryKind::File),
     ]));
     h.frame();
@@ -79,13 +79,13 @@ fn starts_in_the_documentation_folder_showing_only_folders_and_documents() {
     grant(&mut h, false, None);
     h.reply::<ListDir>(&listing(&[
         ("Apps", EntryKind::Dir),
-        ("README.md", EntryKind::File),
+        ("Guide.md", EntryKind::File),
         ("logo.png", EntryKind::File),
     ]));
     h.frame();
 
     assert!(h.has_button("📁 Apps"));
-    assert!(h.has_button("📄 README"));
+    assert!(h.has_button("📄 Guide"));
     assert!(!h.buttons().iter().any(|b| b.contains("logo")));
     // Anonymous, and the folder is read-only: no private folder, nothing to create.
     assert!(h.has_text("Sign in for a private folder"));
@@ -142,11 +142,11 @@ fn a_document_is_rendered_and_its_links_followed() {
     let mut h = started(false);
     open_doc(
         &mut h,
-        "📄 README",
+        "📄 Guide",
         "# Welcome\n\nRead about [Files](Apps/files.md), fetch [the logo](logo.png) or visit <https://example.com>.\n\n- one\n1. two\n- [x] done\n\n> note\n\n```\ncode\n\nmore\n```\n\n---\n\n| A | B |\n|---|---|\n| [c](c.md) | d |\n\n[top](#top)",
         false,
     );
-    assert_eq!(h.app.view, View::Read("/Docs/README.md".into()));
+    assert_eq!(h.app.view, View::Read("/Docs/Guide.md".into()));
     assert!(
         h.styled()
             .contains(&("Welcome".into(), TextStyle::heading(1)))
@@ -158,7 +158,7 @@ fn a_document_is_rendered_and_its_links_followed() {
     assert!(h.has_text("top"), "an anchor-only link is shown as text");
 
     let urls = h.open_urls();
-    assert!(urls.contains(&("⬇ Download".into(), "/files/Docs/README.md".into())));
+    assert!(urls.contains(&("⬇ Download".into(), "/files/Docs/Guide.md".into())));
     assert!(urls.contains(&("📎 the logo".into(), "/files/Docs/logo.png".into())));
     assert!(urls.contains(&(
         "🔗 https://example.com".into(),
@@ -189,7 +189,7 @@ fn a_document_is_rendered_and_its_links_followed() {
 #[test]
 fn a_failed_read_can_be_retried() {
     let mut h = started(false);
-    h.click("📄 README");
+    h.click("📄 Guide");
     h.frame();
     h.frame();
     h.fail::<ReadFile>(rpc_error::DENIED);
@@ -204,10 +204,10 @@ fn a_failed_read_can_be_retried() {
 #[test]
 fn editing_saving_and_the_unsaved_marker() {
     let mut h = started(true);
-    open_doc(&mut h, "📄 README", "# Old\n", true);
+    open_doc(&mut h, "📄 Guide", "# Old\n", true);
     h.click("✏ Edit");
     h.frame();
-    assert_eq!(h.app.view, View::Edit("/Docs/README.md".into()));
+    assert_eq!(h.app.view, View::Edit("/Docs/Guide.md".into()));
     // The editor opens on the cached text, without asking the server again.
     assert_eq!(h.outstanding::<ReadFile>(), 0);
     h.frame();
@@ -237,7 +237,7 @@ fn editing_saving_and_the_unsaved_marker() {
     // Done goes back to reading, which re-reads the saved document.
     h.click("✔ Done");
     h.frame();
-    assert_eq!(h.app.view, View::Read("/Docs/README.md".into()));
+    assert_eq!(h.app.view, View::Read("/Docs/Guide.md".into()));
     h.frame();
     assert_eq!(h.outstanding::<ReadFile>(), 1);
 }
@@ -245,7 +245,7 @@ fn editing_saving_and_the_unsaved_marker() {
 #[test]
 fn a_failed_save_says_why_and_keeps_the_changes() {
     let mut h = started(true);
-    open_doc(&mut h, "📄 README", "text", true);
+    open_doc(&mut h, "📄 Guide", "text", true);
     h.click("✏ Edit");
     h.frame();
     h.frame();
@@ -266,7 +266,7 @@ fn a_failed_save_says_why_and_keeps_the_changes() {
 #[test]
 fn formatting_buttons_add_markdown_and_preview_toggles() {
     let mut h = started(true);
-    open_doc(&mut h, "📄 README", "x", true);
+    open_doc(&mut h, "📄 Guide", "x", true);
     h.click("✏ Edit");
     h.frame();
     h.frame();
@@ -299,7 +299,7 @@ fn formatting_buttons_add_markdown_and_preview_toggles() {
 #[test]
 fn a_preview_link_is_followed_only_when_nothing_is_unsaved() {
     let mut h = started(true);
-    open_doc(&mut h, "📄 README", "[next](next.md)", true);
+    open_doc(&mut h, "📄 Guide", "[next](next.md)", true);
     h.click("✏ Edit");
     h.frame();
     h.frame();
@@ -319,7 +319,7 @@ fn a_preview_link_is_followed_only_when_nothing_is_unsaved() {
     h.frame();
     h.click_link("next");
     h.frame();
-    assert_eq!(h.app.view, View::Edit("/Docs/README.md".into()));
+    assert_eq!(h.app.view, View::Edit("/Docs/Guide.md".into()));
 }
 
 #[test]
@@ -353,13 +353,13 @@ fn creating_a_document_opens_it_in_the_editor() {
     );
 
     // One that is already there is refused before asking the server.
-    h.type_text(1, "README");
+    h.type_text(1, "Guide");
     h.frame();
     h.click("📄 New document");
     h.frame();
     assert_eq!(
         h.app.status.as_deref(),
-        Some("“README.md” already exists here.")
+        Some("“Guide.md” already exists here.")
     );
     assert_eq!(h.outstanding::<WriteFile>(), 0);
 
@@ -493,13 +493,13 @@ fn a_failed_listing_can_be_retried_and_truncation_is_shown() {
         truncated: true,
     });
     h.frame();
-    assert!(h.has_text("(some entries are not shown)"));
+    assert!(h.has_text("(more not shown)"), "in the sidebar");
 }
 
 #[test]
 fn unsaved_changes_cannot_be_lost_by_leaving_the_editor() {
     let mut h = started(true);
-    open_doc(&mut h, "📄 README", "saved", true);
+    open_doc(&mut h, "📄 Guide", "saved", true);
     h.click("✏ Edit");
     h.frame();
     h.frame();
@@ -512,7 +512,7 @@ fn unsaved_changes_cannot_be_lost_by_leaving_the_editor() {
     for button in ["✔ Done", "← Back", "🗂 Shared"] {
         h.click(button);
         h.frame();
-        assert_eq!(h.app.view, View::Edit("/Docs/README.md".into()), "{button}");
+        assert_eq!(h.app.view, View::Edit("/Docs/Guide.md".into()), "{button}");
         assert_eq!(
             h.app.status.as_deref(),
             Some("You have unsaved changes. Save them, or discard them to leave.")
@@ -523,7 +523,7 @@ fn unsaved_changes_cannot_be_lost_by_leaving_the_editor() {
     // Discard goes back to reading the saved document.
     h.click("🗑 Discard changes");
     h.frame();
-    assert_eq!(h.app.view, View::Read("/Docs/README.md".into()));
+    assert_eq!(h.app.view, View::Read("/Docs/Guide.md".into()));
     assert!(h.app.status.is_none());
     h.frame();
     assert!(h.has_text("saved"));
@@ -610,7 +610,7 @@ fn the_section_is_the_place_a_path_is_in() {
 #[test]
 fn following_a_link_opens_the_tree_down_to_the_document() {
     let mut h = started(false);
-    open_doc(&mut h, "📄 README", "[Files](Apps/files.md)", false);
+    open_doc(&mut h, "📄 Guide", "[Files](Apps/files.md)", false);
     assert!(!h.app.expanded.contains("/Docs/Apps"));
     h.click_link("Files");
     h.frame();
@@ -621,4 +621,46 @@ fn following_a_link_opens_the_tree_down_to_the_document() {
     h.click("← Back");
     h.frame();
     assert!(h.app.expanded.contains("/Docs"));
+}
+
+#[test]
+fn a_folder_shows_its_readme_and_not_a_second_listing() {
+    let mut h = Harness::new(Docs::default());
+    h.frame();
+    grant(&mut h, false, None);
+    h.reply::<ListDir>(&listing(&[
+        ("Apps", EntryKind::Dir),
+        ("README.md", EntryKind::File),
+    ]));
+    h.frame();
+    // Each entry once: in the sidebar tree, not again in the page.
+    assert_eq!(h.buttons().iter().filter(|b| *b == "📄 README").count(), 1);
+    assert_eq!(h.buttons().iter().filter(|b| *b == "📁 Apps").count(), 1);
+
+    h.reply::<ReadFile>(&file("# Welcome\n\nSee [Files](Apps/files.md).", false));
+    h.frame();
+    assert!(h.has_text("Welcome"));
+    h.click_link("Files");
+    h.frame();
+    assert_eq!(h.app.view, View::Read("/Docs/Apps/files.md".into()));
+}
+
+#[test]
+fn a_folder_without_a_readme_points_at_the_sidebar() {
+    let mut h = Harness::new(Docs::default());
+    h.frame();
+    grant(&mut h, false, None);
+    h.reply::<ListDir>(&listing(&[("a.md", EntryKind::File)]));
+    h.frame();
+    assert!(h.has_text("Choose a document in the sidebar."));
+
+    h.click("🗂 Shared");
+    h.frame();
+    h.frame();
+    grant(&mut h, true, None);
+    h.reply::<ListDir>(&listing(&[("README.md", EntryKind::File)]));
+    h.frame();
+    h.fail::<ReadFile>(rpc_error::DENIED);
+    h.frame();
+    assert!(h.has_label("permission denied"));
 }

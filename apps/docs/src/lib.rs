@@ -273,6 +273,9 @@ impl Docs {
             Poll::Failed(_) => return,
         };
         let indent = "    ".repeat(depth);
+        if listing.truncated {
+            ui.styled(&format!("{indent}(more not shown)"), TextStyle::WEAK);
+        }
         for entry in &listing.entries {
             let is_dir = entry.kind == EntryKind::Dir;
             if !is_dir && !paths::is_doc(&entry.name) {
@@ -338,12 +341,33 @@ impl Docs {
         });
     }
 
+    /// A folder, picked in the sidebar. The sidebar already lists what is in it, so this does
+    /// not: it offers what can be done here, and shows the folder's README if it has one.
     fn browse(&mut self, ui: &mut Ui<'_>, dir: &str, act: &mut Actions) {
         Self::crumbs(ui, dir, act);
         let writable = matches!(
             ui.rpc().get::<Access>(&PathReq { path: dir }),
             Poll::Ready(a) if a.write
         );
+        // Above the README, so the name field keeps its id whatever the README holds.
+        ui.push_id("actions", |ui| {
+            if writable {
+                ui.horizontal(|ui| {
+                    ui.label("Name");
+                    ui.text_edit(&mut self.new_name);
+                    if ui.button("📄 New document").clicked() {
+                        act.new_doc = true;
+                    }
+                    if ui.button("📁 New folder").clicked() {
+                        act.new_folder = true;
+                    }
+                });
+            } else {
+                ui.styled("🔒 Read-only folder", TextStyle::WEAK);
+                ui.tooltip("You can read what is here but not add to it.");
+            }
+        });
+        ui.separator();
 
         match ui.rpc().get::<ListDir>(&ListDirReq { path: dir }) {
             Poll::Pending => {
@@ -356,61 +380,47 @@ impl Docs {
                 }
             }
             Poll::Ready(listing) => {
-                let mut shown = 0;
-                for entry in &listing.entries {
-                    let path = paths::join(dir, &entry.name);
-                    let is_dir = entry.kind == EntryKind::Dir;
-                    // Only what this app can open: folders to look in, and documents.
-                    if !is_dir && !paths::is_doc(&entry.name) {
-                        continue;
-                    }
-                    shown += 1;
-                    ui.push_id(&entry.name, |ui| {
-                        ui.group(|ui| {
-                            ui.horizontal(|ui| {
-                                let label = if is_dir {
-                                    format!("📁 {}", entry.name)
-                                } else {
-                                    format!("📄 {}", paths::title(&entry.name))
-                                };
-                                if ui.button(&label).clicked() {
-                                    act.go = Some(if is_dir {
-                                        View::Browse(path.clone())
-                                    } else {
-                                        View::Read(path.clone())
-                                    });
+                let readme = listing.entries.iter().find(|e| {
+                    e.kind == EntryKind::File
+                        && matches!(
+                            e.name.to_ascii_lowercase().as_str(),
+                            "readme.md" | "index.md"
+                        )
+                });
+                match readme {
+                    Some(entry) => {
+                        let path = paths::join(dir, &entry.name);
+                        match ui.rpc().get::<ReadFile>(&PathReq { path: &path }) {
+                            Poll::Ready(file) => {
+                                if let Some(Follow::Doc(to)) =
+                                    render::document(ui, &path, &markdown::parse(&file.text))
+                                {
+                                    act.go = Some(View::Read(to));
                                 }
-                            });
-                        });
-                    });
-                }
-                if shown == 0 {
-                    ui.styled(
-                        "No documents here yet.",
-                        TextStyle::WEAK | TextStyle::ITALIC,
-                    );
-                }
-                if listing.truncated {
-                    ui.styled("(some entries are not shown)", TextStyle::WEAK);
+                            }
+                            Poll::Pending => {
+                                ui.label("Loading…");
+                            }
+                            Poll::Failed(e) => {
+                                ui.label(e.message());
+                            }
+                        }
+                    }
+                    None => {
+                        let docs = listing
+                            .entries
+                            .iter()
+                            .filter(|e| e.kind == EntryKind::File && paths::is_doc(&e.name))
+                            .count();
+                        let hint = if docs == 0 {
+                            "No documents here yet."
+                        } else {
+                            "Choose a document in the sidebar."
+                        };
+                        ui.styled(hint, TextStyle::WEAK | TextStyle::ITALIC);
+                    }
                 }
             }
-        }
-
-        ui.separator();
-        if writable {
-            ui.horizontal(|ui| {
-                ui.label("Name");
-                ui.text_edit(&mut self.new_name);
-                if ui.button("📄 New document").clicked() {
-                    act.new_doc = true;
-                }
-                if ui.button("📁 New folder").clicked() {
-                    act.new_folder = true;
-                }
-            });
-        } else {
-            ui.styled("🔒 Read-only folder", TextStyle::WEAK);
-            ui.tooltip("You can read what is here but not add to it.");
         }
     }
 
