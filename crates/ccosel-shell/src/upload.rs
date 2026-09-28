@@ -392,7 +392,9 @@ async fn only_project_files(
 
 /// `POST /scratch`: a new temporary folder on the server, as its id.
 async fn new_scratch() -> Result<u32, String> {
-    let body = fetch::post_bytes("/scratch", &[]).await?;
+    let body = fetch::post_bytes("/scratch", &[])
+        .await
+        .map_err(|e| e.to_string())?;
     String::from_utf8_lossy(&body)
         .trim()
         .parse()

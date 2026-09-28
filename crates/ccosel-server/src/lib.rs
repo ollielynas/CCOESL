@@ -3,8 +3,11 @@
 //! Serves the shell, the app modules and the RPC endpoint from **one origin**, which is why
 //! there is no CORS configuration anywhere in this project.
 
+pub mod auth;
 pub mod build_api;
 pub mod fs_api;
+pub mod idp;
+pub mod keycloak;
 pub mod rpc;
 pub mod scratch;
 pub mod stats;
@@ -17,15 +20,18 @@ use std::sync::Arc;
 use axum::Router;
 use axum::extract::{DefaultBodyLimit, Path as AxPath, State};
 use axum::http::{StatusCode, header};
+use axum::middleware;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use tower_http::services::ServeDir;
 
+use auth::AuthState;
 use fs_api::Jail;
 
 #[derive(Clone)]
 pub struct AppState {
     pub jail: Arc<Jail>,
+    pub auth: AuthState,
     /// Builds outlive the request that started them, so they live on the server rather than in
     /// any one call. See `build_api`.
     pub jobs: Arc<build_api::Jobs>,
@@ -38,7 +44,7 @@ pub struct AppState {
 ///
 /// Panics if it can't create `.scratch` in the jail: a server that can't write to its own jail
 /// can't accept uploads either, and failing at start is clearer than failing on first use.
-pub fn app(jail: Jail, web_dir: PathBuf) -> Router {
+pub fn app(jail: Jail, web_dir: PathBuf, auth: AuthState) -> Router {
     let scratch = Arc::new(
         scratch::Scratch::new(jail.root()).expect("create the .scratch directory in the jail"),
     );
@@ -62,11 +68,15 @@ pub fn app(jail: Jail, web_dir: PathBuf) -> Router {
     let state = AppState {
         scratch,
         jail: Arc::new(jail),
+        auth,
         jobs: Arc::new(build_api::Jobs::new()),
         stats: Arc::new(stats::Stats::new()),
     };
 
-    Router::new()
+    // Everything that reads or writes the jail needs a session once OAuth is configured. The
+    // shell and app modules (the fallback below) stay public: they hold no user data, and the
+    // boot page needs them reachable to show its sign-in button in the first place.
+    let protected = Router::new()
         .route("/rpc", post(rpc::handle))
         .route(
             "/upload",
@@ -74,6 +84,14 @@ pub fn app(jail: Jail, web_dir: PathBuf) -> Router {
         )
         .route("/files/{*path}", get(download))
         .route("/scratch", post(new_scratch))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth::require_session,
+        ));
+
+    Router::new()
+        .merge(protected)
+        .merge(auth::router())
         .fallback_service(
             // Precompressed assets are served as-is when the client accepts them: compressing
             // a 5 MB shell on every request would be absurd, and `xtask` can do it once at
@@ -129,9 +147,14 @@ async fn new_scratch(State(state): State<AppState>) -> Response {
     }
 }
 
-pub async fn serve(addr: SocketAddr, jail: Jail, web_dir: PathBuf) -> anyhow::Result<()> {
+pub async fn serve(
+    addr: SocketAddr,
+    jail: Jail,
+    web_dir: PathBuf,
+    auth: AuthState,
+) -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
     println!("CCOSEL serving http://{addr}/");
-    axum::serve(listener, app(jail, web_dir)).await?;
+    axum::serve(listener, app(jail, web_dir, auth)).await?;
     Ok(())
 }

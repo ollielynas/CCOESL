@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use ccosel_proto::fs::{DirListing, ListDirReq};
 use ccosel_proto::info::{ServerInfoReply, ServerInfoReq};
 use ccosel_proto::{Method, PROTO_VERSION, WireReply, WireRequest, WireResult, server_error};
+use ccosel_server::auth::AuthState;
 use ccosel_server::fs_api::Jail;
 
 /// The jail root a spawned server serves, returned alongside its address so a test can assert
@@ -29,7 +30,7 @@ async fn spawn() -> (SocketAddr, PathBuf) {
 
     let jail = Jail::new(&dir).unwrap();
     let root = jail.root().to_path_buf();
-    let app = ccosel_server::app(jail, dir.clone());
+    let app = ccosel_server::app(jail, dir.clone(), AuthState::default());
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

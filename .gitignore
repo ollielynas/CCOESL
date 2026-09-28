@@ -2,6 +2,10 @@
 /apps/target
 /dist
 /web/dist
+.env
+# The managed Keycloak's admin password, where earlier builds kept it. It now lives in
+# ~/.local/share/ccosel/ and is moved there on the next start.
+/data/keycloak-admin-password
 # Per-machine Claude Code permissions; the shared settings.json is committed.
 /.claude/settings.local.json
 # Temporary project uploads the server makes in the jail it serves; deleted on their own.

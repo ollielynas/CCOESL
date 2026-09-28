@@ -13,6 +13,7 @@
 
 extern crate alloc;
 
+pub mod account;
 pub mod build;
 pub mod fs;
 pub mod info;
@@ -32,6 +33,8 @@ pub enum Method {
     Stat = 2,
     ServerInfo = 3,
     Compile = 4,
+    WhoAmI = 5,
+    SignOut = 6,
 }
 
 impl Method {
@@ -41,6 +44,8 @@ impl Method {
             2 => Some(Self::Stat),
             3 => Some(Self::ServerInfo),
             4 => Some(Self::Compile),
+            5 => Some(Self::WhoAmI),
+            6 => Some(Self::SignOut),
             _ => None,
         }
     }

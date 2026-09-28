@@ -16,7 +16,7 @@ use std::rc::Rc;
 use ccosel_proto::{WireReply, WireRequest, WireResult};
 use ccosel_transport::{Incoming, Outgoing, Wire};
 
-use crate::fetch;
+use crate::fetch::{self, PostError};
 
 pub type Inbox = Rc<RefCell<Vec<Incoming>>>;
 
@@ -59,10 +59,19 @@ impl Wire for HttpWire {
         wasm_bindgen_futures::spawn_local(async move {
             let incoming = match fetch::post_bytes(&url, &body).await {
                 Ok(bytes) => decode_replies(&bytes, &seqs),
+                // Signed out (from the Account app, another tab, or an expired session).
+                // Reloading lands on the boot page, which shows the sign-in button; nothing
+                // on this desktop can work until then.
+                Err(PostError::Unauthorized) => {
+                    if let Some(window) = web_sys::window() {
+                        let _ = window.location().reload();
+                    }
+                    transport_failures(&seqs, "signed out")
+                }
                 // A failed batch fails every call in it. The transport turns that into one
                 // terminal event per call, so no app is left waiting on a request that died
                 // in transit.
-                Err(e) => transport_failures(&seqs, &e),
+                Err(PostError::Other(e)) => transport_failures(&seqs, &e),
             };
             inbox.borrow_mut().extend(incoming);
             wake.request_repaint();
