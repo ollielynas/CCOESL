@@ -8,6 +8,10 @@
 //! Its data lives in a named volume, so accounts survive the container being replaced. The
 //! container and volume have fixed names, so every checkout on a machine shares them; the
 //! admin password is kept per machine too, so they all agree on it.
+//!
+//! Where Docker isn't available because this server is itself in a container (the image in
+//! `Dockerfile`), [`LOCAL_HOME_VAR`] names a Keycloak installation instead, and it is run as a
+//! child process with the same settings. Everything after it starts is the same.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -26,6 +30,14 @@ pub const REALM: &str = "ccosel";
 pub const CLIENT_ID: &str = "ccosel";
 const ADMIN_USER: &str = "admin";
 const IMAGE: &str = "quay.io/keycloak/keycloak";
+
+/// Names a Keycloak installation (the directory holding `bin/kc.sh`) to run as a child process
+/// instead of a Docker container.
+pub const LOCAL_HOME_VAR: &str = "CCOSEL_KEYCLOAK_HOME";
+/// The interface a child-process Keycloak listens on. `127.0.0.1` unless set: in a container,
+/// `0.0.0.0` lets `docker run -p 127.0.0.1:8080:8080` reach the admin console, while the
+/// container itself stays the boundary.
+pub const LOCAL_HOST_VAR: &str = "CCOSEL_KEYCLOAK_LISTEN";
 
 /// Stamped on the container. A container without the current value was made by an older
 /// version of this server, with settings that are no longer safe (listening on every
@@ -97,6 +109,19 @@ pub fn run_args() -> Vec<String> {
     .to_vec()
 }
 
+/// Arguments for `kc.sh` when Keycloak runs as a child process: the settings [`run_args`] gives
+/// the container, plus where to listen, which Docker's port mapping decides for the container.
+pub fn local_args(listen: &str) -> Vec<String> {
+    vec![
+        "start-dev".to_owned(),
+        format!("--http-relative-path={}", idp::PREFIX),
+        "--proxy-headers=xforwarded".to_owned(),
+        "--hostname-strict=false".to_owned(),
+        format!("--http-host={listen}"),
+        format!("--http-port={PORT}"),
+    ]
+}
+
 /// Where Keycloak may send a browser back to after signing in: this server as reached on this
 /// machine, and the public URL if there is one.
 pub fn redirect_uris(public_url: Option<&str>, port: u16) -> Vec<String> {
@@ -116,13 +141,24 @@ pub fn redirect_uris(public_url: Option<&str>, port: u16) -> Vec<String> {
 /// Starts (or reuses) the container and makes sure the realm and client exist, with the client
 /// allowed to redirect to [`redirect_uris`].
 pub async fn provision(public_url: Option<&str>, port: u16) -> anyhow::Result<()> {
+    if let Some(home) = std::env::var_os(LOCAL_HOME_VAR).filter(|v| !v.is_empty()) {
+        let password = admin_password(&admin_password_file())?;
+        start_local(Path::new(&home), &password)?;
+        wait_until_up("its output above").await?;
+        let token = admin_token(&password).await?;
+        ensure_realm(&token).await?;
+        return ensure_client(&token, &redirect_uris(public_url, port)).await;
+    }
     let status = Command::new("docker")
         .arg("--version")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();
     if !matches!(status, Ok(s) if s.success()) {
-        bail!("docker is required to start Keycloak — install it, or set CCOSEL_KEYCLOAK_URL");
+        bail!(
+            "docker is required to start Keycloak — install it, or set CCOSEL_KEYCLOAK_URL \
+             (a Keycloak of your own) or {LOCAL_HOME_VAR} (a Keycloak installation to run)"
+        );
     }
 
     let password = admin_password(&admin_password_file())?;
@@ -297,6 +333,28 @@ async fn ensure_running(password: &str) -> anyhow::Result<()> {
         }
     }
 
+    wait_until_up(&format!("docker logs {CONTAINER}")).await
+}
+
+/// Runs the Keycloak installed at `home` as a child of this server. It is not waited for: it
+/// lives as long as this process, which in the container image is the container's lifetime.
+fn start_local(home: &Path, password: &str) -> anyhow::Result<()> {
+    let listen = std::env::var(LOCAL_HOST_VAR).unwrap_or_else(|_| "127.0.0.1".to_owned());
+    let kc = home.join("bin/kc.sh");
+    println!("starting Keycloak from {}…", home.display());
+    Command::new(&kc)
+        .args(local_args(&listen))
+        .env("KC_BOOTSTRAP_ADMIN_USERNAME", ADMIN_USER)
+        .env("KC_BOOTSTRAP_ADMIN_PASSWORD", password)
+        // Keycloak logs every request; its own errors still reach stderr.
+        .stdout(Stdio::null())
+        .spawn()
+        .with_context(|| format!("running {}", kc.display()))?;
+    Ok(())
+}
+
+/// Waits for Keycloak to answer, for up to 90 seconds. `logs` says where to look if it doesn't.
+async fn wait_until_up(logs: &str) -> anyhow::Result<()> {
     let http = reqwest::Client::builder()
         .timeout(Duration::from_secs(2))
         .build()?;
@@ -312,7 +370,7 @@ async fn ensure_running(password: &str) -> anyhow::Result<()> {
         }
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
-    bail!("Keycloak did not start within 90 seconds (docker logs {CONTAINER})")
+    bail!("Keycloak did not start within 90 seconds (see {logs})")
 }
 
 async fn admin_token(password: &str) -> anyhow::Result<String> {
