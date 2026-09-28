@@ -82,3 +82,43 @@ account page (profile, password, sessions) in a new tab. **Sign out** ends the s
 server and in Keycloak, so signing in again asks for the password.
 
 Sessions live in server memory only — a restart signs everyone out.
+
+## Running it in Docker
+
+One container holds everything: the server, the shell and apps, and Keycloak. There is nothing
+to configure; everything that must last is in one volume.
+
+```sh
+docker build -t ccosel .
+docker run -d --name ccosel --restart unless-stopped \
+  -p 8777:8777 -p 127.0.0.1:8080:8080 -v ccosel-data:/data ccosel
+```
+
+Then open `http://<this machine>:8777`. The first start takes a minute or so while Keycloak
+sets itself up.
+
+- **Adding accounts:** the admin console is at `http://localhost:8080/idp/admin/`, on this
+  machine only (that is what the `127.0.0.1:` in `-p 127.0.0.1:8080:8080` does; leave that
+  `-p` out to have no admin console at all). The user is `admin`, and the password is
+  generated on first start:
+  `docker exec ccosel cat /data/ccosel/keycloak-admin-password`. Then add users as described
+  under [Auth](#auth).
+- **Public, behind a tunnel,** on one domain: point the tunnel (for example
+  `cloudflared tunnel --url http://localhost:8777`, or `ngrok http 8777`) at port 8777 and pass
+  its address when starting the container. Sign-in goes through the same domain under `/idp/`,
+  so there is nothing else to expose.
+
+  ```sh
+  docker run -d --name ccosel --restart unless-stopped \
+    -p 8777:8777 -p 127.0.0.1:8080:8080 -v ccosel-data:/data \
+    -e CCOSEL_PUBLIC_URL=https://ccosel.example.com ccosel
+  ```
+
+  A tunnel whose address changes on every run (a quick Cloudflare tunnel, free ngrok) needs
+  the container recreated with the new address each time, since Keycloak only sends people
+  back to addresses it was told about.
+- **What's kept:** the `ccosel-data` volume holds people's files (`/data/files`, which starts
+  with the app documentation), Keycloak's accounts, and the admin password. Remove the
+  container freely; remove the volume only to start over.
+- **Smaller image:** `docker build --build-arg WITH_RUST=0 -t ccosel .` leaves out the Rust
+  toolchain the Compiler app builds with, about 1 GB. Everything else still works.

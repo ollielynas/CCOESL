@@ -1,5 +1,5 @@
-//! Only the parts that need no Docker: what the container is started with, and which
-//! addresses Keycloak may send a browser back to.
+//! Only the parts that need no Docker: what the container (or child process) is started
+//! with, and which addresses Keycloak may send a browser back to.
 
 use super::*;
 
@@ -126,4 +126,20 @@ fn a_new_password_file_is_created_private() {
     // Asking again gives the same password rather than a new one.
     assert_eq!(admin_password(&file).unwrap(), password);
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_child_process_keycloak_has_the_containers_settings_and_listens_where_told() {
+    let args = local_args("127.0.0.1");
+    // Everything `run_args` gives Keycloak itself, after the image name.
+    let container = run_args();
+    let image = container.iter().position(|a| a == IMAGE).unwrap();
+    for arg in &container[image + 1..] {
+        assert!(args.contains(arg), "missing {arg}");
+    }
+    assert!(args.contains(&"--http-host=127.0.0.1".to_owned()));
+    assert!(args.contains(&format!("--http-port={PORT}")));
+    assert!(local_args("0.0.0.0").contains(&"--http-host=0.0.0.0".to_owned()));
+    // And never the password: it goes in the environment.
+    assert!(!args.iter().any(|a| a.contains("PASSWORD")));
 }
