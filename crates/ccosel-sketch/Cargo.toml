@@ -1,0 +1,9 @@
+[package]
+name = "ccosel-sketch"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "FreeCAD-style 2D sketching: a constraint solver, and the tools that draw and edit a sketch. Shared by the shell (live editing) and apps (building constraints)."
+
+[dependencies]
+ccosel-proto = { workspace = true }

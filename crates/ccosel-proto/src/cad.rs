@@ -46,6 +46,10 @@ pub enum CadOp {
         face: u32,
         distance: f32,
     },
+    /// A FreeCAD sketch. Its closed profiles become flat faces, like a drawn rectangle does,
+    /// ready to pad (pull) or pocket (push); its open edges and construction geometry make
+    /// nothing, but are kept for editing and in a FreeCAD export.
+    Sketch(crate::sketch::Sketch),
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -63,6 +67,9 @@ pub struct Model {
     /// rather than in the browser; see `ccosel_abi::view3d::Render`.
     pub triangles: u32,
     pub faces: u32,
+    /// The faces the last step made: a sketch's profiles, or a drawn shape. What Pad and
+    /// Pocket push and pull.
+    pub new_faces: Vec<u32>,
     pub solids: u32,
     /// Cubic millimetres, rounded. For the status line: an app shows it without formatting a
     /// float.

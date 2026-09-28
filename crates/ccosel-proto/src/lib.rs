@@ -20,6 +20,7 @@ pub mod fs;
 pub mod info;
 pub mod scene2d;
 pub mod scratch;
+pub mod sketch;
 
 use serde::{Deserialize, Serialize};
 

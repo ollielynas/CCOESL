@@ -856,6 +856,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "ccosel-sketch"
+version = "0.1.0"
+dependencies = [
+ "ccosel-proto",
+]
+
+[[package]]
 name = "ccosel-transport"
 version = "0.1.0"
 dependencies = [

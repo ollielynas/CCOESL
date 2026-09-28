@@ -8,6 +8,7 @@ members = [
     "crates/ccosel-server",
     "crates/ccosel-transport",
     "crates/ccosel-view3d",
+    "crates/ccosel-sketch",
     "crates/ccosel-sdk",
     "crates/ccosel-host",
     "crates/ccosel-host-wasmtime",
@@ -37,6 +38,7 @@ ccosel-host = { path = "crates/ccosel-host" }
 ccosel-cas = { path = "crates/ccosel-cas" }
 ccosel-transport = { path = "crates/ccosel-transport" }
 ccosel-view3d = { path = "crates/ccosel-view3d" }
+ccosel-sketch = { path = "crates/ccosel-sketch" }
 
 egui = "0.36"
 eframe = "0.36"
