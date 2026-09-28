@@ -18,6 +18,9 @@ pub enum ScopeKind {
     /// Left to right, wrapping onto a new line when the row is full, with no gap between
     /// children: consecutive [`TextStyle`] runs read as one paragraph.
     Wrapped = 4,
+    /// A fixed-width column followed by a vertical rule. Meant as the first child of a
+    /// top-aligned horizontal scope, with the main content as the second.
+    Sidebar = 5,
 }
 
 impl ScopeKind {
@@ -28,6 +31,7 @@ impl ScopeKind {
             2 => Some(Self::Vertical),
             3 => Some(Self::Frame),
             4 => Some(Self::Wrapped),
+            5 => Some(Self::Sidebar),
             _ => None,
         }
     }

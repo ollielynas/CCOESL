@@ -169,6 +169,20 @@ impl<'a> Ui<'a> {
         self.scope(ScopeKind::Wrapped, Align::Min, add)
     }
 
+    /// A sidebar beside the main content: `side` fills a fixed-width column on the left, `main`
+    /// the rest. Both are top-aligned, so a short sidebar does not float to the middle of a tall
+    /// page.
+    pub fn sidebar<R>(
+        &mut self,
+        side: impl FnOnce(&mut Ui<'_>),
+        main: impl FnOnce(&mut Ui<'_>) -> R,
+    ) -> R {
+        self.scope(ScopeKind::Horizontal, Align::Min, |ui| {
+            ui.scope(ScopeKind::Sidebar, Align::Min, side);
+            ui.scope(ScopeKind::Vertical, Align::Min, main)
+        })
+    }
+
     /// A visually framed group.
     pub fn group<R>(&mut self, add: impl FnOnce(&mut Ui<'_>) -> R) -> R {
         self.scope(ScopeKind::Frame, Align::Min, add)

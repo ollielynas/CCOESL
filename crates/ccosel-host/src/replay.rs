@@ -480,6 +480,17 @@ impl Cx<'_> {
                             (ScopeKind::Group, _) => {
                                 ui.scope(|ui| self.render(ui, cmds, closes, inner.clone()));
                             }
+                            (ScopeKind::Sidebar, _) => {
+                                // A fixed-width column with a rule after it. Its width does not
+                                // follow its content, so the main column beside it stays put as
+                                // the guest opens folders with longer names.
+                                let width = (ui.available_width() * 0.3).clamp(160.0, 240.0);
+                                ui.vertical(|ui| {
+                                    ui.set_width(width);
+                                    self.render(ui, cmds, closes, inner.clone())
+                                });
+                                ui.separator();
+                            }
                             (ScopeKind::Wrapped, _) => {
                                 ui.horizontal_wrapped(|ui| {
                                     // Runs of styled text carry their own spaces, so the
@@ -535,10 +546,10 @@ fn rich_text(ui: &egui::Ui, text: &str, style: TextStyle) -> egui::RichText {
             .text_styles
             .get(&egui::TextStyle::Body)
             .map_or(14.0, |f| f.size);
-        rich = rich.size(body * scale).strong();
+        rich = rich.size(body * scale).color(strong_color(ui.visuals()));
     }
     if style.contains(TextStyle::STRONG) {
-        rich = rich.strong();
+        rich = rich.color(strong_color(ui.visuals()));
     }
     if style.contains(TextStyle::ITALIC) {
         rich = rich.italics();
@@ -553,6 +564,22 @@ fn rich_text(ui: &egui::Ui, text: &str, style: TextStyle) -> egui::RichText {
         rich = rich.weak();
     }
     rich
+}
+
+/// The colour for headings and bold text.
+///
+/// Not `RichText::strong`: egui takes that from the *active* widget's text colour, which the
+/// shell's theme sets to white so pressed accent buttons stay readable. In light mode that
+/// made every heading white on white. This takes the theme's body text colour and moves it
+/// halfway to full contrast instead, so strong text stands out in either mode.
+pub(crate) fn strong_color(visuals: &egui::Visuals) -> egui::Color32 {
+    let body = visuals.text_color();
+    let extreme = if visuals.dark_mode {
+        egui::Color32::WHITE
+    } else {
+        egui::Color32::BLACK
+    };
+    body.lerp_to_gamma(extreme, 0.5)
 }
 
 fn to_record(local_id: u64, r: &egui::Response) -> RespRecord {
@@ -639,7 +666,28 @@ fn paint_plot(ui: &egui::Ui, rect: egui::Rect, samples: &[u8]) {
 
 #[cfg(test)]
 mod tests {
-    use super::diff_range;
+    use super::{diff_range, strong_color};
+
+    #[test]
+    fn strong_text_is_never_the_white_of_a_pressed_button() {
+        // The shell's theme, reduced to the part that caused this: white text on active
+        // widgets. Headings and bold text were drawn in it, white on a light window.
+        let mut light = egui::Visuals::light();
+        light.widgets.active.fg_stroke.color = egui::Color32::WHITE;
+        let c = strong_color(&light);
+        assert!(
+            c.r() < 80 && c.g() < 80 && c.b() < 80,
+            "dark on light: {c:?}"
+        );
+
+        let mut dark = egui::Visuals::dark();
+        dark.widgets.active.fg_stroke.color = egui::Color32::BLACK;
+        let c = strong_color(&dark);
+        assert!(
+            c.r() > 180 && c.g() > 180 && c.b() > 180,
+            "light on dark: {c:?}"
+        );
+    }
 
     #[test]
     fn diff_range_trims_the_common_ends() {

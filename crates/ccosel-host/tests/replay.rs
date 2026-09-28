@@ -531,3 +531,49 @@ fn styled_text_and_wrapped_rows_render_and_links_are_clickable() {
     let recs = frame(&ctx, &mut r, &buf, click_at(centre(&link))).unwrap();
     assert!(find(&recs, 54).clicked());
 }
+
+#[test]
+fn a_sidebar_is_a_fixed_column_beside_top_aligned_content() {
+    let ctx = egui::Context::default();
+    let mut r = Replayer::new();
+    let buf = encode(&[
+        Cmd::BeginScope {
+            id: 60,
+            layout: Layout::new(ScopeKind::Horizontal, Align::Min),
+        },
+        Cmd::BeginScope {
+            id: 61,
+            layout: Layout::new(ScopeKind::Sidebar, Align::Min),
+        },
+        Cmd::Button { id: 62, text: "a" },
+        Cmd::EndScope { id: 61 },
+        Cmd::BeginScope {
+            id: 63,
+            layout: Layout::new(ScopeKind::Vertical, Align::Min),
+        },
+        Cmd::Label {
+            id: 64,
+            text: "one",
+        },
+        Cmd::Label {
+            id: 65,
+            text: "two",
+        },
+        Cmd::Label {
+            id: 66,
+            text: "three",
+        },
+        Cmd::EndScope { id: 63 },
+        Cmd::EndScope { id: 60 },
+    ]);
+    let recs = frame(&ctx, &mut r, &buf, raw_input()).unwrap();
+    let (side, main) = (find(&recs, 62), find(&recs, 64));
+    // 30% of 800, clamped to at most 240: the main column starts past it, not beside "a".
+    assert!(
+        main.rect[0] >= side.rect[0] + 240.0,
+        "{:?} {:?}",
+        side.rect,
+        main.rect
+    );
+    assert_eq!(side.rect[1], main.rect[1], "both start at the top");
+}
