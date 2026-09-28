@@ -225,6 +225,39 @@ the previous frame left standing.
 Tooltips are resolved in a pre-pass and attached on the way past, which is why they cost
 nothing despite responses being a frame stale.
 
+## 3D and CAD
+
+The Modeller is SketchUp-style push/pull modelling with FreeCAD doing the geometry. The
+command-stream rule holds all the way down: **the app never touches geometry or a camera.**
+
+| Owner | Holds |
+|---|---|
+| App (`apps/modeller`) | The model as a list of steps (`Vec<CadOp>`, a few bytes each), the current tool |
+| Shell (`Viewport3d`, `ccosel-host/src/viewport.rs`) | The mesh, the camera, hover, snapping, the rubber band, the live push/pull |
+| Server (`cad_api`, `cad/worker.py`) | FreeCAD, rebuild jobs, meshes stored by BLAKE3 hash |
+
+The app sends its step list as a `Regenerate` job (polled like `Compile`) and gets back a mesh
+URL, `/cad/mesh/<hash>`, immutable. The shell fetches the mesh and does everything that
+follows the pointer at display rate, with no network: orbit, zoom, SketchUp's inference
+snapping, the extrusion during a drag. The app hears only finished gestures (`VIEWPORT`
+events: "clicked here", "pushed face 3 by 40 mm") and turns each into a step. Undo is popping
+a step; going back to a model already seen costs no download.
+
+**One renderer, two places.** `ccosel-view3d` turns mesh + camera into flat triangles and
+visible edges (`Scene2D`), drawn with egui's painter, with no GPU code. The shell runs it
+itself for ordinary models; for a model too heavy for the browser (`Render::Auto`, past
+`AUTO_SERVER_TRIANGLES`, or when the app asks) the server runs the same function at
+`POST /cad/render` and the shell draws the frame it sends. Picking and snapping stay in the
+shell either way, so a click never waits on the network. Faces are ordered by the painter's
+algorithm: exact for one convex solid and good for the boxy shapes push/pull makes, but two
+overlapping non-convex parts can occasionally draw in the wrong order. Edges are cut against a
+software depth buffer instead, so hidden edges are hidden exactly.
+
+FreeCAD runs as one long-lived worker process (`freecadcmd`, found on `PATH` or named by
+`CCOSEL_FREECADCMD`) that caches every step prefix it has built. It is killed and restarted if
+it hangs or dies. Exports are written by the worker to a server scratch file and copied into
+the jail by the server, under the same checks as `WriteFile`.
+
 ## Known limitation: building is running untrusted code
 
 `Compile` runs `cargo build` on whatever project is in the jail. Cargo runs that project's

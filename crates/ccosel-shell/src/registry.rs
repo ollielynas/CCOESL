@@ -53,6 +53,14 @@ pub fn catalog() -> Vec<AppEntry> {
             default_size: [480.0, 420.0],
         },
         AppEntry {
+            id: "modeller",
+            name: "Modeller",
+            icon: egui_phosphor::regular::CUBE,
+            color: egui::Color32::from_rgb(0x0e, 0xa5, 0xe9),
+            url: "./dist/modeller.wasm",
+            default_size: [760.0, 560.0],
+        },
+        AppEntry {
             id: "account",
             name: "Account",
             icon: egui_phosphor::regular::USER_CIRCLE,

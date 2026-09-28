@@ -107,9 +107,9 @@ impl<I: AppInstance> AppWindow<I> {
     fn apply_view_deliveries(&mut self) {
         for d in self.view_inbox.borrow_mut().drain(..) {
             match d {
-                ViewDelivery::Mesh(url, bytes) => {
-                    self.replayer.mesh_done(&url, bytes.as_deref().map_err(Clone::clone))
-                }
+                ViewDelivery::Mesh(url, bytes) => self
+                    .replayer
+                    .mesh_done(&url, bytes.as_deref().map_err(Clone::clone)),
                 ViewDelivery::Frame(key, bytes) => self
                     .replayer
                     .render_done(key, bytes.as_deref().map_err(Clone::clone)),
