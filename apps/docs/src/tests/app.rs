@@ -495,3 +495,42 @@ fn a_failed_listing_can_be_retried_and_truncation_is_shown() {
     h.frame();
     assert!(h.has_text("(some entries are not shown)"));
 }
+
+#[test]
+fn unsaved_changes_cannot_be_lost_by_leaving_the_editor() {
+    let mut h = started(true);
+    open_doc(&mut h, "📄 README", "saved", true);
+    h.click("✏ Edit");
+    h.frame();
+    h.frame();
+    assert!(!h.has_button("🗑 Discard changes"));
+    h.type_text(1, "edited");
+    h.frame();
+    h.frame();
+
+    // Done, Back and the places all stay put, and say why.
+    for button in ["✔ Done", "← Back", "🗂 Shared"] {
+        h.click(button);
+        h.frame();
+        assert_eq!(h.app.view, View::Edit("/Docs/README.md".into()), "{button}");
+        assert_eq!(
+            h.app.status.as_deref(),
+            Some("You have unsaved changes. Save them, or discard them to leave.")
+        );
+    }
+    assert_eq!(h.app.editor.as_str(), "edited");
+
+    // Discard goes back to reading the saved document.
+    h.click("🗑 Discard changes");
+    h.frame();
+    assert_eq!(h.app.view, View::Read("/Docs/README.md".into()));
+    assert!(h.app.status.is_none());
+    h.frame();
+    assert!(h.has_text("saved"));
+
+    // Editing again starts from the saved text, not the discarded edit.
+    h.click("✏ Edit");
+    h.frame();
+    h.frame();
+    assert_eq!(h.app.editor.as_str(), "saved");
+}

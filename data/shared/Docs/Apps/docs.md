@@ -33,7 +33,8 @@ document but not change it.
 - The buttons above the editor add common Markdown to the end of the document: a heading,
   **bold**, *italic*, a link, lists, a task and a code block.
 - **● unsaved** means you have changes that are not saved yet. Press **💾 Save** to keep them,
-  then **✔ Done** to go back to reading.
+  then **✔ Done** to go back to reading. Docs will not let you leave with unsaved changes;
+  press **🗑 Discard changes** if you do not want them.
 
 To make a new document, open the folder it should go in, type a name next to **Name** and
 press **📄 New document**. **📁 New folder** makes a folder the same way. If those buttons are

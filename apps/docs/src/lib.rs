@@ -96,6 +96,8 @@ struct Actions {
     edit: bool,
     save: bool,
     close_editor: bool,
+    /// Leave the editor even though there are unsaved changes.
+    discard: bool,
     new_doc: bool,
     new_folder: bool,
     insert: Option<&'static str>,
@@ -356,7 +358,12 @@ impl Docs {
             if ui.button("✔ Done").clicked() {
                 act.close_editor = true;
             }
-            ui.tooltip("Back to reading. Save first to keep your changes.");
+            ui.tooltip("Back to reading");
+            ui.push_id("discard", |ui| {
+                if dirty && ui.button("🗑 Discard changes").clicked() {
+                    act.discard = true;
+                }
+            });
             let label = if self.preview {
                 "Hide preview"
             } else {
@@ -507,8 +514,27 @@ impl Docs {
         }
     }
 
-    fn apply(&mut self, ui: &mut Ui<'_>, act: Actions) {
+    fn apply(&mut self, ui: &mut Ui<'_>, mut act: Actions) {
         let rpc = ui.rpc();
+        if act.discard
+            && let View::Edit(path) = &self.view
+        {
+            // Back to reading the document as it was saved.
+            let path = path.clone();
+            self.view = View::Read(path);
+            self.editor_loaded = false;
+            self.status = None;
+            return;
+        }
+        // Leaving the editor by any route would lose unsaved changes, so it has to be asked for
+        // with Save or Discard instead.
+        if (act.back || act.go.is_some() || act.close_editor) && self.dirty() {
+            act.back = false;
+            act.go = None;
+            act.close_editor = false;
+            self.status =
+                Some("You have unsaved changes. Save them, or discard them to leave.".to_owned());
+        }
         if act.back {
             self.back();
         }
