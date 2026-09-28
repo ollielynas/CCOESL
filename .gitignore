@@ -8,5 +8,7 @@
 /data/keycloak-admin-password
 # Per-machine Claude Code permissions; the shared settings.json is committed.
 /.claude/settings.local.json
+# Users' private folders are created by the server on first use; they are data, not source.
+/data/shared/home/
 # Temporary project uploads the server makes in the jail it serves; deleted on their own.
 /data/shared/.scratch/

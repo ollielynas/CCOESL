@@ -1,0 +1,3 @@
+# The documentation is written by the developers, in the repository, and is read-only for
+# everyone using CCOSEL. See `access.rs` in ccosel-server for the format.
+read: *

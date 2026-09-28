@@ -8,6 +8,7 @@
 use std::ffi::OsString;
 use std::path::{Component, Path, PathBuf};
 
+use axum::Extension;
 use axum::body::Bytes;
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
@@ -15,6 +16,7 @@ use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 
 use crate::AppState;
+use crate::access::{self, User};
 
 /// Caps a single upload well above what a source folder should need, but not unbounded: the
 /// body is buffered in full before the handler runs, so leaving it uncapped would let one
@@ -33,6 +35,7 @@ pub struct UploadParams {
 
 pub async fn upload(
     State(state): State<AppState>,
+    user: Option<Extension<User>>,
     Query(params): Query<UploadParams>,
     body: Bytes,
 ) -> Response {
@@ -41,12 +44,28 @@ pub async fn upload(
     }
     state.scratch.touch(&params.path);
 
+    // The same permissions as every other route: the new file, and every folder created on
+    // the way to it, gets the rules of the folder it lands in.
+    let user = crate::caller(user.as_ref().map(|u| &u.0));
+    let root = state.jail.root();
+    let Ok(mut parts) = access::components(&params.path) else {
+        return StatusCode::FORBIDDEN.into_response();
+    };
+    parts.push(params.filename.clone());
+    if params.filename == access::ACCESS_FILE || !access::perms(root, &parts, user).write {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+
     let dir = match resolve_dir_create(state.jail.root(), &params.path).await {
         Ok(dir) => dir,
         Err(status) => return status.into_response(),
     };
 
     let file_path = dir.join(&params.filename);
+    // Checked again where the folder really is, in case a symlink led somewhere else.
+    if !access::perms_of_real(root, &file_path, user).is_some_and(|p| p.write) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
 
     if let Err(e) = tokio::fs::write(&file_path, &body).await {
         eprintln!("upload: write {file_path:?}: {e}");

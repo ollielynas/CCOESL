@@ -15,6 +15,17 @@ pub enum ScopeKind {
     Vertical = 2,
     /// Visually grouped (framed) scope.
     Frame = 3,
+    /// Left to right, wrapping onto a new line when the row is full, with no gap between
+    /// children: consecutive [`TextStyle`] runs read as one paragraph.
+    Wrapped = 4,
+    /// A fixed-width column followed by a vertical rule. Meant as the first child of a
+    /// top-aligned horizontal scope, with the main content as the second.
+    Sidebar = 5,
+    /// Children indented by one step of the shell's indent width, for nested lists and trees.
+    Indent = 6,
+    /// A region that scrolls on its own, filling the rest of the window's height. Two side by
+    /// side (a sidebar and a page) scroll independently.
+    Scroll = 7,
 }
 
 impl ScopeKind {
@@ -24,8 +35,63 @@ impl ScopeKind {
             1 => Some(Self::Horizontal),
             2 => Some(Self::Vertical),
             3 => Some(Self::Frame),
+            4 => Some(Self::Wrapped),
+            5 => Some(Self::Sidebar),
+            6 => Some(Self::Indent),
+            7 => Some(Self::Scroll),
             _ => None,
         }
+    }
+}
+
+/// How a `Styled` run of text looks. A bit set, so styles combine: a bold link inside a
+/// heading is `heading(2) | STRONG | LINK`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TextStyle(pub u8);
+
+impl TextStyle {
+    pub const PLAIN: Self = Self(0);
+    /// Bits 0-1: heading level, 0 (body text) to 3.
+    const HEADING_MASK: u8 = 0b11;
+    pub const STRONG: Self = Self(1 << 2);
+    pub const ITALIC: Self = Self(1 << 3);
+    /// Monospace, on a faint background.
+    pub const CODE: Self = Self(1 << 4);
+    pub const STRIKE: Self = Self(1 << 5);
+    /// De-emphasised colour, for captions and quotes.
+    pub const WEAK: Self = Self(1 << 6);
+    /// Drawn as a hyperlink and clickable. What a click *does* is the app's business.
+    pub const LINK: Self = Self(1 << 7);
+
+    /// A heading style, level clamped to `1..=3`.
+    pub const fn heading(level: u8) -> Self {
+        let level = if level == 0 {
+            1
+        } else if level > 3 {
+            3
+        } else {
+            level
+        };
+        Self(level)
+    }
+
+    pub const fn heading_level(self) -> u8 {
+        self.0 & Self::HEADING_MASK
+    }
+
+    pub const fn contains(self, other: Self) -> bool {
+        self.0 & other.0 == other.0
+    }
+
+    pub const fn with(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+}
+
+impl core::ops::BitOr for TextStyle {
+    type Output = Self;
+    fn bitor(self, rhs: Self) -> Self {
+        self.with(rhs)
     }
 }
 

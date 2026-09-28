@@ -6,7 +6,7 @@
 //! frame instead.
 
 use crate::MAX_SCOPE_DEPTH;
-use crate::geom::{Align, Layout, ScopeKind, Vec2};
+use crate::geom::{Align, Layout, ScopeKind, TextStyle, Vec2};
 use crate::opcode::OpCode;
 
 /// One decoded command, borrowing its strings from the command buffer.
@@ -83,6 +83,22 @@ pub enum Cmd<'a> {
         /// Oldest first, each `0` (bottom) to `255` (top). The guest owns the scale, so the
         /// shell never has to guess a range, and the stream stays one byte per point.
         samples: &'a [u8],
+    },
+    /// A multi-line counterpart of `TextEditSingle`, with the same fields and protocol.
+    TextEditMulti {
+        id: u64,
+        version: u32,
+        set: Option<&'a str>,
+    },
+    Styled {
+        id: u64,
+        text: &'a str,
+        style: TextStyle,
+    },
+    Selectable {
+        id: u64,
+        text: &'a str,
+        selected: bool,
     },
 }
 
@@ -184,6 +200,17 @@ impl<'a> Decoder<'a> {
         Ok(Layout { kind, cross_align })
     }
 
+    fn text_edit(&mut self) -> Result<(u64, u32, Option<&'a str>), DecodeError> {
+        let id = self.u64()?;
+        let version = self.u32()?;
+        let set = match self.u8()? {
+            0 => None,
+            1 => Some(self.str()?),
+            _ => return Err(DecodeError::InvalidEnum),
+        };
+        Ok((id, version, set))
+    }
+
     fn next_cmd(&mut self) -> Result<Cmd<'a>, DecodeError> {
         let raw = self.u8()?;
         let op = OpCode::from_u8(raw).ok_or(DecodeError::UnknownOpcode(raw))?;
@@ -210,15 +237,27 @@ impl<'a> Decoder<'a> {
             },
             OpCode::EndWindow => Cmd::EndWindow { id: self.u64()? },
             OpCode::TextEditSingle => {
-                let id = self.u64()?;
-                let version = self.u32()?;
-                let set = match self.u8()? {
-                    0 => None,
-                    1 => Some(self.str()?),
-                    _ => return Err(DecodeError::InvalidEnum),
-                };
+                let (id, version, set) = self.text_edit()?;
                 Cmd::TextEditSingle { id, version, set }
             }
+            OpCode::TextEditMulti => {
+                let (id, version, set) = self.text_edit()?;
+                Cmd::TextEditMulti { id, version, set }
+            }
+            OpCode::Styled => Cmd::Styled {
+                id: self.u64()?,
+                text: self.str()?,
+                style: TextStyle(self.u8()?),
+            },
+            OpCode::Selectable => Cmd::Selectable {
+                id: self.u64()?,
+                text: self.str()?,
+                selected: match self.u8()? {
+                    0 => false,
+                    1 => true,
+                    _ => return Err(DecodeError::InvalidEnum),
+                },
+            },
             OpCode::Image => {
                 let id = self.u64()?;
                 let src = self.str()?;

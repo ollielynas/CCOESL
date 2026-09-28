@@ -1,7 +1,18 @@
 //! Per-app recording state: the command buffer being built, and last frame's responses.
 
+use alloc::string::String;
 use alloc::vec::Vec;
+use ccosel_abi::event::TextDelta;
 use ccosel_abi::{Cmd, Encoder, RespRecord};
+
+/// A text edit the shell reported, waiting for the app to draw that field again.
+pub(crate) struct PendingDelta {
+    pub id: u64,
+    pub version: u32,
+    pub start: usize,
+    pub end: usize,
+    pub inserted: String,
+}
 
 /// Owns the command buffer and the response table across frames.
 ///
@@ -11,6 +22,9 @@ pub struct Recorder {
     enc: Encoder,
     /// Last frame's responses, sorted by `local_id` for binary search.
     resp: Vec<RespRecord>,
+    /// Text edits from the shell, applied when the app next draws the field they belong to.
+    /// The app owns its `Text`s, so there is nowhere to apply them before that.
+    deltas: Vec<PendingDelta>,
 }
 
 impl Default for Recorder {
@@ -24,7 +38,31 @@ impl Recorder {
         Self {
             enc: Encoder::new(),
             resp: Vec::new(),
+            deltas: Vec::new(),
         }
+    }
+
+    /// Hold a text edit from the shell until its field is drawn.
+    pub(crate) fn queue_text_delta(&mut self, d: &TextDelta<'_>) {
+        self.deltas.push(PendingDelta {
+            id: d.id,
+            version: d.version,
+            start: d.start as usize,
+            end: d.end as usize,
+            inserted: String::from(d.inserted),
+        });
+    }
+
+    /// Remove and return the edits waiting for field `id`, oldest first.
+    pub(crate) fn take_text_deltas(&mut self, id: u64) -> Vec<PendingDelta> {
+        if self.deltas.is_empty() {
+            return Vec::new();
+        }
+        let (mine, rest) = core::mem::take(&mut self.deltas)
+            .into_iter()
+            .partition(|d| d.id == id);
+        self.deltas = rest;
+        mine
     }
 
     /// Install the response table the host wrote for the previous frame.

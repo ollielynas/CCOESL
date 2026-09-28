@@ -4,8 +4,8 @@
 //! "correct buffers decode correctly" but "no buffer, however malformed, panics".
 
 use ccosel_abi::{
-    Align, Cmd, DecodeError, Decoder, Encoder, Layout, MAX_SCOPE_DEPTH, OpCode, ScopeKind, Vec2,
-    id, validate,
+    Align, Cmd, DecodeError, Decoder, Encoder, Layout, MAX_SCOPE_DEPTH, OpCode, ScopeKind,
+    TextStyle, Vec2, id, validate,
 };
 
 fn encode(cmds: &[Cmd<'_>]) -> Vec<u8> {
@@ -75,6 +75,40 @@ fn sample() -> Vec<Cmd<'static>> {
             size: Vec2::new(0.0, 48.0),
             samples: &[0, 64, 255, 128],
         },
+        Cmd::BeginScope {
+            id: id::hash_str(win, "para"),
+            layout: Layout::new(ScopeKind::Wrapped, Align::Min),
+        },
+        Cmd::Styled {
+            id: id::hash_str(win, "h1"),
+            text: "Heading",
+            style: TextStyle::heading(1) | TextStyle::STRONG,
+        },
+        Cmd::Styled {
+            id: id::hash_str(win, "link"),
+            text: "a link",
+            style: TextStyle::LINK,
+        },
+        Cmd::EndScope {
+            id: id::hash_str(win, "para"),
+        },
+        Cmd::Selectable {
+            id: id::hash_str(win, "row"),
+            text: "notes.md",
+            selected: true,
+        },
+        Cmd::BeginScope {
+            id: id::hash_str(win, "nested"),
+            layout: Layout::new(ScopeKind::Indent, Align::Min),
+        },
+        Cmd::EndScope {
+            id: id::hash_str(win, "nested"),
+        },
+        Cmd::TextEditMulti {
+            id: id::hash_str(win, "body"),
+            version: 3,
+            set: Some("# Title\n\nline two"),
+        },
         Cmd::EndWindow { id: win },
     ]
 }
@@ -99,6 +133,31 @@ fn text_edit_omits_the_buffer_by_default() {
         set: None,
     }]);
     assert_eq!(without.len(), 1 + 8 + 4 + 1);
+}
+
+#[test]
+fn multiline_text_edit_keeps_its_own_opcode() {
+    let buf = encode(&[Cmd::TextEditMulti {
+        id: 9,
+        version: 1,
+        set: None,
+    }]);
+    assert_eq!(buf[0], OpCode::TextEditMulti as u8);
+    assert_eq!(buf.len(), 1 + 8 + 4 + 1, "same cost as a single-line field");
+}
+
+#[test]
+fn text_style_bits_compose() {
+    let s = TextStyle::heading(2) | TextStyle::LINK | TextStyle::ITALIC;
+    assert_eq!(s.heading_level(), 2);
+    assert!(s.contains(TextStyle::LINK));
+    assert!(s.contains(TextStyle::ITALIC));
+    assert!(!s.contains(TextStyle::CODE));
+    assert_eq!(TextStyle::PLAIN.heading_level(), 0);
+    // Out-of-range levels clamp rather than spilling into the flag bits.
+    assert_eq!(TextStyle::heading(9).heading_level(), 3);
+    assert_eq!(TextStyle::heading(0).heading_level(), 1);
+    assert!(!TextStyle::heading(3).contains(TextStyle::STRONG));
 }
 
 #[test]

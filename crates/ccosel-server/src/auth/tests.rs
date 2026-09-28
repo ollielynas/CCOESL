@@ -738,3 +738,49 @@ fn a_proxied_keycloak_sends_browsers_to_same_origin_paths() {
     );
     assert_eq!(config.client_secret, None);
 }
+
+#[tokio::test]
+async fn a_signed_in_session_is_the_user_permissions_are_checked_for() {
+    let provider = spawn_mock_provider("alice", false).await;
+    let addr = spawn_app(AuthState::new(Some(oauth_config_for(&provider)))).await;
+    let client = no_redirect_client();
+    let cookie = signed_in_cookie(&client, addr).await;
+
+    let args = postcard::to_allocvec(&ccosel_proto::fs::PathReq {
+        path: "/home/alice",
+    })
+    .unwrap();
+    let batch = vec![ccosel_proto::WireRequest {
+        seq: 1,
+        method: ccosel_proto::Method::Access as u16,
+        args: &args,
+    }];
+    let bytes = client
+        .post(format!("http://{addr}/rpc"))
+        .header(reqwest::header::COOKIE, &cookie)
+        .body(postcard::to_allocvec(&batch).unwrap())
+        .send()
+        .await
+        .unwrap()
+        .bytes()
+        .await
+        .unwrap();
+    let replies: Vec<ccosel_proto::WireReply> = postcard::from_bytes(&bytes).unwrap();
+    let ccosel_proto::WireResult::Ok(payload) = replies[0].result else {
+        panic!("Access failed");
+    };
+    let access: ccosel_proto::fs::AccessReply = postcard::from_bytes(payload).unwrap();
+    assert_eq!(access.user.as_deref(), Some("alice"));
+    assert!(access.read && access.write, "alice's own folder is hers");
+
+    // And /files sees the same user: alice's folder was created for her on that call, and a
+    // file in it downloads with her cookie.
+    let files = client
+        .get(format!("http://{addr}/files/home/alice"))
+        .header(reqwest::header::COOKIE, &cookie)
+        .send()
+        .await
+        .unwrap();
+    // A folder is not a file, but it is *hers*: not found, rather than forbidden.
+    assert_eq!(files.status(), reqwest::StatusCode::NOT_FOUND);
+}
