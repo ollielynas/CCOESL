@@ -18,6 +18,7 @@ mod fetch;
 mod fullscreen;
 mod http_wire;
 mod registry;
+mod settings;
 mod theme;
 mod upload;
 

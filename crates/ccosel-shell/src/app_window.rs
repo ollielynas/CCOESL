@@ -167,7 +167,10 @@ impl<I: AppInstance> AppWindow<I> {
         self.instance.take_cancels()
     }
 
-    pub fn ui(&mut self, ui: &mut egui::Ui) {
+    /// Run the app for one frame. `flags` are the environment flags it is handed
+    /// (`ccosel_abi::frame::input_flags`), which the desktop derives from the theme and the
+    /// user's settings.
+    pub fn ui(&mut self, ui: &mut egui::Ui, flags: u32) {
         let screen = ui.ctx().viewport_rect();
         let args = FrameArgs {
             frame_index: self.frame_index,
@@ -175,11 +178,7 @@ impl<I: AppInstance> AppWindow<I> {
             dt_ms: ui.ctx().input(|i| i.stable_dt) * 1000.0,
             pixels_per_point: ui.ctx().pixels_per_point(),
             screen_size: [screen.width(), screen.height()],
-            flags: if ui.visuals().dark_mode {
-                ccosel_abi::frame::input_flags::DARK_MODE
-            } else {
-                0
-            },
+            flags,
             responses: &self.responses,
             events: &[],
         };

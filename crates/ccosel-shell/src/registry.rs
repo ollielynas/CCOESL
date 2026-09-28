@@ -68,5 +68,13 @@ pub fn catalog() -> Vec<AppEntry> {
             url: "./dist/docs.wasm",
             default_size: [560.0, 560.0],
         },
+        AppEntry {
+            id: "settings",
+            name: "Settings",
+            icon: egui_phosphor::regular::GEAR,
+            color: egui::Color32::from_rgb(0x64, 0x74, 0x8b),
+            url: "./dist/settings.wasm",
+            default_size: [440.0, 360.0],
+        },
     ]
 }

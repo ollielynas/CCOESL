@@ -10,6 +10,7 @@ use ccosel_proto::fs::{
     Access, AccessReply, CreateDir, DirListing, FileText, ListDir, ListDirReq, PathReq, ReadFile,
     Search, SearchReply, SearchReq, WriteFile, WriteFileReq,
 };
+use ccosel_proto::settings::{GetSettings, ListApps, SetSettings, Settings, ThemeChoice};
 use ccosel_proto::{Rpc, WireReply, WireRequest, WireResult, server_error};
 use ccosel_server::fs_api::Jail;
 
@@ -456,4 +457,72 @@ async fn search_does_not_follow_a_symlink_back_to_its_own_folder() {
     .unwrap();
     assert_eq!(found.hits.len(), 1);
     assert!(!found.truncated);
+}
+
+#[tokio::test]
+async fn settings_are_kept_per_user() {
+    let s = site().await;
+    let dark = Settings {
+        theme: ThemeChoice::Dark,
+        pinned: vec!["clock".to_owned()],
+        ..Settings::default()
+    };
+    call::<SetSettings>(s.alice, &dark).await.unwrap();
+    assert_eq!(call::<GetSettings>(s.alice, &()).await, Ok(dark));
+    assert_eq!(
+        call::<GetSettings>(s.bob, &()).await,
+        Ok(Settings::default())
+    );
+}
+
+#[tokio::test]
+async fn settings_need_someone_signed_in() {
+    let s = site().await;
+    assert_eq!(
+        call::<GetSettings>(s.anon, &()).await,
+        Err(server_error::NO_USER)
+    );
+    assert_eq!(
+        call::<SetSettings>(s.anon, &Settings::default()).await,
+        Err(server_error::NO_USER)
+    );
+}
+
+/// The settings file lives in the user's own folder, but only the settings methods reach it:
+/// Files can't show it, read it, overwrite it or download it.
+#[tokio::test]
+async fn the_settings_file_is_invisible_to_the_file_api() {
+    let s = site().await;
+    call::<SetSettings>(s.alice, &Settings::default())
+        .await
+        .unwrap();
+    assert!(s.root.join("home/alice/.settings.json").is_file());
+
+    assert!(
+        !names(s.alice, "/home/alice")
+            .await
+            .unwrap()
+            .contains(&".settings.json".to_owned())
+    );
+    assert_eq!(
+        read(s.alice, "/home/alice/.settings.json")
+            .await
+            .map(|t| t.text),
+        Err(server_error::DENIED)
+    );
+    assert_eq!(
+        write(s.alice, "/home/alice/.settings.json", "{}").await,
+        Err(server_error::DENIED)
+    );
+    let (status, _) = request(s.alice, "GET", "/files/home/alice/.settings.json", b"").await;
+    assert_ne!(status, 200);
+}
+
+#[tokio::test]
+async fn the_server_leaves_listing_apps_to_the_shell() {
+    let s = site().await;
+    assert_eq!(
+        call::<ListApps>(s.alice, &()).await,
+        Err(server_error::UNKNOWN_METHOD)
+    );
 }

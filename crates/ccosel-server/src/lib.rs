@@ -11,6 +11,7 @@ pub mod idp;
 pub mod keycloak;
 pub mod rpc;
 pub mod scratch;
+pub mod settings_api;
 pub mod stats;
 pub mod upload_api;
 

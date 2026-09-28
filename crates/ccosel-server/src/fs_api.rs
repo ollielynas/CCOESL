@@ -8,7 +8,7 @@ use ccosel_proto::fs::{
 };
 use ccosel_proto::server_error;
 
-use crate::access::{self, ACCESS_FILE, Perms};
+use crate::access::{self, Perms};
 
 /// A listing is capped so a guest is never handed an unbounded response over a bad link.
 /// `DirListing::truncated` tells the app it happened, so the cap is part of the contract
@@ -213,7 +213,7 @@ impl Jail {
                 let Ok(name) = item.file_name().into_string() else {
                     continue;
                 };
-                if name == ACCESS_FILE {
+                if access::is_reserved(&name) {
                     continue;
                 }
                 let path = if rel.is_empty() {
@@ -286,7 +286,7 @@ impl Jail {
                 // failing the whole listing over one odd file.
                 continue;
             };
-            if name == ACCESS_FILE {
+            if access::is_reserved(&name) {
                 continue;
             }
             // A folder the caller may not open is not shown at all: listing `/home` shows each

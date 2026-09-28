@@ -12,6 +12,7 @@ machine on the network.
 - [Server](Apps/server-dashboard.md): live graphs of how the server is doing
 - [Compiler](Apps/rust-compiler.md): build a Rust project on the server and download the result
 - [Account](Apps/account.md): see who you are signed in as, and sign out
+- [Settings](Apps/settings.md): theme, background, animations and data use, the dock, and switching account
 
 ## Where your files go
 
