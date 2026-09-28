@@ -3,6 +3,7 @@
 //! The decoder consumes guest output, which is untrusted. The bar these tests hold is not
 //! "correct buffers decode correctly" but "no buffer, however malformed, panics".
 
+use ccosel_abi::view3d::{self, Anchor, Extrude, ViewTool, Viewport};
 use ccosel_abi::{
     Align, Cmd, DecodeError, Decoder, Encoder, Layout, MAX_SCOPE_DEPTH, OpCode, ScopeKind,
     TextStyle, Vec2, id, validate,
@@ -109,9 +110,47 @@ fn sample() -> Vec<Cmd<'static>> {
             version: 3,
             set: Some("# Title\n\nline two"),
         },
+        Cmd::Viewport3d {
+            id: id::hash_str(win, "view"),
+            view: Viewport {
+                size: Vec2::new(0.0, 300.0),
+                mesh: "/cad/mesh/abc",
+                tool: ViewTool::Rect,
+                anchor: Some(Anchor {
+                    point: [1.0, 2.0, 0.0],
+                    normal: [0.0, 0.0, 1.0],
+                }),
+                path: PATH,
+                preview: Some(Extrude {
+                    face: 4,
+                    distance: -12.5,
+                }),
+                selected: 2,
+                render: view3d::Render::Server,
+            },
+        },
+        Cmd::Viewport3d {
+            id: id::hash_str(win, "empty view"),
+            view: Viewport {
+                size: Vec2::new(100.0, 100.0),
+                mesh: "",
+                tool: ViewTool::Select,
+                anchor: None,
+                path: &[],
+                preview: None,
+                selected: view3d::NO_FACE,
+                render: view3d::Render::Server,
+            },
+        },
         Cmd::EndWindow { id: win },
     ]
 }
+
+/// Two points, as `view3d::encode_path` lays them out.
+const PATH: &[u8] = &[
+    0, 0, 128, 63, 0, 0, 0, 64, 0, 0, 64, 64, // (1, 2, 3)
+    0, 0, 128, 64, 0, 0, 160, 64, 0, 0, 192, 64, // (4, 5, 6)
+];
 
 #[test]
 fn round_trips() {
@@ -342,4 +381,55 @@ fn plot_claiming_more_samples_than_are_present_is_truncated_not_a_panic() {
     let len_at = buf.len() - 4;
     lying[len_at] = 100;
     assert_eq!(decode(&lying), Err(DecodeError::Truncated));
+}
+
+#[test]
+fn viewport_path_matches_its_encoder() {
+    assert_eq!(
+        view3d::encode_path(&[[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]),
+        PATH
+    );
+}
+
+#[test]
+fn viewport_rejects_a_path_that_is_not_whole_points() {
+    let buf = encode(&[Cmd::Viewport3d {
+        id: 1,
+        view: Viewport {
+            size: Vec2::new(10.0, 10.0),
+            mesh: "",
+            tool: ViewTool::Line,
+            anchor: None,
+            path: &PATH[..13],
+            preview: None,
+            selected: view3d::NO_FACE,
+            render: view3d::Render::Server,
+        },
+    }]);
+    assert_eq!(decode(&buf), Err(DecodeError::InvalidEnum));
+}
+
+#[test]
+fn viewport_rejects_unknown_tools_and_flags() {
+    let good = encode(&[Cmd::Viewport3d {
+        id: 1,
+        view: Viewport {
+            size: Vec2::new(10.0, 10.0),
+            mesh: "",
+            tool: ViewTool::Line,
+            anchor: None,
+            path: &[],
+            preview: None,
+            selected: 0,
+            render: view3d::Render::Server,
+        },
+    }]);
+    // opcode, id (8), size (8), empty mesh (1): the tool byte comes next, then the anchor flag.
+    let tool_at = 1 + 8 + 8 + 1;
+    let mut bad_tool = good.clone();
+    bad_tool[tool_at] = 99;
+    assert_eq!(decode(&bad_tool), Err(DecodeError::InvalidEnum));
+    let mut bad_flag = good;
+    bad_flag[tool_at + 1] = 2;
+    assert_eq!(decode(&bad_flag), Err(DecodeError::InvalidEnum));
 }

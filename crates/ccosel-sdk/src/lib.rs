@@ -33,7 +33,15 @@ pub use ccosel_abi::{Align, Color32, Pos2, Rect, ScopeKind, TextStyle, Vec2};
 pub use recorder::Recorder;
 pub use response::Response;
 pub use rpc::{CallId, Poll, RpcCtx, RpcError};
-pub use ui::{FrameCtx, Text, Ui};
+pub use ui::{FrameCtx, Text, Ui, View3d, ViewResponse};
+
+/// The 3D viewport's vocabulary, re-exported so an app needs no `ccosel-abi` dependency.
+pub mod view3d {
+    pub use ccosel_abi::view3d::{
+        Anchor, Extrude, NO_FACE, Render, Snap, ViewAction, ViewEvent, ViewTool, plane_basis,
+        rect_corners,
+    };
+}
 
 /// Implemented by every CCOSEL app.
 pub trait App {

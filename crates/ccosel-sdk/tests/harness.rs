@@ -282,3 +282,70 @@ fn selectable_rows_are_listed_and_clicked_like_buttons() {
     );
     assert!(h.has_label("nested"));
 }
+
+/// Records every gesture its viewport reports, and shows whatever tool and path a test sets.
+#[derive(Default)]
+struct Modeller {
+    tool: Option<ccosel_sdk::view3d::ViewTool>,
+    path: Vec<[f32; 3]>,
+    seen: Vec<ccosel_sdk::view3d::ViewEvent>,
+}
+
+impl App for Modeller {
+    fn update(&mut self, ui: &mut Ui<'_>) {
+        ui.label("above");
+        let r = ui.viewport3d(&ccosel_sdk::View3d {
+            mesh: "/cad/mesh/1",
+            tool: self.tool.unwrap_or(ccosel_sdk::view3d::ViewTool::Select),
+            path: &self.path,
+            ..Default::default()
+        });
+        self.seen.extend(r.events);
+    }
+}
+
+#[test]
+fn viewport_gestures_arrive_on_the_next_draw_and_only_once() {
+    use ccosel_sdk::view3d::{NO_FACE, Snap, ViewAction, ViewTool};
+
+    let mut h = Harness::new(Modeller::default());
+    h.frame();
+    let shown = h.viewports();
+    assert_eq!(shown.len(), 1);
+    assert_eq!(shown[0].mesh, "/cad/mesh/1");
+    assert_eq!(shown[0].tool, ViewTool::Select);
+    assert_eq!(shown[0].selected, NO_FACE);
+
+    h.view_click(3, [1.0, 2.0, 0.0], [0.0, 0.0, 1.0], Snap::Endpoint);
+    assert!(
+        h.app.seen.is_empty(),
+        "not before the app draws the viewport"
+    );
+    h.frame();
+    assert_eq!(h.app.seen.len(), 1);
+    assert_eq!(h.app.seen[0].action, ViewAction::Click);
+    assert_eq!(h.app.seen[0].face, 3);
+    assert_eq!(h.app.seen[0].snap, Snap::Endpoint);
+
+    h.view_push_pull(3, [0.0, 0.0, 1.0], 40.0);
+    h.frame();
+    h.frame();
+    assert_eq!(h.app.seen.len(), 2, "a gesture is handed over once");
+    assert_eq!(h.app.seen[1].action, ViewAction::PushPull);
+    assert_eq!(h.app.seen[1].distance, 40.0);
+}
+
+#[test]
+fn viewport_carries_the_tool_and_its_path() {
+    use ccosel_sdk::view3d::ViewTool;
+
+    let mut h = Harness::new(Modeller {
+        tool: Some(ViewTool::Line),
+        path: vec![[0.0; 3], [5.0, 0.0, 0.0]],
+        ..Default::default()
+    });
+    h.frame();
+    let shown = &h.viewports()[0];
+    assert_eq!(shown.tool, ViewTool::Line);
+    assert_eq!(shown.path, vec![[0.0; 3], [5.0, 0.0, 0.0]]);
+}

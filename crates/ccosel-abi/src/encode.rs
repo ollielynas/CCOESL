@@ -64,6 +64,12 @@ impl Encoder {
         self.buf.extend_from_slice(&v.to_le_bytes());
     }
 
+    fn vec3(&mut self, v: [f32; 3]) {
+        for c in v {
+            self.f32(c);
+        }
+    }
+
     fn varint(&mut self, mut v: u64) {
         loop {
             let byte = (v & 0x7f) as u8;
@@ -186,6 +192,33 @@ impl Encoder {
                 self.u64(id);
                 self.str(text);
                 self.u8(u8::from(selected));
+            }
+            Cmd::Viewport3d { id, view } => {
+                self.u8(OpCode::Viewport3d as u8);
+                self.u64(id);
+                self.f32(view.size.x);
+                self.f32(view.size.y);
+                self.str(view.mesh);
+                self.u8(view.tool as u8);
+                match view.anchor {
+                    None => self.u8(0),
+                    Some(a) => {
+                        self.u8(1);
+                        self.vec3(a.point);
+                        self.vec3(a.normal);
+                    }
+                }
+                self.bytes(view.path);
+                match view.preview {
+                    None => self.u8(0),
+                    Some(p) => {
+                        self.u8(1);
+                        self.u32(p.face);
+                        self.f32(p.distance);
+                    }
+                }
+                self.u32(view.selected);
+                self.u8(view.render as u8);
             }
         }
     }

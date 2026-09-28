@@ -741,7 +741,10 @@ name = "ccosel-host"
 version = "0.1.0"
 dependencies = [
  "ccosel-abi",
+ "ccosel-proto",
+ "ccosel-view3d",
  "egui",
+ "postcard",
 ]
 
 [[package]]
@@ -843,6 +846,14 @@ dependencies = [
  "ccosel-abi",
  "ccosel-proto",
  "postcard",
+]
+
+[[package]]
+name = "ccosel-view3d"
+version = "0.1.0"
+dependencies = [
+ "ccosel-abi",
+ "ccosel-proto",
 ]
 
 [[package]]

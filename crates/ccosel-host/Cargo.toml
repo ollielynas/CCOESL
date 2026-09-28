@@ -7,4 +7,7 @@ description = "Decodes an app's command stream and replays it into a real egui::
 
 [dependencies]
 ccosel-abi = { workspace = true }
+ccosel-proto = { workspace = true }
+ccosel-view3d = { workspace = true }
 egui = { workspace = true }
+postcard = { workspace = true }

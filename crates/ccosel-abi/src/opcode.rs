@@ -42,6 +42,10 @@ pub enum OpCode {
     Styled = 0x11,
     /// A clickable row that shows whether it is the selected one, like an entry in a file tree.
     Selectable = 0x12,
+    /// A 3D view of a mesh the shell fetches by URL. The shell owns the camera, hover,
+    /// snapping and drag preview; the guest gets finished gestures back as `VIEWPORT` events.
+    /// See `view3d`.
+    Viewport3d = 0x13,
     // 0x40..0x4F reserved for subtree caching (BeginCached / EndCached / CachedRef).
     // Not implemented yet, but the space is reserved so adding it is not an ABI break.
 }
@@ -67,6 +71,7 @@ impl OpCode {
             0x10 => Some(Self::TextEditMulti),
             0x11 => Some(Self::Styled),
             0x12 => Some(Self::Selectable),
+            0x13 => Some(Self::Viewport3d),
             _ => None,
         }
     }

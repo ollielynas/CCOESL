@@ -144,6 +144,10 @@ async fn dispatch(
         Method::CreateDir => run::<PathReq, _>(req, |a| (jail.create_dir(a.path, user), a.path)),
         Method::Access => run::<PathReq, _>(req, |a| (jail.access(a.path, user), a.path)),
         Method::Search => run::<SearchReq, _>(req, |a| (jail.search(&a, user), a.path)),
+        // Stubbed until the FreeCAD worker lands (issue #47).
+        Method::Regenerate | Method::ExportModel => {
+            Outcome::Err(server_error::UNAVAILABLE, "FreeCAD worker not installed".into())
+        }
     }
 }
 
