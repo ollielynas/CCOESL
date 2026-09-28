@@ -4,14 +4,18 @@
 //! share one set of headers and one round trip. It also means the envelope is unchanged if
 //! this ever moves onto a WebSocket, so that swap stays a transport detail.
 
+use axum::Extension;
 use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use ccosel_proto::fs::ListDirReq;
+use ccosel_proto::fs::{ListDirReq, PathReq, SearchReq, WriteFileReq};
 use ccosel_proto::info::ServerInfoReply;
 use ccosel_proto::{Method, PROTO_VERSION, WireReply, WireRequest, WireResult, server_error};
 
+use serde::Serialize;
+
+use crate::access::{self, User};
 use crate::{AppState, stats};
 
 /// What one call produced, before it is borrowed into a `WireReply`.
@@ -20,16 +24,28 @@ enum Outcome {
     Err(u32, String),
 }
 
-pub async fn handle(State(state): State<AppState>, body: Bytes) -> Response {
+pub async fn handle(
+    State(state): State<AppState>,
+    user: Option<Extension<User>>,
+    body: Bytes,
+) -> Response {
     let Ok(requests) = postcard::from_bytes::<Vec<WireRequest>>(&body) else {
         return (StatusCode::BAD_REQUEST, "malformed rpc batch").into_response();
     };
+    let user = crate::caller(user.as_ref().map(|u| &u.0));
+    if let Some(name) = user {
+        // A user's private folder exists from their first request, so an app can offer it
+        // without first having to create it.
+        if let Err(e) = access::ensure_home(state.jail.root(), name) {
+            eprintln!("rpc: creating the home folder for {name}: {e}");
+        }
+    }
 
     // Two passes: run every call into owned buffers, then borrow those into the reply batch.
     // `WireResult::Ok` borrows its payload, so the buffers have to outlive the encoding.
     let outcomes: Vec<(u32, Outcome)> = requests
         .iter()
-        .map(|req| (req.seq, dispatch(&state, req)))
+        .map(|req| (req.seq, dispatch(&state, user, req)))
         .collect();
 
     let replies: Vec<WireReply> = outcomes
@@ -58,31 +74,21 @@ pub async fn handle(State(state): State<AppState>, body: Bytes) -> Response {
 
 /// A failed call is a failed *entry*, never a failed batch: one bad path must not take down
 /// the other calls that were coalesced into the same request.
-fn dispatch(state: &AppState, req: &WireRequest<'_>) -> Outcome {
+fn dispatch(state: &AppState, user: Option<&str>, req: &WireRequest<'_>) -> Outcome {
     state.stats.count_rpc();
     let Some(method) = Method::from_u16(req.method) else {
         return Outcome::Err(server_error::UNKNOWN_METHOD, String::new());
     };
+    let jail = &state.jail;
 
     match method {
-        Method::ListDir => {
-            let Ok(args) = postcard::from_bytes::<ListDirReq>(req.args) else {
-                return Outcome::Err(server_error::MALFORMED, String::new());
-            };
-            match state.jail.list_dir(&args) {
-                Ok(listing) => match postcard::to_allocvec(&listing) {
-                    Ok(bytes) => Outcome::Ok(bytes),
-                    Err(_) => Outcome::Err(server_error::IO, String::new()),
-                },
-                Err(code) => Outcome::Err(code, args.path.to_owned()),
-            }
-        }
+        Method::ListDir => run::<ListDirReq, _>(req, |a| (jail.list_dir(&a, user), a.path)),
         Method::Stat => Outcome::Err(server_error::UNKNOWN_METHOD, String::new()),
         Method::ServerInfo => {
             let host = stats::sample_host();
             let info = ServerInfoReply {
                 proto_version: PROTO_VERSION,
-                root: state.jail.root().display().to_string(),
+                root: jail.root().display().to_string(),
                 uptime_ms: state.stats.uptime_ms(),
                 rpc_calls: state.stats.rpc_calls(),
                 cpus: host.cpus,
@@ -90,10 +96,38 @@ fn dispatch(state: &AppState, req: &WireRequest<'_>) -> Outcome {
                 mem_used_kib: host.mem_used_kib,
                 mem_total_kib: host.mem_total_kib,
             };
-            match postcard::to_allocvec(&info) {
-                Ok(bytes) => Outcome::Ok(bytes),
-                Err(_) => Outcome::Err(server_error::IO, String::new()),
-            }
+            encode(&info)
         }
+        Method::ReadFile => run::<PathReq, _>(req, |a| (jail.read_file(a.path, user), a.path)),
+        Method::WriteFile => run::<WriteFileReq, _>(req, |a| (jail.write_file(&a, user), a.path)),
+        Method::CreateDir => run::<PathReq, _>(req, |a| (jail.create_dir(a.path, user), a.path)),
+        Method::Access => run::<PathReq, _>(req, |a| (jail.access(a.path, user), a.path)),
+        Method::Search => run::<SearchReq, _>(req, |a| (jail.search(&a, user), a.path)),
+    }
+}
+
+/// Decode a call's arguments, run it, and encode what it returned. A failure's detail is the
+/// path it was about, which is what an error message most needs to show.
+fn run<'a, A, T>(
+    req: &WireRequest<'a>,
+    call: impl FnOnce(A) -> (Result<T, u32>, &'a str),
+) -> Outcome
+where
+    A: serde::Deserialize<'a>,
+    T: Serialize,
+{
+    let Ok(args) = postcard::from_bytes::<A>(req.args) else {
+        return Outcome::Err(server_error::MALFORMED, String::new());
+    };
+    match call(args) {
+        (Ok(reply), _) => encode(&reply),
+        (Err(code), path) => Outcome::Err(code, path.to_owned()),
+    }
+}
+
+fn encode(reply: &impl Serialize) -> Outcome {
+    match postcard::to_allocvec(reply) {
+        Ok(bytes) => Outcome::Ok(bytes),
+        Err(_) => Outcome::Err(server_error::IO, String::new()),
     }
 }

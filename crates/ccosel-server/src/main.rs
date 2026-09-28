@@ -11,12 +11,16 @@ async fn main() -> anyhow::Result<()> {
     let mut root = PathBuf::from("data/shared");
     let mut web = PathBuf::from("web");
     let mut port = 8777u16;
+    let mut user: Option<String> = None;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--root" => root = PathBuf::from(args.next().unwrap_or_default()),
             "--web" => web = PathBuf::from(args.next().unwrap_or_default()),
             "--port" => port = args.next().unwrap_or_default().parse().unwrap_or(8777),
+            // Every request is this user. Until sign-in exists this is the only way to try
+            // `/home/{user}` and per-user `.access` rules; never use it on a shared network.
+            "--user" => user = args.next().filter(|n| !n.is_empty()),
             other => anyhow::bail!("unknown argument: {other}"),
         }
     }
@@ -26,5 +30,5 @@ async fn main() -> anyhow::Result<()> {
     println!("serving files from {}", jail.root().display());
 
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
-    ccosel_server::serve(addr, jail, web).await
+    ccosel_server::serve(addr, jail, web, user).await
 }

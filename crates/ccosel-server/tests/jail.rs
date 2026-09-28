@@ -29,7 +29,7 @@ fn jail(root: &std::path::Path) -> Jail {
 fn lists_a_real_directory() {
     let root = temp_root("lists_a_real_directory");
     let j = jail(&root);
-    let listing = j.list_dir(&ListDirReq { path: "/" }).unwrap();
+    let listing = j.list_dir(&ListDirReq { path: "/" }, None).unwrap();
 
     let names: Vec<&str> = listing.entries.iter().map(|e| e.name.as_str()).collect();
     assert_eq!(names, vec!["nested", "a.txt"], "dirs first, then name");
@@ -42,7 +42,7 @@ fn lists_a_real_directory() {
 fn navigates_into_subdirectories() {
     let root = temp_root("navigates_into_subdirectories");
     let j = jail(&root);
-    let listing = j.list_dir(&ListDirReq { path: "/nested" }).unwrap();
+    let listing = j.list_dir(&ListDirReq { path: "/nested" }, None).unwrap();
     assert_eq!(listing.entries.len(), 1);
     assert_eq!(listing.entries[0].name, "b.txt");
 }
@@ -100,11 +100,12 @@ fn missing_paths_and_files_report_distinctly() {
     let root = temp_root("missing_paths_and_files_report_distinctly");
     let j = jail(&root);
     assert_eq!(
-        j.list_dir(&ListDirReq { path: "/nope" }).unwrap_err(),
+        j.list_dir(&ListDirReq { path: "/nope" }, None).unwrap_err(),
         server_error::NOT_FOUND
     );
     assert_eq!(
-        j.list_dir(&ListDirReq { path: "/a.txt" }).unwrap_err(),
+        j.list_dir(&ListDirReq { path: "/a.txt" }, None)
+            .unwrap_err(),
         server_error::NOT_A_DIRECTORY
     );
 }
