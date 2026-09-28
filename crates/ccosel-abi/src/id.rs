@@ -46,4 +46,9 @@ pub const fn hash_str(parent: u64, s: &str) -> u64 {
 }
 
 /// Root id for an app's widget tree. Every guest starts here.
-pub const ROOT: u64 = 0;
+///
+/// It must not be `0`. The hasher maps `(0, 0)` to `0`, so with a zero root an app's first
+/// auto-id (usually a top-level `horizontal`) *was* the root, and the `n`th widget inside that
+/// scope got the same id as the `n`th top-level widget: one click reached both. Any root that
+/// is not a fixed point of `hash_id(_, 0)` avoids that; this one is checked by a test.
+pub const ROOT: u64 = hash_str(0, "ccosel-root");
