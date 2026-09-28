@@ -172,11 +172,8 @@ impl Desktop {
         };
         // Whether anyone is signed in decides where settings live, so ask that first.
         desktop.shell_call::<WhoAmI>(CALL_WHO_AM_I, &(), 0.0);
-        // Open something on first boot: an empty desktop with no affordance is a worse first
-        // impression than a window the user can close.
-        if let Some(first) = desktop.registry.first().cloned() {
-            desktop.launch(&first);
-        }
+        // Boot to an empty desktop: `empty_state` points at the dock, and nothing is fetched
+        // until the user picks an app.
         desktop
     }
 
