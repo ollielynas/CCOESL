@@ -18,6 +18,7 @@ pub mod build;
 pub mod fs;
 pub mod info;
 pub mod scratch;
+pub mod upload;
 
 use serde::{Deserialize, Serialize};
 

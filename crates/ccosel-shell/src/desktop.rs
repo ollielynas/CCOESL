@@ -23,7 +23,7 @@ use crate::fetch;
 use crate::fullscreen;
 use crate::registry::{AppEntry, catalog};
 use crate::theme;
-use crate::upload::{self, Uploads};
+use crate::upload::{self, Drops, Uploads};
 
 /// Dock badge geometry, shared between `dock_item` (which paints it) and `app_menu` (which
 /// needs to know the dock's on-screen height so its popup can sit above it without overlapping).
@@ -45,6 +45,8 @@ const DOCK_DIVIDER_WIDTH: f32 = 14.0;
 const MENU_GAP: f32 = 12.0;
 /// Space between the bars' edges and their content.
 const BAR_PAD: f32 = 14.0;
+/// The status bar's upload progress bar.
+const UPLOAD_BAR_WIDTH: f32 = 90.0;
 
 /// Where the wallpaper image is served from. A plain static file under `web/`, alongside
 /// `index.html` — `ServeDir` serves it with no server changes needed.
@@ -88,8 +90,10 @@ pub struct Desktop {
     wallpaper_pending: Rc<RefCell<Option<Result<egui::ColorImage, String>>>>,
     /// Whether the app menu popup is open.
     app_menu_open: bool,
-    /// Folder uploads started from apps' `UploadFolder` buttons.
+    /// Folder uploads started from apps' `UploadFolder` buttons, or by a drop on their window.
     uploads: Uploads,
+    /// Files and folders dropped on the page, until the frame routes them to a window.
+    drops: Drops,
     /// The last finished upload's summary and when to stop showing it, so "Uploaded photos:
     /// 12 files" stays in the status bar long enough to read.
     upload_notice: Option<(String, f64)>,
@@ -119,8 +123,14 @@ impl Desktop {
             wallpaper_pending: Rc::new(RefCell::new(None)),
             app_menu_open: false,
             uploads: Uploads::default(),
+            drops: Drops::default(),
             upload_notice: None,
         };
+        if let Err(e) = desktop.drops.listen(desktop.egui_ctx.clone()) {
+            desktop
+                .errors
+                .push(format!("drag and drop is unavailable: {e:?}"));
+        }
         // Open something on first boot: an empty desktop with no affordance is a worse first
         // impression than a window the user can close.
         if let Some(first) = desktop.registry.first().cloned() {
@@ -225,6 +235,7 @@ impl Desktop {
         // Expire deadlines and reap calls belonging to windows that have gone.
         self.transport.tick(now_ms);
         self.drain_uploads(now_ms);
+        self.route_drops(&ctx);
 
         self.paint_background(&ctx);
         self.status_bar(&ctx);
@@ -325,6 +336,35 @@ impl Desktop {
             self.transport.forget_instance(window.instance_id);
         }
         self.windows.retain(|w| w.open);
+    }
+
+    /// Hand each drop to the window it landed on, which uploads it the way its own upload button
+    /// would. Where it landed is looked up in last frame's layers, which is what was on screen
+    /// when the user let go.
+    fn route_drops(&mut self, ctx: &egui::Context) {
+        for dropped in self.drops.take() {
+            let layer = ctx.layer_id_at(dropped.pos).map(|l| l.id);
+            let window = self
+                .windows
+                .iter()
+                .find(|w| !w.placement.minimized && Some(window_id(w.instance_id)) == layer);
+            let Some(window) = window else {
+                self.errors
+                    .push("upload: drop files onto an app window to upload them".to_owned());
+                continue;
+            };
+            match window.drop_target() {
+                Some(target) => self.uploads.start_dropped(
+                    window.instance_id,
+                    target,
+                    dropped.entries,
+                    ctx.clone(),
+                ),
+                None => self
+                    .errors
+                    .push(format!("upload: {} doesn't take uploads", window.title)),
+            }
+        }
     }
 
     /// Tell each finished upload's window, so its app can re-list the folder, and make the
@@ -449,6 +489,13 @@ impl Desktop {
                             if let Some(text) = upload {
                                 ui.label(status_text("\u{00b7}".to_owned()));
                                 ui.label(egui::RichText::new(text).small().color(t.ink));
+                            }
+                            if let Some(fraction) = self.uploads.progress() {
+                                ui.add(
+                                    egui::ProgressBar::new(fraction)
+                                        .desired_width(UPLOAD_BAR_WIDTH)
+                                        .desired_height(8.0),
+                                );
                             }
                         });
                     });

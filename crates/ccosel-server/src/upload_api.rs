@@ -22,8 +22,9 @@ use crate::access::{self, User};
 /// body is buffered in full before the handler runs, so leaving it uncapped would let one
 /// upload exhaust server memory. axum's own default (2 MiB, see `DefaultBodyLimit`) is too
 /// small for a folder carrying binaries or images, so the `/upload` route raises it to this
-/// value explicitly rather than inheriting the default.
-pub const MAX_UPLOAD_BYTES: usize = 64 * 1024 * 1024;
+/// value explicitly rather than inheriting the default. It lives in `ccosel_proto` so the shell
+/// can refuse an oversized file before reading it.
+pub const MAX_UPLOAD_BYTES: usize = ccosel_proto::upload::MAX_FILE_BYTES as usize;
 
 #[derive(Debug, Deserialize)]
 pub struct UploadParams {

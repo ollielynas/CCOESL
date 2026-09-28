@@ -111,6 +111,11 @@ impl<I: AppInstance> AppWindow<I> {
             .find(|&id| self.clicked(id))
     }
 
+    /// Where something dropped on this window goes: wherever its upload button would send it.
+    pub fn drop_target(&self) -> Option<crate::upload::DropTarget> {
+        crate::upload::drop_target(self.replayer.uploads(), self.replayer.project_uploads())
+    }
+
     /// The target of the `OpenUrl` button clicked this frame, if any.
     pub fn clicked_open_url(&self) -> Option<String> {
         self.replayer
