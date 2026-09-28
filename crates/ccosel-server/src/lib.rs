@@ -6,6 +6,8 @@
 pub mod access;
 pub mod auth;
 pub mod build_api;
+pub mod cad_api;
+pub mod freecad_install;
 pub mod fs_api;
 pub mod idp;
 pub mod keycloak;
@@ -53,6 +55,8 @@ pub struct AppState {
     pub stats: Arc<stats::Stats>,
     /// Temporary project folders. See `scratch`.
     pub scratch: Arc<scratch::Scratch>,
+    /// The Modeller's FreeCAD worker, rebuild jobs and mesh store. See `cad_api`.
+    pub cad: Arc<cad_api::Cad>,
 }
 
 /// Build the router. Separated from `serve` so tests can drive it on an ephemeral port.
@@ -60,6 +64,13 @@ pub struct AppState {
 /// Panics if it can't create `.scratch` in the jail: a server that can't write to its own jail
 /// can't accept uploads either, and failing at start is clearer than failing on first use.
 pub fn app(jail: Jail, web_dir: PathBuf, auth: AuthState) -> Router {
+    let temp = std::env::temp_dir().join(format!("ccosel-cad-{}", std::process::id()));
+    let cad = cad_api::Cad::from_env(&temp).expect("create the CAD scratch directory");
+    app_with_cad(jail, web_dir, auth, cad)
+}
+
+/// [`app`], with the CAD service supplied rather than found: tests stand in a fake worker.
+pub fn app_with_cad(jail: Jail, web_dir: PathBuf, auth: AuthState, cad: cad_api::Cad) -> Router {
     let scratch = Arc::new(
         scratch::Scratch::new(jail.root()).expect("create the .scratch directory in the jail"),
     );
@@ -86,6 +97,7 @@ pub fn app(jail: Jail, web_dir: PathBuf, auth: AuthState) -> Router {
         auth,
         jobs: Arc::new(build_api::Jobs::new()),
         stats: Arc::new(stats::Stats::new()),
+        cad: Arc::new(cad),
     };
 
     // Everything that reads or writes the jail needs a session once OAuth is configured. The
@@ -99,6 +111,8 @@ pub fn app(jail: Jail, web_dir: PathBuf, auth: AuthState) -> Router {
         )
         .route("/files/{*path}", get(download))
         .route("/scratch", post(new_scratch))
+        .route("/cad/mesh/{hash}", get(cad_mesh))
+        .route("/cad/render", post(cad_render))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             auth::require_session,
@@ -153,6 +167,42 @@ async fn download(
         bytes,
     )
         .into_response()
+}
+
+/// `GET /cad/mesh/<hash>`: a mesh a rebuild produced. Content-addressed, so it never changes
+/// and the browser may keep it forever.
+async fn cad_mesh(State(state): State<AppState>, AxPath(hash): AxPath<String>) -> Response {
+    match state.cad.mesh_bytes(&hash) {
+        Some(bytes) => (
+            [
+                (header::CONTENT_TYPE, "application/octet-stream"),
+                (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
+            ],
+            bytes.as_ref().clone(),
+        )
+            .into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+/// `POST /cad/render`: a viewport in server mode wants a frame. The body is a postcard
+/// `RenderReq`; the answer a postcard `Scene2D`, drawn by the same renderer the shell uses.
+async fn cad_render(State(state): State<AppState>, body: axum::body::Bytes) -> Response {
+    let Ok(req) = postcard::from_bytes::<ccosel_proto::cad::RenderReq>(&body) else {
+        return (StatusCode::BAD_REQUEST, "malformed render request").into_response();
+    };
+    let cad = state.cad.clone();
+    let frame = tokio::task::spawn_blocking(move || cad.render(&req)).await;
+    match frame {
+        Ok(Some(scene)) => match postcard::to_allocvec(&scene) {
+            Ok(bytes) => {
+                ([(header::CONTENT_TYPE, "application/octet-stream")], bytes).into_response()
+            }
+            Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        },
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
 }
 
 /// `POST /scratch`: a new temporary project folder. Answers with its id as decimal text; the

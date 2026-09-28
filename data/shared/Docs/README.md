@@ -11,6 +11,7 @@ machine on the network.
 - [Clock](Apps/clock.md): a clock and stopwatch
 - [Server](Apps/server-dashboard.md): live graphs of how the server is doing
 - [Compiler](Apps/rust-compiler.md): build a Rust project on the server and download the result
+- [Modeller](Apps/modeller.md): sketch, constrain and pad 3D models, FreeCAD style, saved for CAD or 3D printing
 - [Account](Apps/account.md): see who you are signed in as, and sign out
 
 ## Where your files go

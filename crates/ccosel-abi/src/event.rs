@@ -49,6 +49,12 @@ pub mod event_kind {
     pub const TEXT_DELTA: u32 = 3;
     /// Reserved: sent after `ccosel_restore_state`, before the first frame.
     pub const RESTORED: u32 = 4;
+    /// A finished gesture in a 3D viewport. `call_id` is zero; the payload is a
+    /// [`crate::view3d::ViewEvent`] (see [`crate::view3d::encode_view_event`]).
+    pub const VIEWPORT: u32 = 5;
+    /// A sketch edited or picked in a viewport. `call_id` is zero; the payload is
+    /// [`crate::view3d::encode_sketch_event`]'s.
+    pub const SKETCH: u32 = 6;
 }
 
 /// Why a call failed.

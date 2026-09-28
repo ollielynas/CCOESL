@@ -1,0 +1,10 @@
+[package]
+name = "ccosel-view3d"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The 3D viewport's geometry: camera, picking, snapping, push/pull, and a renderer to flat 2D primitives. Runs in the shell and on the server alike."
+
+[dependencies]
+ccosel-abi = { workspace = true }
+ccosel-proto = { workspace = true }

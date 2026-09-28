@@ -123,16 +123,28 @@ impl<A: App> Runtime<A> {
     }
 }
 
-/// Route one event from the shell: RPC replies to the request cache, text edits to the
-/// recorder, which applies them when the app draws the field. Shared with the test harness,
-/// so tests exercise the same routing as a real module.
+/// Route one event from the shell: RPC replies to the request cache, text edits and viewport
+/// gestures to the recorder, which hands them over when the app draws the widget. Shared with
+/// the test harness, so tests exercise the same routing as a real module.
 pub(crate) fn deliver(rpc: &RpcCtx, rec: &mut Recorder, event: &ccosel_abi::Event<'_>) {
-    if event.kind == ccosel_abi::event::event_kind::TEXT_DELTA {
-        if let Some(delta) = ccosel_abi::event::decode_text_delta(event.payload) {
-            rec.queue_text_delta(&delta);
+    use ccosel_abi::event::event_kind;
+    match event.kind {
+        event_kind::TEXT_DELTA => {
+            if let Some(delta) = ccosel_abi::event::decode_text_delta(event.payload) {
+                rec.queue_text_delta(&delta);
+            }
         }
-    } else {
-        rpc.deliver(event);
+        event_kind::SKETCH => {
+            if let Some((id, body)) = ccosel_abi::view3d::decode_sketch_event(event.payload) {
+                rec.queue_sketch_event(id, body);
+            }
+        }
+        event_kind::VIEWPORT => {
+            if let Some(e) = ccosel_abi::view3d::decode_view_event(event.payload) {
+                rec.queue_view_event(e);
+            }
+        }
+        _ => rpc.deliver(event),
     }
 }
 

@@ -15,9 +15,12 @@ extern crate alloc;
 
 pub mod account;
 pub mod build;
+pub mod cad;
 pub mod fs;
 pub mod info;
+pub mod scene2d;
 pub mod scratch;
+pub mod sketch;
 
 use serde::{Deserialize, Serialize};
 
@@ -40,6 +43,8 @@ pub enum Method {
     CreateDir = 9,
     Access = 10,
     Search = 11,
+    Regenerate = 12,
+    ExportModel = 13,
 }
 
 impl Method {
@@ -56,6 +61,8 @@ impl Method {
             9 => Some(Self::CreateDir),
             10 => Some(Self::Access),
             11 => Some(Self::Search),
+            12 => Some(Self::Regenerate),
+            13 => Some(Self::ExportModel),
             _ => None,
         }
     }
@@ -153,4 +160,7 @@ pub mod server_error {
     pub const TOO_LARGE: u32 = 10;
     /// `CreateDir`, or creating a file, where something already exists.
     pub const EXISTS: u32 = 11;
+    /// The CAD worker (FreeCAD) is not installed or would not start. Nothing the caller can
+    /// fix; the detail says what the server tried.
+    pub const UNAVAILABLE: u32 = 12;
 }

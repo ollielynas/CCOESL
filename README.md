@@ -122,3 +122,8 @@ sets itself up.
   container freely; remove the volume only to start over.
 - **Smaller image:** `docker build --build-arg WITH_RUST=0 -t ccosel .` leaves out the Rust
   toolchain the Compiler app builds with, about 1 GB. Everything else still works.
+- **FreeCAD, for the Modeller,** is not in the image: the server installs it into the volume
+  (`/data/ccosel/freecad`) the first time someone opens the Modeller, from FreeCAD's own
+  release, checked against a checksum pinned in the source. It is an 820 MB download and takes
+  about 4 GB while installing (3.1 GB after). The Modeller shows the progress. To turn it off,
+  add `-e CCOSEL_FREECAD_AUTO_INSTALL=0`; the Modeller then says FreeCAD is missing.

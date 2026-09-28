@@ -24,6 +24,9 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 use ccosel_abi::event::{Event, TextDelta, encode_error, encode_text_delta, event_kind};
+use ccosel_abi::view3d::{
+    Anchor, Extrude, Render, Snap, ViewAction, ViewCommand, ViewEvent, ViewTool, encode_view_event,
+};
 use ccosel_abi::{Cmd, Decoder, RespRecord, ResponseFlags, TextStyle};
 
 /// The codes [`Harness::fail`] takes, re-exported so an app's tests need no `ccosel-abi`
@@ -34,6 +37,21 @@ use serde::Serialize;
 
 use crate::rpc::OutCall;
 use crate::{App, FrameCtx, Recorder, RpcCtx, Ui};
+
+/// One viewport as the last frame drew it: an owned copy of what the app asked the shell for.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ViewShown {
+    pub mesh: String,
+    pub tool: ViewTool,
+    pub anchor: Option<Anchor>,
+    pub path: Vec<[f32; 3]>,
+    pub preview: Option<Extrude>,
+    pub selected: u32,
+    pub render: Render,
+    pub sketch: Vec<u8>,
+    pub value: f32,
+    pub view: ViewCommand,
+}
 
 pub struct Harness<A: App> {
     /// The app under test. Public so a test can set up or inspect its state directly.
@@ -287,6 +305,102 @@ impl<A: App> Harness<A> {
                 _ => None,
             })
             .collect()
+    }
+
+    /// Every viewport drawn in the last frame, in order.
+    pub fn viewports(&self) -> Vec<ViewShown> {
+        self.commands()
+            .filter_map(|c| match c {
+                Cmd::Viewport3d { view, .. } => Some(ViewShown {
+                    mesh: view.mesh.to_string(),
+                    tool: view.tool,
+                    anchor: view.anchor,
+                    path: view.path_points().collect(),
+                    preview: view.preview,
+                    selected: view.selected,
+                    render: view.render,
+                    sketch: view.sketch.to_vec(),
+                    value: view.value,
+                    view: view.view,
+                }),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Plays the user clicking in the first viewport of the last frame, the shell having
+    /// resolved the pointer to `point` on `face` (or `view3d::NO_FACE`). The app sees it the
+    /// next time it draws the viewport, as with a real shell.
+    pub fn view_click(&mut self, face: u32, point: [f32; 3], normal: [f32; 3], snap: Snap) {
+        self.view_event(ViewAction::Click, face, point, normal, snap, 0.0);
+    }
+
+    /// Plays the user finishing a push/pull of `face` by `distance` along `normal` in the first
+    /// viewport of the last frame.
+    pub fn view_push_pull(&mut self, face: u32, normal: [f32; 3], distance: f32) {
+        self.view_event(
+            ViewAction::PushPull,
+            face,
+            [0.0; 3],
+            normal,
+            Snap::OnFace,
+            distance,
+        );
+    }
+
+    /// Plays the shell reporting a sketch event (postcard `SketchEvent` bytes) from the first
+    /// viewport of the last frame.
+    pub fn view_sketch_event(&mut self, body: &[u8]) {
+        let id = self.first_viewport();
+        let payload = ccosel_abi::view3d::encode_sketch_event(id, body);
+        crate::runtime::deliver(
+            &self.rpc,
+            &mut self.rec,
+            &Event {
+                kind: event_kind::SKETCH,
+                call_id: 0,
+                payload: &payload,
+            },
+        );
+    }
+
+    fn first_viewport(&self) -> u64 {
+        self.commands()
+            .find_map(|c| match c {
+                Cmd::Viewport3d { id, .. } => Some(id),
+                _ => None,
+            })
+            .expect("no viewport in the last frame")
+    }
+
+    fn view_event(
+        &mut self,
+        action: ViewAction,
+        face: u32,
+        point: [f32; 3],
+        normal: [f32; 3],
+        snap: Snap,
+        distance: f32,
+    ) {
+        let id = self.first_viewport();
+        let payload = encode_view_event(&ViewEvent {
+            id,
+            action,
+            snap,
+            face,
+            point,
+            normal,
+            distance,
+        });
+        crate::runtime::deliver(
+            &self.rpc,
+            &mut self.rec,
+            &Event {
+                kind: event_kind::VIEWPORT,
+                call_id: 0,
+                payload: &payload,
+            },
+        );
     }
 
     /// Plays the shell finishing an upload started from the first `upload_folder` button in

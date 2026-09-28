@@ -13,6 +13,9 @@
 mod convert;
 mod host;
 mod replay;
+mod sketch_view;
+mod viewport;
 
 pub use host::{AppHost, AppInstance, FrameArgs, FrameResult, HostError, OutboundCall};
 pub use replay::{ReplayError, Replayer};
+pub use viewport::{AUTO_SERVER_TRIANGLES, RenderJob};

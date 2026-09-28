@@ -1,6 +1,10 @@
 //! The egui-shaped recording facade.
 
 use alloc::string::String;
+use alloc::vec::Vec;
+use ccosel_abi::view3d::{
+    self, Anchor, Extrude, Render, ViewCommand, ViewEvent, ViewTool, Viewport,
+};
 use ccosel_abi::{
     Align, Cmd, FrameInput, Layout, MAX_SCOPE_DEPTH, ScopeKind, TextStyle, Vec2, id as ids,
 };
@@ -275,6 +279,41 @@ impl<'a> Ui<'a> {
         self.response(id)
     }
 
+    /// A 3D view of the mesh at `view.mesh`, which the *shell* fetches, draws and lets the user
+    /// orbit, so neither the geometry nor the camera ever passes through the app.
+    ///
+    /// The app picks the tool and gets back only finished gestures — a click at a snapped
+    /// point, a face pushed by a distance — in [`ViewResponse::events`]. Everything that
+    /// tracks the pointer (hover, snapping cues, the rubber band, the live extrusion) is drawn
+    /// by the shell, so none of it lags.
+    pub fn viewport3d(&mut self, view: &View3d<'_>) -> ViewResponse {
+        let id = self.auto_id();
+        let events = self.rec.take_view_events(id);
+        let sketch = self.rec.take_sketch_events(id);
+        let path = view3d::encode_path(view.path);
+        self.rec.push(&Cmd::Viewport3d {
+            id,
+            view: Viewport {
+                size: view.size,
+                mesh: view.mesh,
+                tool: view.tool,
+                anchor: view.anchor,
+                path: &path,
+                preview: view.preview,
+                selected: view.selected,
+                render: view.render,
+                sketch: view.sketch,
+                value: view.value,
+                view: view.view,
+            },
+        });
+        ViewResponse {
+            response: self.response(id),
+            events,
+            sketch,
+        }
+    }
+
     /// A single-line text field. See [`Text`] for why the buffer usually isn't sent.
     pub fn text_edit(&mut self, text: &mut Text) -> Response {
         self.text_field(text, false)
@@ -364,6 +403,60 @@ impl<'a> Ui<'a> {
         self.rec.push(&Cmd::OpenUrl { id, label, url });
         self.response(id)
     }
+}
+
+/// What [`Ui::viewport3d`] shows. See `ccosel_abi::view3d::Viewport` for each field.
+#[derive(Clone, Copy, Debug)]
+pub struct View3d<'a> {
+    /// `x` or `y` of zero fills the available width or height.
+    pub size: Vec2,
+    /// A URL for the shell to fetch, or empty for an empty scene.
+    pub mesh: &'a str,
+    pub tool: ViewTool,
+    pub anchor: Option<Anchor>,
+    /// Points the current tool has placed so far, drawn as a polyline.
+    pub path: &'a [[f32; 3]],
+    pub preview: Option<Extrude>,
+    /// A face id to draw as selected, or [`view3d::NO_FACE`].
+    pub selected: u32,
+    /// Where frames are drawn; see `ccosel_abi::view3d::Render`.
+    pub render: Render,
+    /// The sketch being edited (postcard `ccosel_proto::sketch::SketchScene`), or empty.
+    pub sketch: &'a [u8],
+    /// A number the tool needs: the Fillet radius.
+    pub value: f32,
+    /// A standard view to move the camera to, once per new `seq`.
+    pub view: ViewCommand,
+}
+
+impl Default for View3d<'_> {
+    fn default() -> Self {
+        Self {
+            size: Vec2::new(0.0, 0.0),
+            mesh: "",
+            tool: ViewTool::Select,
+            anchor: None,
+            path: &[],
+            preview: None,
+            selected: view3d::NO_FACE,
+            render: Render::Auto,
+            sketch: &[],
+            value: 0.0,
+            view: ViewCommand::default(),
+        }
+    }
+}
+
+/// What a viewport did: its ordinary response, plus the gestures finished since it was last
+/// drawn, oldest first.
+#[derive(Debug)]
+pub struct ViewResponse {
+    pub response: Response,
+    pub events: Vec<ViewEvent>,
+    /// Sketch edits and picks since it was last drawn, as postcard
+    /// `ccosel_proto::sketch::SketchEvent` bytes. Left undecoded here so an app that never
+    /// sketches links no decoder for them.
+    pub sketch: Vec<Vec<u8>>,
 }
 
 /// A text field's contents.

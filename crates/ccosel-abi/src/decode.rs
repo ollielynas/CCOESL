@@ -8,6 +8,9 @@
 use crate::MAX_SCOPE_DEPTH;
 use crate::geom::{Align, Layout, ScopeKind, TextStyle, Vec2};
 use crate::opcode::OpCode;
+use crate::view3d::{
+    Anchor, Extrude, Render, StdView, ViewCommand, ViewTool, Viewport, check_path,
+};
 
 /// One decoded command, borrowing its strings from the command buffer.
 ///
@@ -99,6 +102,10 @@ pub enum Cmd<'a> {
         id: u64,
         text: &'a str,
         selected: bool,
+    },
+    Viewport3d {
+        id: u64,
+        view: Viewport<'a>,
     },
 }
 
@@ -211,6 +218,63 @@ impl<'a> Decoder<'a> {
         Ok((id, version, set))
     }
 
+    fn vec3(&mut self) -> Result<[f32; 3], DecodeError> {
+        Ok([self.f32()?, self.f32()?, self.f32()?])
+    }
+
+    fn flag(&mut self) -> Result<bool, DecodeError> {
+        match self.u8()? {
+            0 => Ok(false),
+            1 => Ok(true),
+            _ => Err(DecodeError::InvalidEnum),
+        }
+    }
+
+    fn viewport(&mut self) -> Result<Viewport<'a>, DecodeError> {
+        let size = Vec2::new(self.f32()?, self.f32()?);
+        let mesh = self.str()?;
+        let tool = ViewTool::from_u8(self.u8()?).ok_or(DecodeError::InvalidEnum)?;
+        let anchor = if self.flag()? {
+            Some(Anchor {
+                point: self.vec3()?,
+                normal: self.vec3()?,
+            })
+        } else {
+            None
+        };
+        let path = self.bytes()?;
+        check_path(path)?;
+        let preview = if self.flag()? {
+            Some(Extrude {
+                face: self.u32()?,
+                distance: self.f32()?,
+            })
+        } else {
+            None
+        };
+        let selected = self.u32()?;
+        let render = Render::from_u8(self.u8()?).ok_or(DecodeError::InvalidEnum)?;
+        let sketch = self.bytes()?;
+        let value = self.f32()?;
+        let view = ViewCommand {
+            view: StdView::from_u8(self.u8()?).ok_or(DecodeError::InvalidEnum)?,
+            seq: self.u32()?,
+        };
+        Ok(Viewport {
+            size,
+            mesh,
+            tool,
+            anchor,
+            path,
+            preview,
+            selected,
+            render,
+            sketch,
+            value,
+            view,
+        })
+    }
+
     fn next_cmd(&mut self) -> Result<Cmd<'a>, DecodeError> {
         let raw = self.u8()?;
         let op = OpCode::from_u8(raw).ok_or(DecodeError::UnknownOpcode(raw))?;
@@ -252,11 +316,11 @@ impl<'a> Decoder<'a> {
             OpCode::Selectable => Cmd::Selectable {
                 id: self.u64()?,
                 text: self.str()?,
-                selected: match self.u8()? {
-                    0 => false,
-                    1 => true,
-                    _ => return Err(DecodeError::InvalidEnum),
-                },
+                selected: self.flag()?,
+            },
+            OpCode::Viewport3d => Cmd::Viewport3d {
+                id: self.u64()?,
+                view: self.viewport()?,
             },
             OpCode::Image => {
                 let id = self.u64()?;

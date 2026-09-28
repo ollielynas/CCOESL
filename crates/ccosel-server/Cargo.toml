@@ -7,6 +7,11 @@ description = "The CCOSEL server: hosts the shell, serves app modules, answers R
 
 [dependencies]
 ccosel-proto = { workspace = true, features = ["std"] }
+ccosel-view3d = { workspace = true }
+# Content-addresses meshes (`/cad/mesh/<hash>`), as ARCHITECTURE.md plans for all CAS URLs.
+blake3 = "1"
+# Checks the FreeCAD download against its pinned checksum (FreeCAD publishes SHA-256).
+sha2 = "0.10"
 anyhow = { workspace = true }
 axum = "0.8"
 dotenvy = "0.15"
@@ -23,4 +28,5 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 rand = "0.8"
 
 [dev-dependencies]
+sha2 = "0.10"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "fs"] }

@@ -39,6 +39,33 @@ pub const CHECK_SQUARE: &str = "\u{E186}";
 pub const SQUARE: &str = "\u{E45E}";
 pub const CODE_BLOCK: &str = "\u{EAFE}";
 pub const QUOTES: &str = "\u{E660}";
+pub const EXPORT: &str = "\u{EAF0}";
+pub const ARROW_COUNTER_CLOCKWISE: &str = "\u{E038}";
+pub const ARROWS_OUT: &str = "\u{E0A2}";
+pub const CUBE: &str = "\u{E1DA}";
+pub const CUBE_FOCUS: &str = "\u{ED0A}";
+pub const LINE_SEGMENT: &str = "\u{E6D2}";
+pub const LINE_SEGMENTS: &str = "\u{E6D4}";
+pub const RECTANGLE: &str = "\u{E3F0}";
+pub const CIRCLE: &str = "\u{E18A}";
+pub const DOT: &str = "\u{ECDE}";
+pub const SCISSORS: &str = "\u{EAE0}";
+pub const ARROW_LINE_RIGHT: &str = "\u{E064}";
+pub const CORNERS_IN: &str = "\u{E1CE}";
+pub const ARROW_FAT_LINE_UP: &str = "\u{E522}";
+pub const ARROW_FAT_LINE_DOWN: &str = "\u{E51C}";
+pub const CURSOR: &str = "\u{E1DC}";
+pub const SELECTION: &str = "\u{E69A}";
+pub const CIRCLE_DASHED: &str = "\u{E602}";
+pub const ARROW_SQUARE_OUT: &str = "\u{E5DE}";
+pub const PENCIL_LINE: &str = "\u{E3B2}";
+pub const CIRCLE_HALF: &str = "\u{E18C}";
+pub const ARROWS_SPLIT: &str = "\u{ED3C}";
+pub const ARROWS_OUT_LINE_HORIZONTAL: &str = "\u{E534}";
+pub const RULER: &str = "\u{E6B8}";
+pub const ANGLE: &str = "\u{E7BC}";
+pub const HAND_POINTING: &str = "\u{E29A}";
+pub const CUBE_TRANSPARENT: &str = "\u{EC7C}";
 
 #[cfg(test)]
 mod tests {
@@ -76,5 +103,35 @@ mod tests {
         assert_eq!(super::SQUARE, p::SQUARE);
         assert_eq!(super::CODE_BLOCK, p::CODE_BLOCK);
         assert_eq!(super::QUOTES, p::QUOTES);
+        assert_eq!(super::EXPORT, p::EXPORT);
+        assert_eq!(super::ARROW_COUNTER_CLOCKWISE, p::ARROW_COUNTER_CLOCKWISE);
+        assert_eq!(super::ARROWS_OUT, p::ARROWS_OUT);
+        assert_eq!(super::CUBE, p::CUBE);
+        assert_eq!(super::CUBE_FOCUS, p::CUBE_FOCUS);
+        assert_eq!(super::LINE_SEGMENT, p::LINE_SEGMENT);
+        assert_eq!(super::LINE_SEGMENTS, p::LINE_SEGMENTS);
+        assert_eq!(super::RECTANGLE, p::RECTANGLE);
+        assert_eq!(super::CIRCLE, p::CIRCLE);
+        assert_eq!(super::DOT, p::DOT);
+        assert_eq!(super::SCISSORS, p::SCISSORS);
+        assert_eq!(super::ARROW_LINE_RIGHT, p::ARROW_LINE_RIGHT);
+        assert_eq!(super::CORNERS_IN, p::CORNERS_IN);
+        assert_eq!(super::ARROW_FAT_LINE_UP, p::ARROW_FAT_LINE_UP);
+        assert_eq!(super::ARROW_FAT_LINE_DOWN, p::ARROW_FAT_LINE_DOWN);
+        assert_eq!(super::CURSOR, p::CURSOR);
+        assert_eq!(super::SELECTION, p::SELECTION);
+        assert_eq!(super::CIRCLE_DASHED, p::CIRCLE_DASHED);
+        assert_eq!(super::ARROW_SQUARE_OUT, p::ARROW_SQUARE_OUT);
+        assert_eq!(super::PENCIL_LINE, p::PENCIL_LINE);
+        assert_eq!(super::CIRCLE_HALF, p::CIRCLE_HALF);
+        assert_eq!(super::ARROWS_SPLIT, p::ARROWS_SPLIT);
+        assert_eq!(
+            super::ARROWS_OUT_LINE_HORIZONTAL,
+            p::ARROWS_OUT_LINE_HORIZONTAL
+        );
+        assert_eq!(super::RULER, p::RULER);
+        assert_eq!(super::ANGLE, p::ANGLE);
+        assert_eq!(super::HAND_POINTING, p::HAND_POINTING);
+        assert_eq!(super::CUBE_TRANSPARENT, p::CUBE_TRANSPARENT);
     }
 }

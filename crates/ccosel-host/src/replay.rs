@@ -9,6 +9,7 @@ use ccosel_abi::{
 };
 
 use crate::convert;
+use crate::viewport::{RenderJob, Views};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReplayError {
@@ -137,6 +138,8 @@ pub struct Replayer {
     /// Widget ids and target URLs from `OpenUrl` commands this frame. The shell checks these to
     /// know when, and where, to open a new browser tab (see #19).
     open_url_ids: Vec<(u64, String)>,
+    /// 3D viewports: their cameras, the meshes they show, and what they want fetched.
+    views: Views,
 }
 
 impl Replayer {
@@ -183,11 +186,13 @@ impl Replayer {
         }
 
         let mut out = Vec::new();
+        self.views.begin_frame();
         let mut cx = Cx {
             app_instance,
             tooltips: &tooltips,
             out: &mut out,
             text: &mut self.text,
+            views: &mut self.views,
         };
         cx.render(ui, &cmds, &closes, 0..cmds.len());
 
@@ -219,6 +224,42 @@ impl Replayer {
         let events: Vec<(u32, u32, &[u8])> = payloads
             .iter()
             .map(|p| (event_kind::TEXT_DELTA, 0, p.as_slice()))
+            .collect();
+        Some(encode_batch(&events))
+    }
+
+    /// Mesh URLs a viewport wants and the shell has not been asked for yet. Fetch each and
+    /// hand the bytes (or the failure) to [`Replayer::mesh_done`].
+    pub fn take_mesh_fetches(&mut self) -> Vec<String> {
+        self.views.take_fetches()
+    }
+
+    /// A fetched mesh: its postcard `MeshData` bytes, or why it could not be fetched.
+    pub fn mesh_done(&mut self, url: &str, bytes: Result<&[u8], String>) {
+        self.views.mesh_done(url, bytes);
+    }
+
+    /// Frames a viewport wants rendered on the server. POST each job's request to
+    /// `/cad/render` and hand the reply to [`Replayer::render_done`].
+    pub fn take_render_jobs(&mut self) -> Vec<RenderJob> {
+        self.views.take_jobs()
+    }
+
+    /// A server-rendered frame (postcard `Scene2D` bytes), or why it failed.
+    pub fn render_done(&mut self, key: u64, bytes: Result<&[u8], String>) {
+        self.views.render_done(key, bytes);
+    }
+
+    /// Gestures finished and sketches edited in this app's viewports since the last call, as
+    /// one batch of `VIEWPORT` and `SKETCH` events for the guest, or `None`.
+    pub fn take_view_events(&mut self) -> Option<Vec<u8>> {
+        let payloads = self.views.take_events();
+        if payloads.is_empty() {
+            return None;
+        }
+        let events: Vec<(u32, u32, &[u8])> = payloads
+            .iter()
+            .map(|(kind, p)| (*kind, 0, p.as_slice()))
             .collect();
         Some(encode_batch(&events))
     }
@@ -273,6 +314,7 @@ struct Cx<'a> {
     tooltips: &'a HashMap<u64, &'a str>,
     out: &'a mut Vec<RespRecord>,
     text: &'a mut HashMap<u64, TextState>,
+    views: &'a mut Views,
 }
 
 impl Cx<'_> {
@@ -569,6 +611,12 @@ impl Cx<'_> {
 
                     i = end + 1;
                     continue;
+                }
+
+                Cmd::Viewport3d { id, view } => {
+                    let sense = self.egui_id(id);
+                    let r = self.views.show(ui, id, &view, sense);
+                    self.finish(id, r);
                 }
 
                 // Unreachable for a validated buffer: every close is consumed by its opener.

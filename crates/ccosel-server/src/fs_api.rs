@@ -164,18 +164,31 @@ impl Jail {
         if req.text.len() > MAX_TEXT_BYTES {
             return Err(server_error::TOO_LARGE);
         }
-        let target = self.authorize_new(req.path, user)?;
+        let target = self.authorize_file_write(req.path, user, req.create_only)?;
+        std::fs::write(&target, req.text).map_err(|_| server_error::IO)
+    }
+
+    /// Where a file at `requested` may be written by `user`, creating it or (unless
+    /// `create_only`) replacing it: the checks `WriteFile` makes, for anything else that
+    /// writes a file into the jail, such as a CAD export.
+    pub fn authorize_file_write(
+        &self,
+        requested: &str,
+        user: Option<&str>,
+        create_only: bool,
+    ) -> Result<PathBuf, u32> {
+        let target = self.authorize_new(requested, user)?;
         match std::fs::symlink_metadata(&target) {
-            Ok(_) if req.create_only => return Err(server_error::EXISTS),
+            Ok(_) if create_only => return Err(server_error::EXISTS),
             Ok(meta) if meta.is_dir() => return Err(server_error::EXISTS),
             // Replacing an existing file: it must be one this caller may write where it really
             // lives, so a symlink to somewhere private cannot be written through.
             Ok(_) => {
-                self.authorize(req.path, user, Need::Write)?;
+                self.authorize(requested, user, Need::Write)?;
             }
             Err(_) => {}
         }
-        std::fs::write(&target, req.text).map_err(|_| server_error::IO)
+        Ok(target)
     }
 
     pub fn create_dir(&self, requested: &str, user: Option<&str>) -> Result<(), u32> {

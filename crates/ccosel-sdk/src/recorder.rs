@@ -3,6 +3,7 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 use ccosel_abi::event::TextDelta;
+use ccosel_abi::view3d::ViewEvent;
 use ccosel_abi::{Cmd, Encoder, RespRecord};
 
 /// A text edit the shell reported, waiting for the app to draw that field again.
@@ -25,6 +26,10 @@ pub struct Recorder {
     /// Text edits from the shell, applied when the app next draws the field they belong to.
     /// The app owns its `Text`s, so there is nowhere to apply them before that.
     deltas: Vec<PendingDelta>,
+    /// Finished viewport gestures, handed to the app when it next draws that viewport.
+    views: Vec<ViewEvent>,
+    /// Sketch edits and picks, as `(viewport id, postcard body)`, likewise.
+    sketches: Vec<(u64, Vec<u8>)>,
 }
 
 impl Default for Recorder {
@@ -39,6 +44,8 @@ impl Recorder {
             enc: Encoder::new(),
             resp: Vec::new(),
             deltas: Vec::new(),
+            views: Vec::new(),
+            sketches: Vec::new(),
         }
     }
 
@@ -63,6 +70,38 @@ impl Recorder {
             .partition(|d| d.id == id);
         self.deltas = rest;
         mine
+    }
+
+    pub(crate) fn queue_view_event(&mut self, e: ViewEvent) {
+        self.views.push(e);
+    }
+
+    /// Remove and return the gestures waiting for viewport `id`, oldest first.
+    pub(crate) fn take_view_events(&mut self, id: u64) -> Vec<ViewEvent> {
+        if self.views.is_empty() {
+            return Vec::new();
+        }
+        let (mine, rest) = core::mem::take(&mut self.views)
+            .into_iter()
+            .partition(|e| e.id == id);
+        self.views = rest;
+        mine
+    }
+
+    pub(crate) fn queue_sketch_event(&mut self, id: u64, body: &[u8]) {
+        self.sketches.push((id, body.to_vec()));
+    }
+
+    /// Remove and return the sketch events waiting for viewport `id`, oldest first.
+    pub(crate) fn take_sketch_events(&mut self, id: u64) -> Vec<Vec<u8>> {
+        if self.sketches.is_empty() {
+            return Vec::new();
+        }
+        let (mine, rest): (Vec<_>, Vec<_>) = core::mem::take(&mut self.sketches)
+            .into_iter()
+            .partition(|(i, _)| *i == id);
+        self.sketches = rest;
+        mine.into_iter().map(|(_, b)| b).collect()
     }
 
     /// Install the response table the host wrote for the previous frame.

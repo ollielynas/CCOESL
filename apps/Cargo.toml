@@ -5,7 +5,7 @@
 # speed. They cannot share a profile table.
 [workspace]
 resolver = "3"
-members = ["file-browser", "clock", "server-dashboard", "rust-compiler", "account", "docs"]
+members = ["file-browser", "clock", "server-dashboard", "rust-compiler", "account", "docs", "modeller"]
 
 [workspace.package]
 version = "0.1.0"
@@ -15,6 +15,7 @@ license = "MIT OR Apache-2.0"
 [workspace.dependencies]
 ccosel-sdk = { path = "../crates/ccosel-sdk" }
 ccosel-proto = { path = "../crates/ccosel-proto" }
+ccosel-sketch = { path = "../crates/ccosel-sketch" }
 
 [profile.release]
 opt-level = "z"
