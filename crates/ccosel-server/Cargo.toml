@@ -7,6 +7,9 @@ description = "The CCOSEL server: hosts the shell, serves app modules, answers R
 
 [dependencies]
 ccosel-proto = { workspace = true, features = ["std"] }
+ccosel-view3d = { workspace = true }
+# Content-addresses meshes (`/cad/mesh/<hash>`), as ARCHITECTURE.md plans for all CAS URLs.
+blake3 = "1"
 anyhow = { workspace = true }
 axum = "0.8"
 dotenvy = "0.15"

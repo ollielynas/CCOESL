@@ -9,6 +9,14 @@ use ccosel_host::{AppInstance, FrameArgs, Replayer};
 use ccosel_transport::EventSink;
 
 use crate::chrome::Placement;
+use crate::fetch;
+
+/// Something a viewport asked for, come back from the network. Applied at the top of the
+/// window's next frame, since fetches resolve outside the render loop.
+enum ViewDelivery {
+    Mesh(String, Result<Vec<u8>, String>),
+    Frame(u64, Result<Vec<u8>, String>),
+}
 
 /// The delivery target for one window's RPC replies.
 ///
@@ -59,6 +67,8 @@ pub struct AppWindow<I: AppInstance> {
     /// Per `UploadFolder` button, how many uploads from it have finished. Handed to the app in
     /// that button's response (`aux`), which is how it knows to re-list the folder.
     uploads_finished: HashMap<u64, u32>,
+    /// Meshes and server-rendered frames this window's viewports asked for, as they land.
+    view_inbox: Rc<RefCell<Vec<ViewDelivery>>>,
 }
 
 impl<I: AppInstance> AppWindow<I> {
@@ -89,6 +99,49 @@ impl<I: AppInstance> AppWindow<I> {
             events: Rc::new(RefCell::new(VecDeque::new())),
             alive: Rc::new(Cell::new(true)),
             uploads_finished: HashMap::new(),
+            view_inbox: Rc::new(RefCell::new(Vec::new())),
+        }
+    }
+
+    /// Hand the replayer whatever meshes and frames have arrived since the last frame.
+    fn apply_view_deliveries(&mut self) {
+        for d in self.view_inbox.borrow_mut().drain(..) {
+            match d {
+                ViewDelivery::Mesh(url, bytes) => {
+                    self.replayer.mesh_done(&url, bytes.as_deref().map_err(Clone::clone))
+                }
+                ViewDelivery::Frame(key, bytes) => self
+                    .replayer
+                    .render_done(key, bytes.as_deref().map_err(Clone::clone)),
+            }
+        }
+    }
+
+    /// Start the fetches this frame's viewports asked for. Mesh URLs are immutable, so the
+    /// browser's HTTP cache answers a repeat for free; server frames are a POST each.
+    fn start_view_requests(&mut self, ctx: &egui::Context) {
+        for url in self.replayer.take_mesh_fetches() {
+            let inbox = self.view_inbox.clone();
+            let ctx = ctx.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                let bytes = fetch::get_bytes(&url).await;
+                inbox.borrow_mut().push(ViewDelivery::Mesh(url, bytes));
+                ctx.request_repaint();
+            });
+        }
+        for job in self.replayer.take_render_jobs() {
+            let inbox = self.view_inbox.clone();
+            let ctx = ctx.clone();
+            let Ok(body) = postcard::to_allocvec(&job.req) else {
+                continue;
+            };
+            wasm_bindgen_futures::spawn_local(async move {
+                let bytes = fetch::post_bytes(ccosel_proto::cad::RENDER_PATH, &body)
+                    .await
+                    .map_err(|e| e.to_string());
+                inbox.borrow_mut().push(ViewDelivery::Frame(job.key, bytes));
+                ctx.request_repaint();
+            });
         }
     }
 
@@ -214,6 +267,7 @@ impl<I: AppInstance> AppWindow<I> {
             ui.colored_label(egui::Color32::RED, err.as_str());
         }
 
+        self.apply_view_deliveries();
         if !self.last_commands.is_empty() {
             match self
                 .replayer
@@ -233,6 +287,12 @@ impl<I: AppInstance> AppWindow<I> {
                         self.events.borrow_mut().push_back(batch);
                         ui.ctx().request_repaint();
                     }
+                    // Likewise a finished click or push/pull in a 3D viewport.
+                    if let Some(batch) = self.replayer.take_view_events() {
+                        self.events.borrow_mut().push_back(batch);
+                        ui.ctx().request_repaint();
+                    }
+                    self.start_view_requests(ui.ctx());
                 }
                 Err(e) => {
                     // A malformed frame is dropped whole; the previous one stays up.

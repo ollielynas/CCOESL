@@ -11,6 +11,7 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use ccosel_proto::account::Account;
 use ccosel_proto::build::CompileReq;
+use ccosel_proto::cad::{ExportReq, RegenReq};
 use ccosel_proto::fs::{ListDirReq, PathReq, SearchReq, WriteFileReq};
 use ccosel_proto::info::ServerInfoReply;
 use ccosel_proto::{Method, PROTO_VERSION, WireReply, WireRequest, WireResult, server_error};
@@ -144,9 +145,36 @@ async fn dispatch(
         Method::CreateDir => run::<PathReq, _>(req, |a| (jail.create_dir(a.path, user), a.path)),
         Method::Access => run::<PathReq, _>(req, |a| (jail.access(a.path, user), a.path)),
         Method::Search => run::<SearchReq, _>(req, |a| (jail.search(&a, user), a.path)),
-        // Stubbed until the FreeCAD worker lands (issue #47).
-        Method::Regenerate | Method::ExportModel => {
-            Outcome::Err(server_error::UNAVAILABLE, "FreeCAD worker not installed".into())
+        Method::Regenerate => {
+            let Ok(a) = postcard::from_bytes::<RegenReq>(req.args) else {
+                return Outcome::Err(server_error::MALFORMED, String::new());
+            };
+            match state.cad.regenerate(&a.ops) {
+                Ok(status) => encode(&status),
+                Err(server_error::UNAVAILABLE) => Outcome::Err(
+                    server_error::UNAVAILABLE,
+                    "FreeCAD is not installed on the server".to_owned(),
+                ),
+                Err(code) => Outcome::Err(code, String::new()),
+            }
+        }
+        Method::ExportModel => {
+            let Ok(a) = postcard::from_bytes::<ExportReq>(req.args) else {
+                return Outcome::Err(server_error::MALFORMED, String::new());
+            };
+            // FreeCAD may take a while; keep it off the async threads.
+            let (cad, jail, user) = (
+                state.cad.clone(),
+                state.jail.clone(),
+                user.map(str::to_owned),
+            );
+            let done =
+                tokio::task::spawn_blocking(move || cad.export(&jail, user.as_deref(), &a)).await;
+            match done {
+                Ok(Ok(exported)) => encode(&exported),
+                Ok(Err((code, detail))) => Outcome::Err(code, detail),
+                Err(_) => Outcome::Err(server_error::IO, "the export crashed".to_owned()),
+            }
         }
     }
 }

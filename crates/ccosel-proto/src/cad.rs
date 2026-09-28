@@ -277,6 +277,12 @@ impl Default for CameraState {
     }
 }
 
+/// Where [`RenderReq`]s are POSTed.
+pub const RENDER_PATH: &str = "/cad/render";
+
+/// Where meshes are served: `MESH_PATH/<content hash>`.
+pub const MESH_PATH: &str = "/cad/mesh";
+
 /// `POST /cad/render`: draw the mesh at `mesh` (a [`Model::mesh`] URL) from `camera`, into a
 /// `width` × `height` pixel viewport. The reply body is a postcard [`crate::scene2d::Scene2D`].
 ///
