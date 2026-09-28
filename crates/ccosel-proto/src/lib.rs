@@ -18,6 +18,7 @@ pub mod build;
 pub mod fs;
 pub mod info;
 pub mod scratch;
+pub mod settings;
 
 use serde::{Deserialize, Serialize};
 
@@ -40,6 +41,10 @@ pub enum Method {
     CreateDir = 9,
     Access = 10,
     Search = 11,
+    GetSettings = 12,
+    SetSettings = 13,
+    /// Answered by the shell from its own catalog; never reaches the server.
+    ListApps = 14,
 }
 
 impl Method {
@@ -56,6 +61,9 @@ impl Method {
             9 => Some(Self::CreateDir),
             10 => Some(Self::Access),
             11 => Some(Self::Search),
+            12 => Some(Self::GetSettings),
+            13 => Some(Self::SetSettings),
+            14 => Some(Self::ListApps),
             _ => None,
         }
     }
@@ -153,4 +161,6 @@ pub mod server_error {
     pub const TOO_LARGE: u32 = 10;
     /// `CreateDir`, or creating a file, where something already exists.
     pub const EXISTS: u32 = 11;
+    /// Needs a signed-in user, and there is none: login is off, so there is no home folder.
+    pub const NO_USER: u32 = 12;
 }

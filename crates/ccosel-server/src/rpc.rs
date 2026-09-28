@@ -13,6 +13,7 @@ use ccosel_proto::account::Account;
 use ccosel_proto::build::CompileReq;
 use ccosel_proto::fs::{ListDirReq, PathReq, SearchReq, WriteFileReq};
 use ccosel_proto::info::ServerInfoReply;
+use ccosel_proto::settings::Settings;
 use ccosel_proto::{Method, PROTO_VERSION, WireReply, WireRequest, WireResult, server_error};
 
 use serde::Serialize;
@@ -144,6 +145,15 @@ async fn dispatch(
         Method::CreateDir => run::<PathReq, _>(req, |a| (jail.create_dir(a.path, user), a.path)),
         Method::Access => run::<PathReq, _>(req, |a| (jail.access(a.path, user), a.path)),
         Method::Search => run::<SearchReq, _>(req, |a| (jail.search(&a, user), a.path)),
+        Method::GetSettings => match crate::settings_api::get(jail.root(), user) {
+            Ok(settings) => encode(&settings),
+            Err(code) => Outcome::Err(code, String::new()),
+        },
+        Method::SetSettings => run::<Settings, _>(req, |a| {
+            (crate::settings_api::set(jail.root(), user, &a), "")
+        }),
+        // The shell answers this from its own catalog; the server doesn't know what it ships.
+        Method::ListApps => Outcome::Err(server_error::UNKNOWN_METHOD, String::new()),
     }
 }
 

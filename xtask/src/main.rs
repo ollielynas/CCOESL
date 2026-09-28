@@ -187,6 +187,7 @@ fn build_web() -> Result<()> {
         ("rust_compiler", "rust-compiler"),
         ("account", "account"),
         ("docs", "docs"),
+        ("settings", "settings"),
     ];
     for (crate_name, served) in guests {
         std::fs::copy(

@@ -8,7 +8,9 @@ use std::rc::Rc;
 
 use ccosel_abi::event::{decode_batch, decode_error, event_kind, rpc_error};
 use ccosel_proto::{Method, server_error};
-use ccosel_transport::{EventSink, Incoming, Outgoing, PendingKey, Transport, Wire};
+use ccosel_transport::{
+    EventSink, Incoming, Outgoing, PendingKey, Transport, Wire, answer_locally,
+};
 
 #[derive(Default)]
 struct FakeWire {
@@ -380,4 +382,21 @@ fn compile_server_errors_map_to_guest_error_codes() {
         events(&q),
         vec![(event_kind::RPC_ERR, 10, rpc_error::SERVER)]
     );
+}
+
+#[test]
+fn a_local_answer_is_one_ok_event_and_never_touches_the_wire() {
+    let q = queue();
+    answer_locally(q.as_ref(), 7, b"payload");
+    assert_eq!(events(&q), vec![(event_kind::RPC_OK, 7, 0)]);
+    let batch = q.batches.borrow()[0].clone();
+    assert_eq!(decode_batch(&batch).unwrap()[0].payload, b"payload");
+}
+
+#[test]
+fn a_local_answer_to_a_closed_window_is_dropped() {
+    let q = queue();
+    *q.alive.borrow_mut() = false;
+    answer_locally(q.as_ref(), 7, b"");
+    assert!(q.batches.borrow().is_empty());
 }

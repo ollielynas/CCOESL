@@ -80,9 +80,13 @@ fn policy(method: u16) -> (Coalesce, u32) {
         Some(Method::ReadFile) => (Coalesce::ByArgs, 8_000),
         Some(Method::Access) => (Coalesce::ByArgs, 4_000),
         Some(Method::Search) => (Coalesce::ByArgs, 8_000),
+        Some(Method::GetSettings) => (Coalesce::ByArgs, 4_000),
+        // The shell answers it before it reaches the table; listed so the match stays total.
+        Some(Method::ListApps) => (Coalesce::ByArgs, 4_000),
         // Writes: two identical saves are two saves, so they are never merged.
         Some(Method::WriteFile) => (Coalesce::None, 15_000),
         Some(Method::CreateDir) => (Coalesce::None, 8_000),
+        Some(Method::SetSettings) => (Coalesce::None, 8_000),
         None => (Coalesce::None, 4_000),
     }
 }
@@ -284,6 +288,15 @@ impl Transport {
     }
 }
 
+/// Answer a call the shell serves itself, without the wire or the pending table: it is
+/// delivered at once, as the call's one terminal event, exactly as a server reply would be.
+/// The guest cannot tell the difference, which is the point.
+pub fn answer_locally(sink: &dyn EventSink, call: u32, payload: &[u8]) {
+    if sink.alive() {
+        sink.deliver(encode_batch(&[(event_kind::RPC_OK, call, payload)]));
+    }
+}
+
 /// Server-side codes are a different space from the guest-visible ones: the guest space also
 /// covers failures that never reached the server at all.
 fn map_server_error(code: u32) -> u32 {
@@ -295,7 +308,8 @@ fn map_server_error(code: u32) -> u32 {
         | se::IO
         | se::NOT_TEXT
         | se::TOO_LARGE
-        | se::EXISTS => rpc_error::SERVER,
+        | se::EXISTS
+        | se::NO_USER => rpc_error::SERVER,
         se::UNKNOWN_METHOD | se::MALFORMED => rpc_error::DECODE,
         se::NOT_A_CARGO_PROJECT | se::TIMEOUT => rpc_error::SERVER,
         _ => rpc_error::SERVER,

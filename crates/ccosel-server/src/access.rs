@@ -36,6 +36,15 @@ use ccosel_proto::server_error;
 /// The file that holds a folder's rules.
 pub const ACCESS_FILE: &str = ".access";
 
+/// Where a user's desktop settings are kept, in their home folder. Owned by the settings
+/// methods, not by whoever edits files, so it is as invisible through the API as `.access`.
+pub const SETTINGS_FILE: &str = ".settings.json";
+
+/// Files the API never shows or touches, whatever folder they are in.
+pub fn is_reserved(name: &str) -> bool {
+    name == ACCESS_FILE || name == SETTINGS_FILE
+}
+
 /// The folder holding every user's private folder.
 pub const HOME: &str = "home";
 
@@ -74,14 +83,14 @@ impl Perms {
 }
 
 /// Split a client path into its components, refusing anything that could climb or re-root,
-/// and any mention of an `.access` file.
+/// and any mention of a reserved file (see [`is_reserved`]).
 pub fn components(requested: &str) -> Result<Vec<String>, u32> {
     let mut out = Vec::new();
     for part in Path::new(requested.trim_start_matches('/')).components() {
         match part {
             Component::Normal(p) => {
                 let p = p.to_str().ok_or(server_error::DENIED)?;
-                if p == ACCESS_FILE {
+                if is_reserved(p) {
                     return Err(server_error::DENIED);
                 }
                 out.push(p.to_owned());
@@ -138,7 +147,7 @@ pub fn perms_of_real(root: &Path, real: &Path, user: Option<&str>) -> Option<Per
         .components()
         .map(|c| c.as_os_str().to_str().map(str::to_owned))
         .collect::<Option<_>>()?;
-    if parts.iter().any(|p| p == ACCESS_FILE) {
+    if parts.iter().any(|p| is_reserved(p)) {
         return Some(Perms::NONE);
     }
     Some(perms(root, &parts, user))

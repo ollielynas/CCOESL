@@ -370,6 +370,9 @@ pub fn method_name(method: u32) -> String {
         Some(Method::CreateDir) => "create_dir",
         Some(Method::Access) => "access",
         Some(Method::Search) => "search",
+        Some(Method::GetSettings) => "get_settings",
+        Some(Method::SetSettings) => "set_settings",
+        Some(Method::ListApps) => "list_apps",
         None => "unknown",
     };
     String::from(name)

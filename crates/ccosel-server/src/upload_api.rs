@@ -52,7 +52,7 @@ pub async fn upload(
         return StatusCode::FORBIDDEN.into_response();
     };
     parts.push(params.filename.clone());
-    if params.filename == access::ACCESS_FILE || !access::perms(root, &parts, user).write {
+    if access::is_reserved(&params.filename) || !access::perms(root, &parts, user).write {
         return StatusCode::FORBIDDEN.into_response();
     }
 
