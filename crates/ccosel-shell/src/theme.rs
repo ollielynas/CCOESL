@@ -1,324 +1,318 @@
-//! The system's visual language: two palettes, one style, and the paint primitives every
+//! The system's visual language: the Brutal style (issue #42), and the paint primitives every
 //! surface shares.
 //!
 //! Guests never link egui — they emit commands the shell replays through *its* `egui::Ui`. So
 //! what is set up here is not a shell preference apps may or may not honour; it is the only
 //! style in the system. A window full of someone else's app is drawn with the same fills,
-//! radii and text sizes as the chrome around it, which is what makes a bag of separately
+//! outlines and text sizes as the chrome around it, which is what makes a bag of separately
 //! compiled wasm modules read as one desktop.
+//!
+//! The spec is `docs/style-guides/brutal.md`: black 2px outlines, square corners, hard offset
+//! shadows with no blur, one highlighter-yellow accent, Space Grotesk and Space Mono.
 
-use egui::{Color32, CornerRadius, Shadow, Stroke, StrokeKind};
+use std::sync::Arc;
 
-/// Every colour the shell draws with, in one place per theme. Chrome asks the palette rather
-/// than hard-coding a literal, so adding a theme is writing one more of these rather than
-/// hunting down every `from_rgb` in the crate.
-#[allow(dead_code, reason = "wallpaper pools and glow are future theme work")]
-pub struct Palette {
-    pub wallpaper_top: Color32,
-    pub wallpaper_bottom: Color32,
+use egui::style::{Selection, WidgetVisuals};
+use egui::{
+    Color32, CornerRadius, FontData, FontDefinitions, FontFamily, FontId, Margin, Shadow, Stroke,
+    StrokeKind, TextStyle, Vec2, vec2,
+};
+
+/// Every value the style is made of, in one place. Chrome asks for a token rather than
+/// hard-coding a literal, so the look can change here without hunting through the crate.
+pub struct Tokens {
+    /// Window bodies, bars and popups.
     pub surface: Color32,
-    pub surface_hi: Color32,
-    pub surface_hover: Color32,
-    pub border: Color32,
-    pub border_hi: Color32,
-    pub text: Color32,
+    /// Text fields, list rows and groups.
+    pub surface_alt: Color32,
+    /// A widget under the pointer.
+    pub hover: Color32,
+    /// Outlines, rules and shadows. Brutal uses one ink for all three and for text.
+    pub ink: Color32,
     pub text_dim: Color32,
-    /// The system's own accent — selection, focus, links, the shell's mark. Apps bring their
-    /// own accent from the registry; this is the colour the desktop itself speaks in.
+    /// "This one": the active window, the selection, the pressed button.
     pub accent: Color32,
-    pub accent_deep: Color32,
-    /// How opaque the dock and status bar are over the wallpaper.
-    pub glass: u8,
-    pub shadow: Color32,
-    pub shadow_soft: Color32,
-    /// Wide pools of colour laid over the wallpaper gradient, as
-    /// `(centre x, centre y, radius)` in fractions of the viewport, plus the colour. They are
-    /// what keeps a flat gradient from reading as "unstyled", while staying far too faint to
-    /// compete with an app's own accent.
-    pub pools: [(f32, f32, f32, Color32); 3],
-    pub pool_alpha: u8,
+    pub on_accent: Color32,
+    pub danger: Color32,
+    #[allow(
+        dead_code,
+        reason = "no egui visual takes it; it is for the SDK status widgets"
+    )]
+    pub success: Color32,
+    pub warn: Color32,
+    pub stroke: f32,
+    /// Windows and popups.
+    pub shadow: Shadow,
+    /// How far a button's, badge's or text field's hard shadow sits down and right of it.
+    pub widget_shadow: f32,
+    pub body: f32,
+    pub heading: f32,
+    pub small: f32,
+    pub mono: f32,
+    pub pad: Vec2,
+    pub spacing: Vec2,
+    pub margin: i8,
 }
 
-pub const DARK: Palette = Palette {
-    wallpaper_top: Color32::from_rgb(0x16, 0x1C, 0x2F),
-    wallpaper_bottom: Color32::from_rgb(0x07, 0x09, 0x10),
-    surface: Color32::from_rgb(0x14, 0x18, 0x23),
-    surface_hi: Color32::from_rgb(0x1E, 0x24, 0x33),
-    surface_hover: Color32::from_rgb(0x2A, 0x32, 0x45),
-    border: Color32::from_rgb(0x2C, 0x34, 0x48),
-    border_hi: Color32::from_rgb(0x41, 0x4D, 0x68),
-    text: Color32::from_rgb(0xE7, 0xEB, 0xF4),
-    text_dim: Color32::from_rgb(0x8C, 0x97, 0xAF),
-    accent: Color32::from_rgb(0x5B, 0x8C, 0xFF),
-    accent_deep: Color32::from_rgb(0x2E, 0x4E, 0xA8),
-    glass: 0xCC,
-    shadow: Color32::from_black_alpha(130),
-    shadow_soft: Color32::from_black_alpha(96),
-    pools: [
-        (0.16, 0.04, 0.70, Color32::from_rgb(0x6D, 0x4A, 0xFF)),
-        (0.92, 0.78, 0.78, Color32::from_rgb(0x12, 0x74, 0xD8)),
-        (0.60, 0.00, 0.44, Color32::from_rgb(0xC0, 0x3C, 0x9B)),
-    ],
-    pool_alpha: 30,
+const fn hex(rgb: u32) -> Color32 {
+    Color32::from_rgb((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8)
+}
+
+const INK: Color32 = hex(0x111111);
+
+pub const BRUTAL: Tokens = Tokens {
+    surface: Color32::WHITE,
+    surface_alt: Color32::WHITE,
+    hover: hex(0xFFF3B0),
+    ink: INK,
+    text_dim: hex(0x5A5A5A),
+    accent: hex(0xFFD400),
+    on_accent: INK,
+    danger: hex(0xFF4D2E),
+    success: hex(0x1FAF5A),
+    warn: hex(0xFF9F1C),
+    stroke: 2.0,
+    shadow: Shadow {
+        offset: [7, 7],
+        blur: 0,
+        spread: 0,
+        color: INK,
+    },
+    widget_shadow: 3.0,
+    body: 14.0,
+    heading: 24.0,
+    small: 12.0,
+    mono: 13.0,
+    pad: vec2(14.0, 7.0),
+    spacing: vec2(10.0, 10.0),
+    margin: 14,
 };
 
-pub const LIGHT: Palette = Palette {
-    wallpaper_top: Color32::from_rgb(0xF4, 0xF7, 0xFD),
-    wallpaper_bottom: Color32::from_rgb(0xE0, 0xE7, 0xF5),
-    surface: Color32::from_rgb(0xFC, 0xFD, 0xFF),
-    surface_hi: Color32::from_rgb(0xEF, 0xF2, 0xF7),
-    surface_hover: Color32::from_rgb(0xE1, 0xE7, 0xF1),
-    border: Color32::from_rgb(0xD3, 0xDA, 0xE5),
-    border_hi: Color32::from_rgb(0xA4, 0xB0, 0xC4),
-    text: Color32::from_rgb(0x10, 0x15, 0x1F),
-    text_dim: Color32::from_rgb(0x5B, 0x66, 0x7A),
-    accent: Color32::from_rgb(0x25, 0x63, 0xEB),
-    accent_deep: Color32::from_rgb(0x1D, 0x4E, 0xD8),
-    glass: 0xE0,
-    shadow: Color32::from_black_alpha(46),
-    shadow_soft: Color32::from_black_alpha(34),
-    // Saturated rather than pale: over a near-white gradient a translucent strong colour
-    // settles into a pastel, where a pale one would vanish entirely.
-    pools: [
-        (0.16, 0.04, 0.70, Color32::from_rgb(0x7C, 0x5C, 0xFF)),
-        (0.92, 0.78, 0.78, Color32::from_rgb(0x3B, 0x82, 0xF6)),
-        (0.60, 0.00, 0.44, Color32::from_rgb(0xEC, 0x48, 0x99)),
-    ],
-    pool_alpha: 26,
-};
+/// The style's tokens. Brutal is light-only, so there is one set whatever the system theme.
+pub fn tokens() -> &'static Tokens {
+    &BRUTAL
+}
 
+/// The family `TextStyle::Heading` resolves to: Space Grotesk 700. Titles use it directly.
+pub const HEADING: &str = "heading";
+
+pub fn heading_font(size: f32) -> FontId {
+    FontId::new(size, FontFamily::Name(HEADING.into()))
+}
+
+/// Whether the *system* is in dark mode. The style ignores it (there is no dark Brutal), but
+/// the wallpaper still follows it.
 pub fn is_dark(ctx: &egui::Context) -> bool {
     matches!(ctx.theme(), egui::Theme::Dark)
 }
 
-pub fn palette(ctx: &egui::Context) -> &'static Palette {
-    if is_dark(ctx) { &DARK } else { &LIGHT }
+/// Installs the fonts, and the Brutal style for both the light and the dark system theme.
+/// Called once, before the first frame: fonts only take effect from the next one, and a
+/// `FontFamily::Name` lookup before then panics.
+pub fn apply(ctx: &egui::Context) {
+    ctx.set_fonts(font_definitions());
+    for theme in [egui::Theme::Light, egui::Theme::Dark] {
+        let style = style(&ctx.style_of(theme), tokens());
+        ctx.set_style_of(theme, style);
+    }
 }
 
-/// Installs the fonts and both palettes. Called once, before the first frame.
-pub fn apply(ctx: &egui::Context) {
+/// Space Grotesk and Space Mono first in their families, with egui's default fonts and Phosphor
+/// behind them in every family. The bundled fonts are Latin subsets, so `›`, `…`, emoji and the
+/// icons in `registry::catalog` all come from the fallbacks.
+pub fn font_definitions() -> FontDefinitions {
+    let mut fonts = FontDefinitions::default();
     // Registered up front so the icons in `registry::catalog` are ordinary glyphs in ordinary
     // text and painter calls from here on, indistinguishable from the built-in font.
-    let mut fonts = egui::FontDefinitions::default();
     egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
-    ctx.set_fonts(fonts);
 
-    ctx.all_styles_mut(|style| {
-        style.spacing.item_spacing = egui::vec2(9.0, 8.0);
-        style.spacing.button_padding = egui::vec2(12.0, 7.0);
-        style.spacing.window_margin = egui::Margin::same(12);
-        style.spacing.menu_margin = egui::Margin::same(8);
-        // Scrollbars drawn over the content instead of in a reserved gutter: a listing should
-        // not change width the moment it grows long enough to scroll.
-        style.spacing.scroll = egui::style::ScrollStyle::floating();
+    for (name, bytes) in [
+        (
+            "space-grotesk",
+            &include_bytes!("../fonts/SpaceGrotesk-Regular.ttf")[..],
+        ),
+        (
+            "space-grotesk-bold",
+            &include_bytes!("../fonts/SpaceGrotesk-Bold.ttf")[..],
+        ),
+        (
+            "space-mono",
+            &include_bytes!("../fonts/SpaceMono-Regular.ttf")[..],
+        ),
+    ] {
+        fonts
+            .font_data
+            .insert(name.to_owned(), Arc::new(FontData::from_static(bytes)));
+    }
 
-        for (text_style, font) in [
-            (egui::TextStyle::Heading, egui::FontId::proportional(19.0)),
-            (egui::TextStyle::Body, egui::FontId::proportional(14.0)),
-            (egui::TextStyle::Button, egui::FontId::proportional(14.0)),
-            (egui::TextStyle::Small, egui::FontId::proportional(11.0)),
-            (egui::TextStyle::Monospace, egui::FontId::monospace(13.0)),
-        ] {
-            style.text_styles.insert(text_style, font);
+    // egui's text font, then Phosphor, then emoji: everything a label could need.
+    let fallbacks = fonts.families[&FontFamily::Proportional].clone();
+    let with = |first: &str, rest: &[String]| {
+        let mut family = vec![first.to_owned()];
+        family.extend(rest.iter().filter(|f| *f != first).cloned());
+        family
+    };
+
+    let mut mono = fonts.families[&FontFamily::Monospace].clone();
+    for f in &fallbacks {
+        if !mono.contains(f) {
+            mono.push(f.clone());
         }
-    });
+    }
 
-    ctx.set_visuals_of(egui::Theme::Dark, visuals(&DARK, true));
-    ctx.set_visuals_of(egui::Theme::Light, visuals(&LIGHT, false));
+    fonts
+        .families
+        .insert(FontFamily::Proportional, with("space-grotesk", &fallbacks));
+    fonts.families.insert(
+        FontFamily::Name(HEADING.into()),
+        with("space-grotesk-bold", &fallbacks),
+    );
+    fonts
+        .families
+        .insert(FontFamily::Monospace, with("space-mono", &mono));
+    fonts
 }
 
-fn visuals(p: &Palette, dark: bool) -> egui::Visuals {
-    let mut v = if dark {
-        egui::Visuals::dark()
-    } else {
-        egui::Visuals::light()
-    };
+/// `base` with the Brutal spacing, text styles and visuals. `base` only contributes what the
+/// style doesn't set (animation timings, interaction settings and the like).
+fn style(base: &egui::Style, t: &Tokens) -> egui::Style {
+    let mut s = base.clone();
 
-    v.panel_fill = translucent(p.surface, p.glass);
-    v.window_fill = translucent(p.surface, 0xF2);
-    v.window_stroke = Stroke::new(1.0, p.border);
-    v.window_corner_radius = CornerRadius::same(14);
-    v.menu_corner_radius = CornerRadius::same(12);
+    s.spacing.item_spacing = t.spacing;
+    s.spacing.button_padding = t.pad;
+    s.spacing.window_margin = Margin::same(t.margin);
+    s.spacing.menu_margin = Margin::same(8);
+    s.spacing.interact_size.y = t.body + 2.0 * t.pad.y;
+    // Scrollbars drawn over the content instead of in a reserved gutter: a listing should
+    // not change width the moment it grows long enough to scroll.
+    s.spacing.scroll = egui::style::ScrollStyle::floating();
 
-    // Wide and soft rather than tight and dark. The shadow is what separates a window from the
-    // wallpaper, which means the border does not have to be heavy enough to do it alone.
-    v.window_shadow = Shadow {
-        offset: [0, 18],
-        blur: 48,
-        spread: 0,
-        color: p.shadow,
-    };
-    v.popup_shadow = Shadow {
-        offset: [0, 10],
-        blur: 28,
-        spread: 0,
-        color: p.shadow_soft,
-    };
+    s.text_styles = [
+        (TextStyle::Heading, heading_font(t.heading)),
+        (TextStyle::Body, FontId::proportional(t.body)),
+        (TextStyle::Button, FontId::proportional(t.body)),
+        (TextStyle::Small, FontId::proportional(t.small)),
+        (TextStyle::Monospace, FontId::monospace(t.mono)),
+    ]
+    .into();
 
-    v.extreme_bg_color = if dark {
-        Color32::from_rgb(0x0C, 0x0F, 0x18)
-    } else {
-        Color32::from_rgb(0xFF, 0xFF, 0xFF)
-    };
-    v.faint_bg_color = p.surface_hi;
-    v.code_bg_color = p.surface_hi;
-    v.hyperlink_color = p.accent;
-    v.warn_fg_color = Color32::from_rgb(0xF5, 0x9E, 0x0B);
-    v.error_fg_color = Color32::from_rgb(0xF8, 0x71, 0x71);
-    v.selection = egui::style::Selection {
-        bg_fill: translucent(p.accent, 0x5C),
-        stroke: Stroke::new(1.0, p.text),
-    };
+    s.visuals = visuals(t);
+    s
+}
 
-    v.widgets.noninteractive = widget(p.surface, p.border, p.text);
-    v.widgets.inactive = widget(p.surface_hi, p.border, p.text);
-    v.widgets.hovered = widget(p.surface_hover, p.border_hi, p.text);
-    v.widgets.active = widget(p.accent_deep, p.accent, Color32::WHITE);
-    v.widgets.open = widget(p.surface_hover, p.border_hi, p.text);
+fn visuals(t: &Tokens) -> egui::Visuals {
+    let mut v = egui::Visuals::light();
+    let square = CornerRadius::ZERO;
+
+    v.panel_fill = t.surface;
+    v.window_fill = t.surface;
+    v.window_stroke = Stroke::new(t.stroke, t.ink);
+    v.window_corner_radius = square;
+    v.menu_corner_radius = square;
+    v.window_shadow = t.shadow;
+    v.popup_shadow = t.shadow;
+
+    // Text-edit background, `Grid::striped` and code: all plain white. Brutal separates things
+    // with outlines, not tints.
+    v.extreme_bg_color = t.surface_alt;
+    v.faint_bg_color = t.surface_alt;
+    v.code_bg_color = t.surface_alt;
+    v.hyperlink_color = t.accent;
+    v.warn_fg_color = t.warn;
+    v.error_fg_color = t.danger;
+    // What `.weak()` resolves to. Without it, weak text is ink at reduced alpha, which is
+    // muddy on anything that isn't white.
+    v.weak_text_color = Some(t.text_dim);
+
+    // Solid yellow with ink text; never a tint. The stroke is also the focus ring on text
+    // fields, so it is the outline ink rather than the accent.
+    v.selection = Selection {
+        bg_fill: t.accent,
+        stroke: Stroke::new(t.stroke, t.on_accent),
+    };
+    v.text_cursor.stroke = Stroke::new(2.0, t.accent);
+
+    v.widgets.noninteractive = widget(t, t.surface, t.ink); // separators, group frames
+    v.widgets.inactive = widget(t, t.surface_alt, t.ink); // idle buttons
+    v.widgets.hovered = widget(t, t.hover, t.ink);
+    // Pressed is yellow, and its text stays ink: egui also draws `RichText::strong()` in this
+    // state's text colour, and white strong text on a white window would vanish.
+    v.widgets.active = widget(t, t.accent, t.on_accent);
+    v.widgets.open = widget(t, t.hover, t.ink);
 
     v
 }
 
-/// Every state's `expansion` equals its stroke width, and that is load-bearing: it is what
-/// keeps a button the same size when the pointer reaches it.
-///
-/// Guest buttons are frameless at rest and framed on hover (`frame_when_inactive(false)` in
-/// `ccosel-host`). egui 0.36 sizes the framed case as `button_padding`, but the frameless case
-/// as `button_padding + expansion - stroke width`, since it keeps the frame's inner margin and
-/// drops the stroke. With a 1px stroke and no expansion every guest button grew 2px on hover,
-/// and the rows after it moved: the jitter. Equal values cancel in both cases, and since every
-/// state uses the same ones, the painted frame never changes size between states either.
-fn widget(fill: Color32, stroke: Color32, text: Color32) -> egui::style::WidgetVisuals {
-    const STROKE: f32 = 1.0;
-    egui::style::WidgetVisuals {
+/// One interaction state. Every state has the same stroke width and no `expansion`, so a
+/// button stays exactly the same size, and sits exactly on its shadow, whatever the pointer
+/// does.
+fn widget(t: &Tokens, fill: Color32, text: Color32) -> WidgetVisuals {
+    WidgetVisuals {
         bg_fill: fill,
         weak_bg_fill: fill,
-        bg_stroke: Stroke::new(STROKE, stroke),
-        corner_radius: CornerRadius::same(8),
+        bg_stroke: Stroke::new(t.stroke, t.ink),
+        corner_radius: CornerRadius::ZERO,
         fg_stroke: Stroke::new(1.0, text),
-        expansion: STROKE,
+        expansion: 0.0,
     }
 }
 
-fn translucent(color: Color32, alpha: u8) -> Color32 {
-    Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), alpha)
+/// A solid ink block `offset` down and right of `rect`: the hard shadow. Paint it first, then
+/// the thing casting it.
+pub fn paint_hard_shadow(painter: &egui::Painter, rect: egui::Rect, offset: f32) {
+    painter.rect_filled(rect.translate(Vec2::splat(offset)), 0, tokens().ink);
 }
 
-/// Fill for the dock and status bar — surfaces that sit *on* the wallpaper and let it show
-/// through rather than replacing it.
-pub fn glass(p: &Palette) -> Color32 {
-    translucent(p.surface, p.glass)
+/// A full-width ink rule along the top (`Min`) or bottom edge of `rect`, inside it.
+pub fn paint_rule(painter: &egui::Painter, rect: egui::Rect, edge: egui::Align) {
+    let t = tokens();
+    let y = match edge {
+        egui::Align::Min => rect.top() + t.stroke / 2.0,
+        _ => rect.bottom() - t.stroke / 2.0,
+    };
+    painter.hline(rect.x_range(), y, Stroke::new(t.stroke, t.ink));
 }
 
-pub fn glass_border(p: &Palette) -> Color32 {
-    translucent(p.border_hi, 0x80)
-}
-
-/// Paints the desktop background across the whole viewport, beneath every panel and window.
-///
-/// Drawn into the background layer rather than a `CentralPanel`, because the status bar and
-/// dock are translucent and need something to be translucent *over*: a panel-sized wallpaper
-/// would stop at their edges and leave them compositing against nothing.
-pub fn paint_wallpaper(_ctx: &egui::Context) {}
-
-/// A soft circular pool of light: a triangle fan from a coloured centre out to a ring of fully
-/// transparent vertices, which is a radial falloff the tessellator interpolates for free.
-#[allow(dead_code, reason = "wallpaper pools are future theme work")]
-fn glow(painter: &egui::Painter, center: egui::Pos2, radius: f32, color: Color32, alpha: u8) {
-    const SEGMENTS: usize = 64;
-
-    let mut mesh = egui::Mesh::default();
-    mesh.colored_vertex(center, translucent(color, alpha));
-    for i in 0..=SEGMENTS {
-        let angle = i as f32 / SEGMENTS as f32 * std::f32::consts::TAU;
-        mesh.colored_vertex(
-            center + radius * egui::vec2(angle.cos(), angle.sin()),
-            translucent(color, 0),
-        );
+/// A square filled with `color`, outlined in ink, with `icon` centred on it: an app's identity
+/// compressed to a single mark. `shadow` is false while the badge is pressed, so it reads as
+/// pushed in, the same as a button.
+pub fn paint_badge(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    icon: &str,
+    color: Color32,
+    shadow: bool,
+) {
+    let t = tokens();
+    if shadow {
+        paint_hard_shadow(painter, rect, t.widget_shadow);
     }
-    for i in 1..=SEGMENTS as u32 {
-        mesh.add_triangle(0, i, i + 1);
-    }
-    painter.add(egui::Shape::mesh(mesh));
-}
-
-/// The corner radius of a badge of the given size. Shared so a badge and the glow cast behind
-/// it round off identically — a mismatch of even a pixel shows up as a halo at the corners.
-pub fn badge_radius(size: f32) -> CornerRadius {
-    CornerRadius::same((size * 0.29) as u8)
-}
-
-/// A rounded square filled with `color`, with `icon` centred on it: an app's identity
-/// compressed to a single mark, the treatment a dock or launcher gives every app on the system.
-pub fn paint_badge(painter: &egui::Painter, rect: egui::Rect, icon: &str, color: Color32) {
-    let radius = badge_radius(rect.width());
-
-    painter.add(
-        Shadow {
-            offset: [0, 2],
-            blur: 9,
-            spread: 0,
-            color: Color32::from_black_alpha(96),
-        }
-        .as_shape(rect, radius),
-    );
-    painter.rect_filled(rect, radius, color);
-    // A rim light along the inside edge. One pixel of it is the difference between a flat
-    // coloured square and something that reads as a physical tile catching the light.
-    painter.rect_stroke(
+    painter.rect(
         rect,
-        radius,
-        Stroke::new(1.0, Color32::from_white_alpha(38)),
+        0,
+        color,
+        Stroke::new(t.stroke, t.ink),
         StrokeKind::Inside,
     );
 
     let fg = contrast_color(color);
-    let font = egui::FontId::proportional(rect.height() * 0.56);
+    let font = FontId::proportional(rect.height() * 0.52);
     let galley = painter.layout_no_wrap(icon.to_owned(), font, fg);
     painter.galley(rect.center() - galley.size() / 2.0, galley, fg);
 }
 
-/// A coloured bloom behind a badge, at `strength` 0..=1. Reuses the shadow machinery: a blurred
-/// rect in the app's own colour is exactly the glow a dock icon wants under the pointer.
-pub fn paint_glow(painter: &egui::Painter, rect: egui::Rect, color: Color32, strength: f32) {
-    if strength <= 0.0 {
-        return;
-    }
-    painter.add(
-        Shadow {
-            offset: [0, 0],
-            blur: (26.0 * strength) as u8,
-            spread: (4.0 * strength) as u8,
-            color: color.gamma_multiply(0.6 * strength),
-        }
-        .as_shape(rect, badge_radius(rect.width())),
-    );
-}
-
-/// White or near-black, whichever reads better on `bg` — so a badge's glyph stays legible
-/// whether the app picked a light or a dark accent.
+/// White or ink, whichever reads better on `bg`, so a badge's glyph stays legible whether the
+/// app picked a light or a dark colour.
 pub fn contrast_color(bg: Color32) -> Color32 {
-    let to_linear = |c: u8| {
-        let c = c as f32 / 255.0;
-        if c <= 0.04045 {
-            c / 12.92
-        } else {
-            ((c + 0.055) / 1.055).powf(2.4)
-        }
-    };
-    let luminance =
-        0.2126 * to_linear(bg.r()) + 0.7152 * to_linear(bg.g()) + 0.0722 * to_linear(bg.b());
-    if luminance > 0.42 {
-        Color32::from_rgb(0x12, 0x14, 0x1A)
+    if luminance(bg) > 0.42 {
+        tokens().ink
     } else {
         Color32::WHITE
     }
 }
 
-/// The WCAG 2 contrast ratio between two colours: 1:1 is none, 21:1 is black on white, and
-/// `>= 4.5` is the AA bar for normal-size text.
-#[cfg(test)]
-fn contrast_ratio(a: Color32, b: Color32) -> f32 {
+/// WCAG relative luminance, 0 (black) to 1 (white).
+fn luminance(c: Color32) -> f32 {
     fn to_linear(c: u8) -> f32 {
         let c = c as f32 / 255.0;
         if c <= 0.04045 {
@@ -327,9 +321,13 @@ fn contrast_ratio(a: Color32, b: Color32) -> f32 {
             ((c + 0.055) / 1.055).powf(2.4)
         }
     }
-    fn luminance(c: Color32) -> f32 {
-        0.2126 * to_linear(c.r()) + 0.7152 * to_linear(c.g()) + 0.0722 * to_linear(c.b())
-    }
+    0.2126 * to_linear(c.r()) + 0.7152 * to_linear(c.g()) + 0.0722 * to_linear(c.b())
+}
+
+/// The WCAG 2 contrast ratio between two colours: 1:1 is none, 21:1 is black on white, and
+/// `>= 4.5` is the AA bar for normal-size text.
+#[cfg(test)]
+fn contrast_ratio(a: Color32, b: Color32) -> f32 {
     let (la, lb) = (luminance(a), luminance(b));
     let (lighter, darker) = if la > lb { (la, lb) } else { (lb, la) };
     (lighter + 0.05) / (darker + 0.05)
@@ -345,67 +343,229 @@ mod tests {
 
     const AA_TEXT: f32 = 4.5;
 
+    fn applied(theme: egui::Theme) -> egui::Context {
+        let ctx = egui::Context::default();
+        apply(&ctx);
+        ctx.set_theme(theme);
+        ctx
+    }
+
     #[wasm_bindgen_test]
-    fn text_clears_aa_contrast_on_surface_in_both_themes() {
-        for (name, p) in [("dark", &DARK), ("light", &LIGHT)] {
-            let ratio = contrast_ratio(p.text, p.surface);
-            assert!(ratio >= AA_TEXT, "{name} text/surface contrast is {ratio}");
+    fn both_system_themes_get_the_same_brutal_style() {
+        let light = applied(egui::Theme::Light);
+        let dark = applied(egui::Theme::Dark);
+        // Compared as text: `Style` holds NaN defaults, and NaN never equals itself.
+        assert_eq!(
+            format!("{:?}", light.style_of(egui::Theme::Light)),
+            format!("{:?}", dark.style_of(egui::Theme::Dark))
+        );
+        assert!(!dark.global_style().visuals.dark_mode);
+        // The wallpaper reads the system theme, which the style must not override.
+        assert!(is_dark(&dark));
+        assert!(!is_dark(&light));
+    }
+
+    #[wasm_bindgen_test]
+    fn outlines_are_square_two_pixel_ink_everywhere() {
+        let ctx = applied(egui::Theme::Light);
+        let v = &ctx.global_style().visuals;
+        let ink = Stroke::new(2.0, hex(0x111111));
+
+        assert_eq!(v.window_stroke, ink);
+        assert_eq!(v.window_corner_radius, CornerRadius::ZERO);
+        assert_eq!(v.menu_corner_radius, CornerRadius::ZERO);
+        let w = &v.widgets;
+        for (name, state) in [
+            ("noninteractive", &w.noninteractive),
+            ("inactive", &w.inactive),
+            ("hovered", &w.hovered),
+            ("active", &w.active),
+            ("open", &w.open),
+        ] {
+            assert_eq!(state.bg_stroke, ink, "{name}");
+            assert_eq!(state.corner_radius, CornerRadius::ZERO, "{name}");
+            assert_eq!(state.expansion, 0.0, "{name}");
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn windows_and_popups_cast_a_hard_offset_shadow() {
+        let ctx = applied(egui::Theme::Light);
+        let v = &ctx.global_style().visuals;
+        let hard = Shadow {
+            offset: [7, 7],
+            blur: 0,
+            spread: 0,
+            color: hex(0x111111),
+        };
+        assert_eq!(v.window_shadow, hard);
+        assert_eq!(v.popup_shadow, hard);
+    }
+
+    #[wasm_bindgen_test]
+    fn the_palette_matches_the_spec() {
+        let ctx = applied(egui::Theme::Light);
+        let v = &ctx.global_style().visuals;
+        let (ink, yellow) = (hex(0x111111), hex(0xFFD400));
+
+        assert_eq!(v.window_fill, Color32::WHITE);
+        assert_eq!(v.panel_fill, Color32::WHITE);
+        assert_eq!(v.extreme_bg_color, Color32::WHITE);
+        assert_eq!(v.widgets.inactive.bg_fill, Color32::WHITE);
+        assert_eq!(v.widgets.hovered.bg_fill, hex(0xFFF3B0));
+        assert_eq!(v.widgets.active.bg_fill, yellow);
+        assert_eq!(v.selection.bg_fill, yellow);
+        assert_eq!(v.selection.stroke.color, ink);
+        assert_eq!(v.hyperlink_color, yellow);
+        assert_eq!(v.weak_text_color, Some(hex(0x5A5A5A)));
+        assert_eq!(v.error_fg_color, hex(0xFF4D2E));
+        assert_eq!(v.warn_fg_color, hex(0xFF9F1C));
+        assert_eq!(BRUTAL.success, hex(0x1FAF5A));
+    }
+
+    #[wasm_bindgen_test]
+    fn strong_text_is_ink_not_white() {
+        // egui draws `RichText::strong()` in `widgets.active.fg_stroke`.
+        let ctx = applied(egui::Theme::Light);
+        let v = &ctx.global_style().visuals;
+        assert_eq!(v.widgets.active.fg_stroke.color, hex(0x111111));
+        assert_eq!(v.strong_text_color(), hex(0x111111));
+    }
+
+    #[wasm_bindgen_test]
+    fn text_clears_aa_contrast_on_every_surface_it_sits_on() {
+        let t = tokens();
+        for (name, fg, bg) in [
+            ("ink on surface", t.ink, t.surface),
+            ("dim on surface", t.text_dim, t.surface),
+            ("ink on hover", t.ink, t.hover),
+            ("ink on accent", t.on_accent, t.accent),
+        ] {
+            let ratio = contrast_ratio(fg, bg);
+            assert!(ratio >= AA_TEXT, "{name}: {ratio}");
         }
     }
 
     #[wasm_bindgen_test]
     fn identical_colors_have_no_contrast() {
-        assert!((contrast_ratio(DARK.text, DARK.text) - 1.0).abs() < 1e-6);
+        assert!((contrast_ratio(INK, INK) - 1.0).abs() < 1e-6);
     }
 
-    /// Size of a button, drawn the way `ccosel-host` draws guest buttons, with the pointer at
-    /// `pointer`. Two frames per call: egui styles a widget by its state from the frame before.
-    fn button_size(ctx: &egui::Context, pointer: egui::Pos2, framed: bool) -> egui::Vec2 {
+    #[wasm_bindgen_test]
+    fn text_styles_use_the_bundled_fonts_at_the_spec_sizes() {
+        let ctx = applied(egui::Theme::Light);
+        let styles = &ctx.global_style().text_styles;
+        let heading = FontFamily::Name(HEADING.into());
+        assert_eq!(
+            styles[&TextStyle::Heading],
+            FontId::new(24.0, heading.clone())
+        );
+        assert_eq!(styles[&TextStyle::Body], FontId::proportional(14.0));
+        assert_eq!(styles[&TextStyle::Button], FontId::proportional(14.0));
+        assert_eq!(styles[&TextStyle::Small], FontId::proportional(12.0));
+        assert_eq!(styles[&TextStyle::Monospace], FontId::monospace(13.0));
+
+        let fonts = font_definitions();
+        assert_eq!(
+            fonts.families[&FontFamily::Proportional][0],
+            "space-grotesk"
+        );
+        assert_eq!(fonts.families[&heading][0], "space-grotesk-bold");
+        assert_eq!(fonts.families[&FontFamily::Monospace][0], "space-mono");
+    }
+
+    #[wasm_bindgen_test]
+    fn every_family_falls_back_to_egui_defaults_and_phosphor() {
+        let fonts = font_definitions();
+        for family in [
+            FontFamily::Proportional,
+            FontFamily::Monospace,
+            FontFamily::Name(HEADING.into()),
+        ] {
+            let list = &fonts.families[&family];
+            for fallback in ["Ubuntu-Light", "phosphor", "NotoEmoji-Regular"] {
+                let at = list.iter().position(|f| f == fallback);
+                assert!(
+                    at.is_some_and(|i| i > 0),
+                    "{family:?} lacks {fallback} as a fallback: {list:?}"
+                );
+            }
+        }
+    }
+
+    /// The fallbacks actually resolve: a glyph missing from the Latin subsets still lays out
+    /// with a real glyph, not the replacement box.
+    #[wasm_bindgen_test]
+    fn glyphs_outside_the_subset_still_render() {
+        let ctx = applied(egui::Theme::Light);
+        // Fonts land on the first frame after `set_fonts`.
+        let mut out = ctx.run_ui(egui::RawInput::default(), |_| {});
+        out.textures_delta.clear();
+        let icon = egui_phosphor::regular::FOLDER.chars().next().unwrap();
+        for family in [
+            FontFamily::Proportional,
+            FontFamily::Monospace,
+            FontFamily::Name(HEADING.into()),
+        ] {
+            for c in ['›', '…', 'A', icon] {
+                let has = ctx.fonts_mut(|f| f.has_glyph(&FontId::new(14.0, family.clone()), c));
+                assert!(has, "{family:?} cannot draw {c:?}");
+            }
+        }
+    }
+
+    /// Size of a button with the pointer at `pointer`, held down if `pressed`. Two frames per
+    /// call: egui styles a widget by its state from the frame before.
+    fn button_size(ctx: &egui::Context, pointer: egui::Pos2, pressed: bool) -> egui::Vec2 {
         let mut size = egui::Vec2::ZERO;
         for _ in 0..2 {
+            let mut events = vec![egui::Event::PointerMoved(pointer)];
+            if pressed {
+                events.push(egui::Event::PointerButton {
+                    pos: pointer,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                });
+            }
             let input = egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,
                     egui::vec2(400.0, 300.0),
                 )),
-                events: vec![egui::Event::PointerMoved(pointer)],
+                events,
                 ..Default::default()
             };
             let mut out = ctx.run_ui(input, |ui| {
-                let r = ui.add(egui::Button::new("Refresh").frame_when_inactive(framed));
-                size = r.rect.size();
+                size = ui.add(egui::Button::new("Refresh")).rect.size();
             });
             out.textures_delta.clear();
         }
         size
     }
 
+    /// A button that grew when hovered or pressed would slide off its own shadow, and push every
+    /// row after it along.
     #[wasm_bindgen_test]
-    fn hovering_a_button_does_not_change_its_size() {
+    fn hovering_or_pressing_a_button_does_not_change_its_size() {
         for theme in [egui::Theme::Dark, egui::Theme::Light] {
-            for framed in [false, true] {
-                let ctx = egui::Context::default();
-                apply(&ctx);
-                ctx.set_theme(theme);
-                let away = button_size(&ctx, egui::pos2(390.0, 290.0), framed);
-                let over = button_size(&ctx, egui::pos2(12.0, 12.0), framed);
-                assert_eq!(
-                    away, over,
-                    "{theme:?}, framed at rest: {framed}: hover resized the button"
-                );
-            }
+            let ctx = applied(theme);
+            let away = button_size(&ctx, egui::pos2(390.0, 290.0), false);
+            let over = button_size(&ctx, egui::pos2(20.0, 12.0), false);
+            let down = button_size(&ctx, egui::pos2(20.0, 12.0), true);
+            assert_eq!(away, over, "{theme:?}: hover resized the button");
+            assert_eq!(away, down, "{theme:?}: press resized the button");
         }
     }
 
     /// Guards the test above: it only proves anything if hovering really reached the button.
     #[wasm_bindgen_test]
     fn the_hover_in_the_size_test_lands_on_the_button() {
-        let ctx = egui::Context::default();
-        apply(&ctx);
+        let ctx = applied(egui::Theme::Light);
         let mut hovered = false;
         for _ in 0..2 {
             let input = egui::RawInput {
-                events: vec![egui::Event::PointerMoved(egui::pos2(12.0, 12.0))],
+                events: vec![egui::Event::PointerMoved(egui::pos2(20.0, 12.0))],
                 ..Default::default()
             };
             let mut out = ctx.run_ui(input, |ui| {
@@ -414,5 +574,12 @@ mod tests {
             out.textures_delta.clear();
         }
         assert!(hovered);
+    }
+
+    #[wasm_bindgen_test]
+    fn badge_glyphs_contrast_with_their_fill() {
+        assert_eq!(contrast_color(Color32::WHITE), INK);
+        assert_eq!(contrast_color(hex(0xFFD400)), INK);
+        assert_eq!(contrast_color(hex(0x1D4ED8)), Color32::WHITE);
     }
 }
