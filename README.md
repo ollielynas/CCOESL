@@ -121,4 +121,13 @@ sets itself up.
   with the app documentation), Keycloak's accounts, and the admin password. Remove the
   container freely; remove the volume only to start over.
 - **Smaller image:** `docker build --build-arg WITH_RUST=0 -t ccosel .` leaves out the Rust
-  toolchain the Compiler app builds with, about 1 GB. Everything else still works.
+  toolchain the Compiler app builds with, about 1 GB, and `--build-arg WITH_OCTAVE=0` leaves
+  out GNU Octave, which the Octave app runs. Everything else still works.
+
+## Octave
+
+The Octave app runs GNU Octave on the server, one session per signed-in user. The server uses
+`octave-cli` from the `PATH` (install `octave`, and `gnuplot` for plots); set `CCOSEL_OCTAVE` to
+the program to use instead, or to empty to turn the app off. Without Octave, the app says so and
+nothing else changes. Like the Compiler, it runs whatever code people give it as the server's
+user; see "Known limitation" in `ARCHITECTURE.md`.

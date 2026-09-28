@@ -232,7 +232,12 @@ build scripts (`build.rs`) and procedural macros as part of the build, so **buil
 runs arbitrary code as the server's user**, with its filesystem and network access. The jail
 is a path check on which directory gets built, not a sandbox around the build.
 
-Until that changes, only build projects you would be willing to run yourself. A real sandbox
+The Octave app has the same problem more directly: running Octave code *is* running arbitrary
+code, as the server's user (`system`, file I/O, sockets). Octave's session starts in the user's
+home folder, but nothing keeps it there.
+
+Until that changes, only build projects, and let people run Octave code, you would be willing
+to run yourself. A real sandbox
 would need, at minimum: an unprivileged user or a fresh container per build; the filesystem
 limited to the project and the toolchain, read-only except the project's `target/`; no
 network (dependencies vendored or fetched by a separate step); and CPU, memory and time

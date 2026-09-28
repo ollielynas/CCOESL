@@ -45,6 +45,16 @@ RUN apt-get update \
        fi \
     && rm -rf /var/lib/apt/lists/*
 
+# The Octave app runs GNU Octave on the server, drawing figures with gnuplot. Without it that
+# app says Octave isn't installed and everything else works: `--build-arg WITH_OCTAVE=0` makes
+# the image a few hundred MB smaller.
+ARG WITH_OCTAVE=1
+RUN if [ "$WITH_OCTAVE" = 1 ]; then \
+      apt-get update \
+      && apt-get install -y --no-install-recommends octave gnuplot-nox \
+      && rm -rf /var/lib/apt/lists/*; \
+    fi
+
 COPY --from=build /usr/local/bin/ccosel-server /usr/local/bin/ccosel-server
 COPY --from=build /src/web /srv/ccosel/web
 # The Docs app's pages. A new named volume starts with these; an existing one keeps its own.
