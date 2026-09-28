@@ -423,7 +423,22 @@ impl Cx<'_> {
                 }
 
                 Cmd::Selectable { id, text, selected } => {
-                    let r = ui.selectable_label(selected, text);
+                    // egui frames an unselected selectable only on hover, and a frame's stroke
+                    // adds to a widget's size, so hovering grew it by the stroke width and
+                    // shoved everything after it along. Always frame it instead, with the
+                    // resting outline and fill invisible: the size never changes, and hovering
+                    // only changes colour.
+                    let r = ui
+                        .scope(|ui| {
+                            let rest = &mut ui.visuals_mut().widgets.inactive;
+                            rest.bg_stroke.color = egui::Color32::TRANSPARENT;
+                            rest.bg_fill = egui::Color32::TRANSPARENT;
+                            rest.weak_bg_fill = egui::Color32::TRANSPARENT;
+                            ui.add(
+                                egui::Button::selectable(selected, text).frame_when_inactive(true),
+                            )
+                        })
+                        .inner;
                     self.finish(id, r);
                 }
 

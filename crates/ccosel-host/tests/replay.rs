@@ -807,3 +807,36 @@ fn a_scroll_region_is_bounded_by_the_window_and_scrolls_on_its_own() {
         find(&out, 1000).rect
     );
 }
+
+#[test]
+fn a_selectable_at_rest_has_an_invisible_outline_and_a_visible_one_when_hovered() {
+    // Framed in every state so hovering can't change its size, but only visibly on hover.
+    let buf = encode(&[Cmd::Selectable {
+        id: 21,
+        text: "notes.md",
+        selected: false,
+    }]);
+    let ctx = inked_context();
+    ctx.all_styles_mut(|s| {
+        s.visuals.widgets.hovered.bg_stroke = egui::Stroke::new(2.0, INK);
+    });
+    let mut r = Replayer::new();
+    let outline = |shapes: &[egui::Shape], rect: egui::Rect| {
+        shapes.iter().find_map(|s| match s {
+            egui::Shape::Rect(r) if r.rect == rect => Some(r.stroke),
+            _ => None,
+        })
+    };
+
+    let (recs, shapes) = frame_shapes(&ctx, &mut r, &buf, raw_input());
+    let rect = rect_of(&find(&recs, 21));
+    let rest = outline(&shapes, rect).expect("framed at rest");
+    assert_eq!(rest.color, egui::Color32::TRANSPARENT);
+
+    let mut hover = raw_input();
+    hover.events = vec![egui::Event::PointerMoved(rect.center())];
+    frame_shapes(&ctx, &mut r, &buf, hover.clone());
+    let (recs, shapes) = frame_shapes(&ctx, &mut r, &buf, hover);
+    assert_eq!(rect_of(&find(&recs, 21)), rect, "same size when hovered");
+    assert_eq!(outline(&shapes, rect).expect("framed").color, INK);
+}

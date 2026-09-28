@@ -559,6 +559,88 @@ mod tests {
         }
     }
 
+    /// What guests actually get: every clickable command, replayed through the real `Replayer`
+    /// under this theme, keeps exactly the same rect at rest, hovered and pressed. Anything that
+    /// gained its outline only on hover would grow by the stroke and shove its neighbours along.
+    #[wasm_bindgen_test]
+    fn no_guest_widget_changes_size_on_hover_or_press() {
+        use ccosel_abi::{Cmd, Encoder};
+
+        let cases: [(&str, Cmd<'_>); 6] = [
+            (
+                "button",
+                Cmd::Button {
+                    id: 1,
+                    text: "Refresh",
+                },
+            ),
+            (
+                "selectable",
+                Cmd::Selectable {
+                    id: 1,
+                    text: "notes.md",
+                    selected: false,
+                },
+            ),
+            (
+                "selected selectable",
+                Cmd::Selectable {
+                    id: 1,
+                    text: "notes.md",
+                    selected: true,
+                },
+            ),
+            ("upload folder", Cmd::UploadFolder { id: 1, dest: "/" }),
+            ("upload project", Cmd::UploadProject { id: 1 }),
+            (
+                "open url",
+                Cmd::OpenUrl {
+                    id: 1,
+                    label: "Download",
+                    url: "/f",
+                },
+            ),
+        ];
+        for (name, cmd) in cases {
+            let mut e = Encoder::new();
+            e.push(&cmd);
+            let buf = e.as_slice().to_vec();
+
+            let ctx = applied(egui::Theme::Light);
+            let mut replayer = ccosel_host::Replayer::new();
+            let mut frame = |events: Vec<egui::Event>| {
+                let mut rect = [0.0; 4];
+                // Two frames: egui styles a widget by its state from the frame before.
+                for _ in 0..2 {
+                    let input = egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(400.0, 300.0),
+                        )),
+                        events: events.clone(),
+                        ..Default::default()
+                    };
+                    let mut out = ctx.run_ui(input, |ui| {
+                        rect = replayer.replay(ui, 1, &buf).unwrap()[0].rect;
+                    });
+                    out.textures_delta.clear();
+                }
+                rect
+            };
+            let rest = frame(vec![egui::Event::PointerMoved(egui::pos2(390.0, 290.0))]);
+            let inside = egui::pos2(rest[0] + 6.0, rest[1] + 6.0);
+            let hover = frame(vec![egui::Event::PointerMoved(inside)]);
+            let press = frame(vec![egui::Event::PointerButton {
+                pos: inside,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Default::default(),
+            }]);
+            assert_eq!(rest, hover, "{name}: hover changed its rect");
+            assert_eq!(rest, press, "{name}: press changed its rect");
+        }
+    }
+
     /// Guards the test above: it only proves anything if hovering really reached the button.
     #[wasm_bindgen_test]
     fn the_hover_in_the_size_test_lands_on_the_button() {
