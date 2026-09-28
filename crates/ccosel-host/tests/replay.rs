@@ -368,6 +368,158 @@ fn upload_project_is_drawn_and_tracked() {
     assert!(r.uploads().is_empty(), "not mixed up with UploadFolder");
 }
 
+// --- Hard shadows behind buttons and text fields -------------------------------------------
+
+/// The colour the shadow is drawn in: the widget outline's, so the host picks up the shell's
+/// ink without naming a colour itself. Unusual enough that nothing else in a frame is it.
+const INK: egui::Color32 = egui::Color32::from_rgb(0x11, 0x22, 0x33);
+
+fn inked_context() -> egui::Context {
+    let ctx = egui::Context::default();
+    ctx.all_styles_mut(|s| {
+        s.visuals.widgets.inactive.bg_stroke = egui::Stroke::new(2.0, INK);
+    });
+    ctx
+}
+
+/// Like `frame`, but returns what was painted instead of the response table.
+fn frame_shapes(
+    ctx: &egui::Context,
+    replayer: &mut Replayer,
+    buf: &[u8],
+    input: egui::RawInput,
+) -> (Vec<RespRecord>, Vec<egui::Shape>) {
+    let mut recs = Vec::new();
+    let mut full = ctx.run_ui(input, |ui| {
+        recs = replayer.replay(ui, APP, buf).unwrap();
+    });
+    full.textures_delta.clear();
+    (recs, full.shapes.into_iter().map(|c| c.shape).collect())
+}
+
+fn rect_of(rec: &RespRecord) -> egui::Rect {
+    egui::Rect::from_min_max(
+        egui::pos2(rec.rect[0], rec.rect[1]),
+        egui::pos2(rec.rect[2], rec.rect[3]),
+    )
+}
+
+/// Index of the solid ink block sitting 3px down and right of `widget`, if one was painted.
+fn shadow_index(shapes: &[egui::Shape], widget: egui::Rect) -> Option<usize> {
+    let want = widget.translate(egui::vec2(3.0, 3.0));
+    shapes
+        .iter()
+        .position(|s| matches!(s, egui::Shape::Rect(r) if r.fill == INK && r.rect == want))
+}
+
+/// Index of the widget's own frame: a rect over exactly its area with a visible outline.
+fn frame_index(shapes: &[egui::Shape], widget: egui::Rect) -> Option<usize> {
+    shapes
+        .iter()
+        .position(|s| matches!(s, egui::Shape::Rect(r) if r.rect == widget && r.stroke.width > 0.0))
+}
+
+#[test]
+fn every_kind_of_button_and_the_text_field_get_a_shadow_behind_them() {
+    let buf = encode(&[
+        Cmd::Button { id: 21, text: "Up" },
+        Cmd::UploadFolder {
+            id: 22,
+            dest: "/Documents",
+        },
+        Cmd::UploadProject { id: 23 },
+        Cmd::OpenUrl {
+            id: 24,
+            label: "Download",
+            url: "/files/notes.md",
+        },
+        Cmd::TextEditSingle {
+            id: 25,
+            version: 0,
+            set: None,
+        },
+    ]);
+    let ctx = inked_context();
+    let mut r = Replayer::new();
+    let (recs, shapes) = frame_shapes(&ctx, &mut r, &buf, raw_input());
+
+    for id in 21..=25 {
+        let rect = rect_of(&find(&recs, id));
+        let shadow = shadow_index(&shapes, rect).unwrap_or_else(|| panic!("{id}: no shadow"));
+        let frame = frame_index(&shapes, rect).unwrap_or_else(|| panic!("{id}: no frame"));
+        assert!(
+            shadow < frame,
+            "{id}: the shadow must be painted behind the widget"
+        );
+    }
+}
+
+#[test]
+fn a_button_is_framed_at_rest() {
+    // No hover, no press: the outline is there anyway (`frame_when_inactive` is not turned off).
+    let buf = encode(&[Cmd::Button { id: 21, text: "Up" }]);
+    let ctx = inked_context();
+    let mut r = Replayer::new();
+    let (recs, shapes) = frame_shapes(&ctx, &mut r, &buf, raw_input());
+    let rect = rect_of(&find(&recs, 21));
+    assert!(frame_index(&shapes, rect).is_some());
+}
+
+#[test]
+fn a_pressed_button_loses_its_shadow() {
+    let buf = encode(&[Cmd::Button { id: 21, text: "Up" }]);
+    let ctx = inked_context();
+    let mut r = Replayer::new();
+    let (recs, _) = frame_shapes(&ctx, &mut r, &buf, raw_input());
+    let rect = rect_of(&find(&recs, 21));
+
+    // Held down, not yet released.
+    let mut input = raw_input();
+    input.events = vec![
+        egui::Event::PointerMoved(rect.center()),
+        egui::Event::PointerButton {
+            pos: rect.center(),
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: Default::default(),
+        },
+    ];
+    let (recs, shapes) = frame_shapes(&ctx, &mut r, &buf, input);
+    assert!(find(&recs, 21).flags & ResponseFlags::IS_POINTER_BUTTON_DOWN_ON != 0);
+    assert_eq!(shadow_index(&shapes, rect), None, "pressed: no shadow");
+
+    // Released: the shadow comes back.
+    let mut input = raw_input();
+    input.events = vec![egui::Event::PointerButton {
+        pos: rect.center(),
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: Default::default(),
+    }];
+    frame_shapes(&ctx, &mut r, &buf, input);
+    let (_, shapes) = frame_shapes(&ctx, &mut r, &buf, raw_input());
+    assert!(
+        shadow_index(&shapes, rect).is_some(),
+        "released: shadow back"
+    );
+}
+
+#[test]
+fn a_disabled_button_has_no_shadow() {
+    let buf = encode(&[Cmd::Button { id: 21, text: "Up" }]);
+    let ctx = inked_context();
+    let mut r = Replayer::new();
+    let mut recs = Vec::new();
+    let mut full = ctx.run_ui(raw_input(), |ui| {
+        ui.disable();
+        recs = r.replay(ui, APP, &buf).unwrap();
+    });
+    full.textures_delta.clear();
+    let shapes: Vec<_> = full.shapes.into_iter().map(|c| c.shape).collect();
+    let rect = rect_of(&find(&recs, 21));
+    assert_eq!(shadow_index(&shapes, rect), None);
+}
+
 /// Type `text` into whatever widget has keyboard focus.
 fn typing(text: &str) -> egui::RawInput {
     egui::RawInput {
@@ -654,4 +806,37 @@ fn a_scroll_region_is_bounded_by_the_window_and_scrolls_on_its_own() {
         last.rect,
         find(&out, 1000).rect
     );
+}
+
+#[test]
+fn a_selectable_at_rest_has_an_invisible_outline_and_a_visible_one_when_hovered() {
+    // Framed in every state so hovering can't change its size, but only visibly on hover.
+    let buf = encode(&[Cmd::Selectable {
+        id: 21,
+        text: "notes.md",
+        selected: false,
+    }]);
+    let ctx = inked_context();
+    ctx.all_styles_mut(|s| {
+        s.visuals.widgets.hovered.bg_stroke = egui::Stroke::new(2.0, INK);
+    });
+    let mut r = Replayer::new();
+    let outline = |shapes: &[egui::Shape], rect: egui::Rect| {
+        shapes.iter().find_map(|s| match s {
+            egui::Shape::Rect(r) if r.rect == rect => Some(r.stroke),
+            _ => None,
+        })
+    };
+
+    let (recs, shapes) = frame_shapes(&ctx, &mut r, &buf, raw_input());
+    let rect = rect_of(&find(&recs, 21));
+    let rest = outline(&shapes, rect).expect("framed at rest");
+    assert_eq!(rest.color, egui::Color32::TRANSPARENT);
+
+    let mut hover = raw_input();
+    hover.events = vec![egui::Event::PointerMoved(rect.center())];
+    frame_shapes(&ctx, &mut r, &buf, hover.clone());
+    let (recs, shapes) = frame_shapes(&ctx, &mut r, &buf, hover);
+    assert_eq!(rect_of(&find(&recs, 21)), rect, "same size when hovered");
+    assert_eq!(outline(&shapes, rect).expect("framed").color, INK);
 }
