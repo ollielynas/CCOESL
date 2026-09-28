@@ -486,16 +486,21 @@ impl Desktop {
                                 .uploads
                                 .status()
                                 .or_else(|| self.upload_notice.as_ref().map(|(s, _)| s.clone()));
-                            if let Some(text) = upload {
+                            if upload.is_some() {
                                 ui.label(status_text("\u{00b7}".to_owned()));
-                                ui.label(egui::RichText::new(text).small().color(t.ink));
                             }
+                            // Right to left, so the bar goes in before the text: on the text's
+                            // right it stays put while the text changes width, where on its
+                            // left it would jiggle with every file.
                             if let Some(fraction) = self.uploads.progress() {
                                 ui.add(
                                     egui::ProgressBar::new(fraction)
                                         .desired_width(UPLOAD_BAR_WIDTH)
                                         .desired_height(8.0),
                                 );
+                            }
+                            if let Some(text) = upload {
+                                ui.label(egui::RichText::new(text).small().color(t.ink));
                             }
                         });
                     });
