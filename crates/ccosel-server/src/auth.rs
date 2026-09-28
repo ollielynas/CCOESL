@@ -1,10 +1,9 @@
 //! OAuth login against a Keycloak realm. Who may sign in is decided by who has an account in
 //! that realm; this server keeps no list of its own.
 //!
-//! Scope, deliberately: Keycloak is the only provider wired up, the server keeps sessions
-//! in-memory (a restart signs everyone out), and everything below assumes `http://` on
-//! `localhost` — exactly what the ticket asked for. See the doc comments on [`SESSION_COOKIE`]
-//! and [`OAuthConfig`] for what that means and what a later HTTPS pass would change.
+//! Scope, deliberately: Keycloak is the only provider wired up, and the server keeps sessions
+//! in-memory (a restart signs everyone out). It works over plain `http://localhost`, and behind
+//! an HTTPS tunnel once [`AuthState::with_public_url`] says where that tunnel ends.
 //!
 //! The flow is the standard OAuth "authorization code" dance, run entirely as ordinary browser
 //! navigations (redirects), not as an app RPC method — a top-level redirect to Keycloak and
@@ -25,7 +24,7 @@ use axum::extract::{Query, Request, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Redirect, Response};
-use axum::routing::get;
+use axum::routing::{any, get};
 use axum::{Json, Router};
 use rand::Rng;
 use rand::distributions::Alphanumeric;
@@ -41,11 +40,10 @@ const LOGIN_TTL: Duration = Duration::from_secs(10 * 60);
 /// in memory, so a server restart signs everyone out well before this anyway.
 const SESSION_TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
-/// Not marked `Secure`, because the ticket is explicit that this has to work over plain
-/// `http://localhost` for now — a `Secure` cookie is silently dropped by the browser on a
-/// non-HTTPS origin, which would make login look broken rather than insecure. `HttpOnly` still
-/// keeps it out of reach of any script running in the page. Revisit when HTTPS lands.
-const SESSION_COOKIE: &str = "ccosel_session";
+/// Marked `Secure` only when the public URL is `https://`: over plain `http://localhost` a
+/// `Secure` cookie is silently dropped by the browser, which would make login look broken
+/// rather than insecure. `HttpOnly` always keeps it out of reach of scripts in the page.
+pub(crate) const SESSION_COOKIE: &str = "ccosel_session";
 
 fn random_token(len: usize) -> String {
     rand::thread_rng()
@@ -85,6 +83,23 @@ impl OAuthConfig {
             account_url: format!("{base_url}/account"),
         }
     }
+
+    /// A Keycloak this server talks to at `base_url` (say `http://127.0.0.1:8080/idp/realms/x`)
+    /// but that browsers only reach through this server's `/idp` forwarding. The two pages a
+    /// browser visits become same-origin paths; the calls this server makes itself stay on
+    /// `base_url`, which never leaves the machine.
+    pub fn proxied_keycloak(base_url: String, client_id: String) -> Self {
+        // Everything after `scheme://authority`.
+        let path = base_url
+            .split_once("://")
+            .and_then(|(_, rest)| rest.find('/').map(|i| rest[i..].to_owned()))
+            .unwrap_or_default();
+        Self {
+            authorize_url: format!("{path}/protocol/openid-connect/auth"),
+            account_url: format!("{path}/account"),
+            ..Self::keycloak(base_url, client_id, None)
+        }
+    }
 }
 
 struct Session {
@@ -101,6 +116,11 @@ struct Session {
 #[derive(Clone)]
 pub struct AuthState {
     oauth: Option<OAuthConfig>,
+    /// Where browsers reach this server, e.g. `https://ccosel.example.com` behind a tunnel.
+    /// `None` means "however this request arrived, over `http://`".
+    public_url: Option<String>,
+    /// Set when Keycloak sits behind this server's `/idp` path. See [`crate::idp`].
+    pub(crate) idp: Option<crate::idp::IdpProxy>,
     http: reqwest::Client,
     pending_logins: Arc<Mutex<HashMap<String, Instant>>>,
     sessions: Arc<Mutex<HashMap<String, Session>>>,
@@ -116,10 +136,51 @@ impl AuthState {
     pub fn new(oauth: Option<OAuthConfig>) -> Self {
         Self {
             oauth,
+            public_url: None,
+            idp: None,
             http: reqwest::Client::new(),
             pending_logins: Arc::new(Mutex::new(HashMap::new())),
             sessions: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    /// Where browsers reach this server, when that isn't simply `http://{Host}`: behind an
+    /// HTTPS tunnel the sign-in callback must be the tunnel's `https://` address (Keycloak
+    /// matches it exactly), and the session cookie must be `Secure`.
+    pub fn with_public_url(mut self, url: Option<String>) -> Self {
+        self.public_url = url.map(|u| u.trim_end_matches('/').to_owned());
+        self
+    }
+
+    /// Forward browsers' `/idp/...` requests to a Keycloak only this machine can reach.
+    pub fn with_idp_proxy(mut self, idp: crate::idp::IdpProxy) -> Self {
+        self.idp = Some(idp);
+        self
+    }
+
+    /// The public URL, if one was set.
+    pub(crate) fn public_url(&self) -> Option<&str> {
+        self.public_url.as_deref()
+    }
+
+    fn cookie_attrs(&self) -> &'static str {
+        match &self.public_url {
+            Some(url) if url.starts_with("https://") => "Path=/; HttpOnly; SameSite=Lax; Secure",
+            _ => "Path=/; HttpOnly; SameSite=Lax",
+        }
+    }
+
+    /// Where this request's browser should come back to after signing in: the public URL if
+    /// there is one, else however the request reached us (`localhost:8777`, a LAN address, ...).
+    fn origin(&self, headers: &HeaderMap) -> String {
+        if let Some(url) = &self.public_url {
+            return url.clone();
+        }
+        let host = headers
+            .get(header::HOST)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("localhost:8777");
+        format!("http://{host}")
     }
 
     /// Whether login is turned on. Off, every request is let in.
@@ -190,6 +251,7 @@ pub fn router() -> Router<AppState> {
         .route("/auth/callback", get(callback))
         .route("/auth/logout", get(logout))
         .route("/auth/me", get(me))
+        .route("/idp/{*rest}", any(crate::idp::forward))
 }
 
 /// Guards the routes that touch the jail (`/rpc`, `/upload`, `/files`). Without OAuth configured
@@ -209,17 +271,6 @@ pub async fn require_session(State(state): State<AppState>, req: Request, next: 
     next.run(req).await
 }
 
-/// The `Host` header of the incoming request, so the redirect URI matches however the server
-/// was actually reached (`localhost:8777`, `127.0.0.1:8777`, a LAN hostname, ...) rather than a
-/// value baked in at startup. `http://`, not `https://` — see the module doc.
-fn origin(headers: &HeaderMap) -> String {
-    let host = headers
-        .get(header::HOST)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("localhost:8777");
-    format!("http://{host}")
-}
-
 async fn login(State(state): State<AppState>, headers: HeaderMap) -> Response {
     let Some(oauth) = &state.auth.oauth else {
         return (
@@ -237,7 +288,7 @@ async fn login(State(state): State<AppState>, headers: HeaderMap) -> Response {
         .unwrap()
         .insert(csrf.clone(), Instant::now() + LOGIN_TTL);
 
-    let redirect_uri = format!("{}/auth/callback", origin(&headers));
+    let redirect_uri = format!("{}/auth/callback", state.auth.origin(&headers));
     let url = format!(
         "{}?client_id={}&redirect_uri={}&scope=openid&response_type=code&state={}",
         oauth.authorize_url,
@@ -295,7 +346,7 @@ async fn callback(
         }
     }
 
-    let redirect_uri = format!("{}/auth/callback", origin(&headers));
+    let redirect_uri = format!("{}/auth/callback", state.auth.origin(&headers));
     let (login, refresh_token) =
         match exchange_and_fetch_login(&state.auth.http, oauth, &code, &redirect_uri).await {
             Ok(found) => found,
@@ -316,7 +367,8 @@ async fn callback(
     resp.headers_mut().append(
         header::SET_COOKIE,
         format!(
-            "{SESSION_COOKIE}={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={}",
+            "{SESSION_COOKIE}={token}; {}; Max-Age={}",
+            state.auth.cookie_attrs(),
             SESSION_TTL.as_secs()
         )
         .parse()
@@ -400,9 +452,12 @@ async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Response {
     // A negative Max-Age tells the browser to drop the cookie now, regardless of what it was.
     resp.headers_mut().append(
         header::SET_COOKIE,
-        format!("{SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0")
-            .parse()
-            .unwrap(),
+        format!(
+            "{SESSION_COOKIE}=; {}; Max-Age=0",
+            state.auth.cookie_attrs()
+        )
+        .parse()
+        .unwrap(),
     );
     resp
 }

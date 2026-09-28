@@ -39,46 +39,45 @@ Plan to support
 
 ## Auth
 
-The server can gate itself behind Keycloak OAuth: anyone with an account in the realm can sign
-in. It's off by default — a checkout with nothing configured runs exactly as before.
+Sign-in goes through Keycloak: anyone with an account in its `ccosel` realm can get in. With
+Docker installed, the server sets Keycloak up itself on first start; without Docker (and with
+no Keycloak configured) login is off and everyone gets in.
 
-1. Start Keycloak locally:
+**The Keycloak the server starts** runs in a Docker container (`ccosel-keycloak`) that only
+this machine can reach. Browsers never talk to it directly: the server forwards its sign-in
+pages under `/idp/`, so one address (or one tunnel) carries both CCOSEL and its login. The
+admin console is never forwarded.
 
-   ```sh
-   docker run -d -p 8080:8080 -e KEYCLOAK_ADMIN=admin -e KEYCLOAK_ADMIN_PASSWORD=admin \
-     quay.io/keycloak/keycloak start-dev
-   ```
+- **Admin console:** `http://localhost:8080/idp/admin/`, on the server machine only. The user
+  is `admin`; the password is generated on first start and kept in
+  `data/keycloak-admin-password`.
+- **Adding a user:** in the admin console, switch to the **ccosel** realm (top left), then
+  **Users → Add user**. Fill in email, first and last name too, or Keycloak asks for them at
+  first sign-in. Set a password under **Credentials**.
+- Accounts are kept in the `ccosel-keycloak-data` Docker volume, so they survive restarts and
+  the container being replaced.
 
-2. Open the Keycloak admin console at `http://localhost:8080` (admin/admin). Create a realm
-   (e.g. `ccosel`), then create a client:
-   - Client type: `OpenID Connect`
-   - Valid redirect URIs: `http://localhost:8777/auth/callback`
-   - Web origins: `http://localhost:8777`
-   - Access type: `public` (no client secret needed)
-   Note the **Client ID** from the Settings tab.
+**Behind an HTTPS tunnel** (Cloudflare Tunnel or similar), point the tunnel at this server's
+port (8777) and tell the server its public address:
 
-3. Add a user for each person who should get in (**Users → Add user**, then set a password
-   under **Credentials**).
+```sh
+CCOSEL_PUBLIC_URL=https://ccosel.example.com cargo xtask serve
+```
 
-4. Start the server with the Keycloak credentials:
+It is then used for the sign-in callback, registered with Keycloak, and makes the session
+cookie `Secure`. Put it in `.env` to keep it.
 
-   ```sh
-   CCOSEL_KEYCLOAK_URL=http://localhost:8080/realms/ccosel \
-   CCOSEL_KEYCLOAK_CLIENT_ID=ccosel \
-   cargo xtask serve
-   ```
+**Your own Keycloak** instead: set `CCOSEL_KEYCLOAK_URL` (the realm URL, e.g.
+`https://sso.example.com/realms/ccosel`) and `CCOSEL_KEYCLOAK_CLIENT_ID`, plus
+`CCOSEL_KEYCLOAK_CLIENT_SECRET` for a confidential client. Browsers then go to that Keycloak
+directly, and its client needs `<this server>/auth/callback` as a valid redirect URI.
 
-   If you created a confidential client instead, add the secret:
-
-   ```sh
-   CCOSEL_KEYCLOAK_CLIENT_SECRET=... cargo xtask serve
-   ```
-
-Once it's on, `/rpc`, `/upload` and `/files/...` answer `401` without a signed-in session;
-only the boot page, the shell and app modules, and `/auth/*` stay public.
+Once login is on, `/rpc`, `/upload` and `/files/...` answer `401` without a signed-in session;
+only the boot page, the shell and app modules, `/auth/*` and the forwarded `/idp/` pages stay
+public.
 
 The **Account** app shows who you are signed in as. **Manage account** opens Keycloak's
-account page (profile, password, sessions) in a new tab. To sign out, press **Sign out** there. That ends the session on this
+account page (profile, password, sessions) in a new tab. **Sign out** ends the session on this
 server and in Keycloak, so signing in again asks for the password.
 
 Sessions live in server memory only — a restart signs everyone out.

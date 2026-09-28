@@ -521,3 +521,78 @@ async fn logout_route_also_ends_the_provider_session() {
         .unwrap();
     assert_eq!(logouts.lock().unwrap().len(), 1);
 }
+
+// ---- Behind a tunnel, and with Keycloak behind /idp ----
+
+#[tokio::test]
+async fn behind_https_the_callback_is_the_public_url_and_the_cookie_is_secure() {
+    let provider = spawn_mock_provider("alice", false).await;
+    let addr = spawn_app(
+        AuthState::new(Some(oauth_config_for(&provider)))
+            .with_public_url(Some("https://ccosel.example.com/".to_string())),
+    )
+    .await;
+    let client = no_redirect_client();
+
+    let login = client
+        .get(format!("http://{addr}/auth/login"))
+        .send()
+        .await
+        .unwrap();
+    let location = login.headers()[reqwest::header::LOCATION].to_str().unwrap();
+    assert_eq!(
+        query_param(location, "redirect_uri"),
+        Some("https%3A%2F%2Fccosel.example.com%2Fauth%2Fcallback")
+    );
+
+    let state = query_param(location, "state").unwrap().to_string();
+    let callback = client
+        .get(format!(
+            "http://{addr}/auth/callback?code=good-code&state={state}"
+        ))
+        .send()
+        .await
+        .unwrap();
+    let set_cookie = callback.headers()[reqwest::header::SET_COOKIE]
+        .to_str()
+        .unwrap();
+    assert!(set_cookie.contains("; Secure"), "{set_cookie}");
+}
+
+#[tokio::test]
+async fn over_plain_http_the_cookie_is_not_secure() {
+    let provider = spawn_mock_provider("alice", false).await;
+    let addr = spawn_app(AuthState::new(Some(oauth_config_for(&provider)))).await;
+    let client = no_redirect_client();
+    let state = start_login(&client, addr).await;
+    let callback = client
+        .get(format!(
+            "http://{addr}/auth/callback?code=good-code&state={state}"
+        ))
+        .send()
+        .await
+        .unwrap();
+    let set_cookie = callback.headers()[reqwest::header::SET_COOKIE]
+        .to_str()
+        .unwrap();
+    assert!(!set_cookie.contains("Secure"), "{set_cookie}");
+}
+
+#[test]
+fn a_proxied_keycloak_sends_browsers_to_same_origin_paths() {
+    let config = OAuthConfig::proxied_keycloak(
+        "http://127.0.0.1:8080/idp/realms/ccosel".to_string(),
+        "ccosel".to_string(),
+    );
+    assert_eq!(
+        config.authorize_url,
+        "/idp/realms/ccosel/protocol/openid-connect/auth"
+    );
+    assert_eq!(config.account_url, "/idp/realms/ccosel/account");
+    // What this server calls itself stays on the loopback address.
+    assert_eq!(
+        config.token_url,
+        "http://127.0.0.1:8080/idp/realms/ccosel/protocol/openid-connect/token"
+    );
+    assert_eq!(config.client_secret, None);
+}

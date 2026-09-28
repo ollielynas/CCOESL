@@ -5,6 +5,8 @@
 
 pub mod auth;
 pub mod fs_api;
+pub mod idp;
+pub mod keycloak;
 pub mod rpc;
 pub mod stats;
 pub mod upload_api;

@@ -3,5 +3,7 @@
 /dist
 /web/dist
 .env
+# Generated on first start; the managed Keycloak's admin password.
+/data/keycloak-admin-password
 # Per-machine Claude Code permissions; the shared settings.json is committed.
 /.claude/settings.local.json
