@@ -4,7 +4,7 @@ Read, write and find documents written in [Markdown](https://commonmark.org/help
 
 ## Getting around
 
-The buttons along the top take you to three places:
+The sidebar on the left has three places:
 
 - **📘 Documentation**: how to use each app, including this page. Everyone can read it, and
   nobody can change it from here.
@@ -12,16 +12,20 @@ The buttons along the top take you to three places:
 - **🏠 My documents**: your own folder. Only you can see what is in it. You need to be signed in
   to have one.
 
-Click a folder to open it, and a document to read it. The trail above the list shows where
-you are, and each part of it is a button back to that folder. **← Back** returns to where you
-were before.
+Under them is a tree of the place you are in. Press **▸** next to a folder to show what is in
+it, and **▾** to hide it again. Click a folder's name to open it, and a document to read it.
+The document you are reading is shown in bold, and the tree opens itself to show where you are.
+
+The main page shows the folder or document you picked. The trail at the top of a folder shows
+where you are, and each part of it is a button back to that folder. **← Back** returns to where
+you were before.
 
 Docs only shows folders and Markdown (`.md`) documents. Use [Files](file-browser.md) for
 everything else.
 
 ## Searching
 
-Type in the 🔍 box and press **Search**. Docs looks through the names and the text of every
+Type in the box at the top of the sidebar and press **🔍**. Docs looks through the names and the text of every
 document you can read, and lists each match with the line it was found on.
 
 ## Writing

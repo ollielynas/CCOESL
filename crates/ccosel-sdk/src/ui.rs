@@ -169,18 +169,23 @@ impl<'a> Ui<'a> {
         self.scope(ScopeKind::Wrapped, Align::Min, add)
     }
 
-    /// A sidebar beside the main content: `side` fills a fixed-width column on the left, `main`
-    /// the rest. Both are top-aligned, so a short sidebar does not float to the middle of a tall
-    /// page.
-    pub fn sidebar<R>(
-        &mut self,
-        side: impl FnOnce(&mut Ui<'_>),
-        main: impl FnOnce(&mut Ui<'_>) -> R,
-    ) -> R {
-        self.scope(ScopeKind::Horizontal, Align::Min, |ui| {
-            ui.scope(ScopeKind::Sidebar, Align::Min, side);
-            ui.scope(ScopeKind::Vertical, Align::Min, main)
-        })
+    /// A row whose children line up along the top rather than the middle. With a
+    /// [`Ui::side_column`] first and a [`Ui::vertical`] second, it is a sidebar layout:
+    ///
+    /// ```ignore
+    /// ui.horizontal_top(|ui| {
+    ///     ui.side_column(|ui| { /* navigation */ });
+    ///     ui.vertical(|ui| { /* the page */ });
+    /// });
+    /// ```
+    pub fn horizontal_top<R>(&mut self, add: impl FnOnce(&mut Ui<'_>) -> R) -> R {
+        self.scope(ScopeKind::Horizontal, Align::Min, add)
+    }
+
+    /// A fixed-width column with a rule after it, for a sidebar. Its width does not follow its
+    /// content, so the page beside it stays put. See [`Ui::horizontal_top`].
+    pub fn side_column<R>(&mut self, add: impl FnOnce(&mut Ui<'_>) -> R) -> R {
+        self.scope(ScopeKind::Sidebar, Align::Min, add)
     }
 
     /// A visually framed group.

@@ -418,13 +418,13 @@ fn creating_a_folder_goes_into_it_and_failures_are_reported() {
 fn search_lists_matches_and_opens_them() {
     let mut h = started(false);
     // An empty query does nothing.
-    h.click("Search");
+    h.click("🔍");
     h.frame();
     assert_eq!(h.app.view, View::Browse(DOCS_ROOT.into()));
 
     h.type_text(0, "clock");
     h.frame();
-    h.click("Search");
+    h.click("🔍");
     h.frame();
     assert_eq!(h.app.view, View::Search("clock".into()));
     h.frame();
@@ -457,7 +457,7 @@ fn search_with_no_results_or_a_failure() {
     let mut h = started(false);
     h.type_text(0, "zzz");
     h.frame();
-    h.click("Search");
+    h.click("🔍");
     h.frame();
     h.frame();
     h.reply::<Search>(&SearchReply {
@@ -469,7 +469,7 @@ fn search_with_no_results_or_a_failure() {
 
     h.type_text(0, "yyy");
     h.frame();
-    h.click("Search");
+    h.click("🔍");
     h.frame();
     h.frame();
     h.fail::<Search>(rpc_error::TIMEOUT);
@@ -533,4 +533,92 @@ fn unsaved_changes_cannot_be_lost_by_leaving_the_editor() {
     h.frame();
     h.frame();
     assert_eq!(h.app.editor.as_str(), "saved");
+}
+
+#[test]
+fn the_sidebar_tree_opens_folders_and_marks_where_you_are() {
+    let mut h = started(false);
+    // The tree shows the Documentation section, sharing the main column's listing.
+    assert!(
+        h.has_text("📘 Documentation"),
+        "the current place is text, not a button"
+    );
+    assert!(!h.has_button("📘 Documentation"));
+    assert!(h.has_button("▸"));
+
+    // Opening a folder in the tree lists it underneath, without leaving the page.
+    h.click("▸");
+    h.frame();
+    assert!(h.app.expanded.contains("/Docs/Apps"));
+    assert_eq!(h.app.view, View::Browse(DOCS_ROOT.into()));
+    h.frame();
+    assert!(h.has_text("  …"), "loading, indented under its folder");
+    h.reply::<ListDir>(&listing(&[
+        ("files.md", EntryKind::File),
+        ("clock.md", EntryKind::File),
+    ]));
+    h.frame();
+    assert!(h.has_button("▾"));
+
+    // A document in the tree opens it, and is then shown in bold as where you are.
+    h.click("📄 clock");
+    h.frame();
+    assert_eq!(h.app.view, View::Read("/Docs/Apps/clock.md".into()));
+    h.frame();
+    h.reply::<ReadFile>(&file("# Clock", false));
+    h.frame();
+    assert!(h.styled().contains(&("📄 clock".into(), TextStyle::STRONG)));
+    assert!(!h.has_button("📄 clock"));
+
+    // Closing the folder hides its documents.
+    h.click("▾");
+    h.frame();
+    h.frame();
+    assert!(!h.app.expanded.contains("/Docs/Apps"));
+    assert!(!h.has_text("📄 clock"));
+}
+
+#[test]
+fn the_places_switch_the_trees_section() {
+    let mut h = started(true);
+    h.click("🏠 My documents");
+    h.frame();
+    h.frame();
+    assert!(h.has_text("🏠 My documents"), "now the current place");
+    assert!(h.has_button("📘 Documentation"));
+
+    assert_eq!(h.app.view, View::Browse("/home/alice".into()));
+    h.click("📘 Documentation");
+    h.frame();
+    assert_eq!(h.app.view, View::Browse(DOCS_ROOT.into()));
+}
+
+#[test]
+fn the_section_is_the_place_a_path_is_in() {
+    use crate::section_root;
+    assert_eq!(section_root("/Docs/Apps/files.md", Some("alice")), "/Docs");
+    assert_eq!(section_root("/Docs", None), "/Docs");
+    assert_eq!(section_root("/Docsy/x.md", None), "/");
+    assert_eq!(
+        section_root("/home/alice/a.md", Some("alice")),
+        "/home/alice"
+    );
+    assert_eq!(section_root("/home/alice/a.md", None), "/");
+    assert_eq!(section_root("/Shared/a.md", Some("alice")), "/");
+}
+
+#[test]
+fn following_a_link_opens_the_tree_down_to_the_document() {
+    let mut h = started(false);
+    open_doc(&mut h, "📄 README", "[Files](Apps/files.md)", false);
+    assert!(!h.app.expanded.contains("/Docs/Apps"));
+    h.click_link("Files");
+    h.frame();
+    assert!(h.app.expanded.contains("/Docs/Apps"));
+    assert!(h.app.expanded.contains("/Docs"));
+    // Back reveals too: the tree always shows where you are.
+    h.app.expanded.clear();
+    h.click("← Back");
+    h.frame();
+    assert!(h.app.expanded.contains("/Docs"));
 }

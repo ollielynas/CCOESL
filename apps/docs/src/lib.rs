@@ -6,14 +6,16 @@
 //! this app only asks, so it can offer "Edit" and "New document" where they will work and say
 //! "Read-only" where they will not.
 //!
-//! Three places are one click away: **Documentation** (`/Docs`, written by the developers and
-//! read-only here), **Shared** (the whole server) and **My documents** (`/home/{user}`, which
-//! only the signed-in user can see).
+//! A sidebar holds search, three places — **Documentation** (`/Docs`, written by the developers
+//! and read-only here), **Shared** (the whole server) and **My documents** (`/home/{user}`,
+//! which only the signed-in user can see) — and a folder tree of whichever of those you are in.
 
 use ccosel_proto::fs::{
     Access, CreateDir, EntryKind, FileText, ListDir, ListDirReq, PathReq, ReadFile, Search,
     SearchReq, WriteFile, WriteFileReq,
 };
+use std::collections::BTreeSet;
+
 use ccosel_sdk::{App, CallId, Poll, Text, TextStyle, Ui};
 
 pub mod markdown;
@@ -24,6 +26,34 @@ use render::Follow;
 
 /// Where the developer-maintained documentation lives.
 pub const DOCS_ROOT: &str = "/Docs";
+
+/// How deep the sidebar tree goes. Past this, the folder view in the main column still works.
+const TREE_DEPTH: usize = 8;
+
+impl View {
+    /// The folder or document this view is about, if any.
+    fn path(&self) -> Option<&str> {
+        match self {
+            Self::Browse(p) | Self::Read(p) | Self::Edit(p) => Some(p),
+            Self::Search(_) => None,
+        }
+    }
+}
+
+/// The top of the tree the sidebar shows for `path`: the place it is in.
+pub fn section_root(path: &str, user: Option<&str>) -> String {
+    let in_folder = |root: &str| path == root || path.starts_with(&format!("{root}/"));
+    if in_folder(DOCS_ROOT) {
+        return DOCS_ROOT.to_owned();
+    }
+    if let Some(name) = user {
+        let home = paths::join("/home", name);
+        if in_folder(&home) {
+            return home;
+        }
+    }
+    "/".to_owned()
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum View {
@@ -66,6 +96,10 @@ pub struct Docs {
     /// Something changed this frame that the next frame will draw differently, such as a new
     /// view. Asks the shell for that frame now rather than at the next input.
     changed: bool,
+    /// Folders open in the sidebar tree.
+    pub expanded: BTreeSet<String>,
+    /// The tree's top, kept while searching so the sidebar does not jump.
+    section: String,
 }
 
 impl Default for Docs {
@@ -83,6 +117,8 @@ impl Default for Docs {
             creating: String::new(),
             status: None,
             changed: false,
+            expanded: BTreeSet::new(),
+            section: DOCS_ROOT.to_owned(),
         }
     }
 }
@@ -102,6 +138,8 @@ struct Actions {
     new_folder: bool,
     insert: Option<&'static str>,
     refresh: bool,
+    /// Open or close this folder in the sidebar tree.
+    toggle: Option<String>,
 }
 
 impl Docs {
@@ -120,6 +158,24 @@ impl Docs {
         }
         self.editor_loaded = false;
         self.status = None;
+        self.reveal();
+    }
+
+    /// Open the sidebar tree down to what is on screen, so it always shows where you are.
+    fn reveal(&mut self) {
+        let Some(path) = self.view.path() else {
+            return;
+        };
+        let folder = match self.view {
+            View::Browse(_) => path.to_owned(),
+            _ => paths::parent(path),
+        };
+        let mut acc = String::new();
+        for seg in folder.split('/').filter(|s| !s.is_empty()) {
+            acc.push('/');
+            acc.push_str(seg);
+            self.expanded.insert(acc.clone());
+        }
     }
 
     fn back(&mut self) {
@@ -127,6 +183,7 @@ impl Docs {
             self.view = prev;
             self.editor_loaded = false;
             self.status = None;
+            self.reveal();
         }
     }
 
@@ -137,43 +194,122 @@ impl Docs {
             && self.editor.as_str() != self.saved_text
     }
 
-    fn places(&mut self, ui: &mut Ui<'_>, user: Option<&str>, act: &mut Actions) {
+    fn sidebar(&mut self, ui: &mut Ui<'_>, user: Option<&str>, act: &mut Actions) {
         ui.horizontal(|ui| {
-            if ui.button("📘 Documentation").clicked() {
-                act.go = Some(View::Browse(DOCS_ROOT.to_owned()));
-            }
-            ui.tooltip("How to use each app. Maintained by the developers, read-only here.");
-            if ui.button("🗂 Shared").clicked() {
-                act.go = Some(View::Browse("/".to_owned()));
-            }
-            ui.tooltip("Everything on the server you can see");
-            match user {
-                Some(name) => {
-                    if ui.button("🏠 My documents").clicked() {
-                        act.go = Some(View::Browse(paths::join("/home", name)));
-                    }
-                    ui.tooltip("Your private folder. Only you can see what is in it.");
-                }
-                None => {
-                    ui.styled("Sign in for a private folder", TextStyle::WEAK);
-                }
-            }
-        });
-        ui.horizontal(|ui| {
-            ui.label("🔍");
             ui.text_edit(&mut self.search);
             ui.tooltip("Search document names and text");
             let query = self.search.as_str().trim();
-            if ui.button("Search").clicked() && !query.is_empty() {
+            if ui.button("🔍").clicked() && !query.is_empty() {
                 act.go = Some(View::Search(query.to_owned()));
             }
-            ui.push_id("back", |ui| {
-                if !self.history.is_empty() && ui.button("← Back").clicked() {
-                    act.back = true;
-                }
-            });
+            ui.tooltip("Search");
         });
         ui.separator();
+
+        let here = self.section.as_str();
+        let place = |ui: &mut Ui<'_>, label: &str, root: &str, tip: &str, act: &mut Actions| {
+            let r = if here == root {
+                ui.styled(label, TextStyle::STRONG);
+                false
+            } else {
+                ui.button(label).clicked()
+            };
+            ui.tooltip(tip);
+            if r {
+                act.go = Some(View::Browse(root.to_owned()));
+            }
+        };
+        place(
+            ui,
+            "📘 Documentation",
+            DOCS_ROOT,
+            "How to use each app. Maintained by the developers, read-only here.",
+            act,
+        );
+        place(
+            ui,
+            "🗂 Shared",
+            "/",
+            "Everything on the server you can see",
+            act,
+        );
+        ui.push_id("home", |ui| match user {
+            Some(name) => place(
+                ui,
+                "🏠 My documents",
+                &paths::join("/home", name),
+                "Your private folder. Only you can see what is in it.",
+                act,
+            ),
+            None => {
+                ui.styled("Sign in for a private folder", TextStyle::WEAK);
+            }
+        });
+        ui.separator();
+
+        let root = self.section.clone();
+        let current = self.view.path().map(str::to_owned);
+        ui.push_id("tree", |ui| {
+            self.tree(ui, &root, 0, current.as_deref(), act);
+        });
+    }
+
+    /// One folder's documents and subfolders in the sidebar, and the open subfolders' under them.
+    fn tree(
+        &self,
+        ui: &mut Ui<'_>,
+        dir: &str,
+        depth: usize,
+        current: Option<&str>,
+        act: &mut Actions,
+    ) {
+        let listing = match ui.rpc().get::<ListDir>(&ListDirReq { path: dir }) {
+            Poll::Ready(listing) => listing,
+            Poll::Pending => {
+                ui.styled(&format!("{}…", "  ".repeat(depth)), TextStyle::WEAK);
+                return;
+            }
+            // The main column says what went wrong; the sidebar just leaves the folder empty.
+            Poll::Failed(_) => return,
+        };
+        let indent = "    ".repeat(depth);
+        for entry in &listing.entries {
+            let is_dir = entry.kind == EntryKind::Dir;
+            if !is_dir && !paths::is_doc(&entry.name) {
+                continue;
+            }
+            let path = paths::join(dir, &entry.name);
+            let open = is_dir && self.expanded.contains(&path);
+            ui.push_id(&entry.name, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(&indent);
+                    if is_dir {
+                        if ui.button(if open { "▾" } else { "▸" }).clicked() {
+                            act.toggle = Some(path.clone());
+                        }
+                        ui.tooltip(if open { "Close" } else { "Open" });
+                    }
+                    let label = if is_dir {
+                        format!("📁 {}", entry.name)
+                    } else {
+                        format!("📄 {}", paths::title(&entry.name))
+                    };
+                    if current == Some(path.as_str()) {
+                        // Where you are, as text rather than a button to itself.
+                        ui.styled(&label, TextStyle::STRONG);
+                    } else if ui.button(&label).clicked() {
+                        act.go = Some(if is_dir {
+                            View::Browse(path.clone())
+                        } else {
+                            View::Read(path.clone())
+                        });
+                    }
+                });
+                if open && depth + 1 < TREE_DEPTH {
+                    self.tree(ui, &path, depth + 1, current, act);
+                }
+            });
+        }
     }
 
     /// A clickable trail from the root to `path`.
@@ -541,6 +677,11 @@ impl Docs {
         if let Some(view) = act.go {
             self.open(view);
         }
+        if let Some(folder) = act.toggle
+            && !self.expanded.remove(&folder)
+        {
+            self.expanded.insert(folder);
+        }
         if let Some(snippet) = act.insert {
             let mut text = self.editor.as_str().to_owned();
             text.push_str(snippet);
@@ -651,21 +792,34 @@ impl App for Docs {
             _ => None,
         };
 
-        let mut act = Actions::default();
-        self.places(ui, user.as_deref(), &mut act);
-        // Under its own id, like every widget that comes and goes: an auto id shifts every
-        // sibling after it, and a text field whose id moves loses what was typed into it.
-        ui.push_id("status", |ui| {
-            if let Some(status) = &self.status {
-                ui.styled(status, TextStyle::ITALIC);
-            }
-        });
-        match self.view.clone() {
-            View::Browse(dir) => self.browse(ui, &dir, &mut act),
-            View::Read(path) => Self::read(ui, &path, &mut act),
-            View::Edit(path) => self.edit(ui, &path, &mut act),
-            View::Search(query) => Self::results(ui, &query, &mut act),
+        if let Some(path) = self.view.path() {
+            self.section = section_root(path, user.as_deref());
         }
+
+        let mut act = Actions::default();
+        ui.horizontal_top(|ui| {
+            ui.side_column(|ui| self.sidebar(ui, user.as_deref(), &mut act));
+            ui.vertical(|ui| {
+                ui.push_id("back", |ui| {
+                    if !self.history.is_empty() && ui.button("← Back").clicked() {
+                        act.back = true;
+                    }
+                });
+                // Under its own id, like every widget that comes and goes: an auto id shifts
+                // every sibling after it, and a text field whose id moves loses what was typed.
+                ui.push_id("status", |ui| {
+                    if let Some(status) = &self.status {
+                        ui.styled(status, TextStyle::ITALIC);
+                    }
+                });
+                match self.view.clone() {
+                    View::Browse(dir) => self.browse(ui, &dir, &mut act),
+                    View::Read(path) => Self::read(ui, &path, &mut act),
+                    View::Edit(path) => self.edit(ui, &path, &mut act),
+                    View::Search(query) => Self::results(ui, &query, &mut act),
+                }
+            });
+        });
         self.apply(ui, act);
         self.changed = before != (self.view.clone(), self.pending, self.status.clone());
     }
