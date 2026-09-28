@@ -125,11 +125,14 @@ cargo xtask review 10                    # check PR #10 out and serve it on http
 cargo xtask review 10 --checkout-only    # just check it out, to read it in your editor
 ```
 
-- The PR goes in a separate checkout, `../<repo>-review`, created on first use and reused after,
-  so **the checkout you ran it from is never touched** and its `target/` stays warm. The first
-  build is slow; later ones are not.
-- It refuses to check a PR out over uncommitted changes in that review checkout. Commit or
-  discard them, or delete the checkout with `git worktree remove --force ../<repo>-review`.
+- The PR goes in a separate checkout, `../<repo>-review`, so **the checkout you ran it from is
+  never touched**.
+- That checkout is **thrown away and recreated on every run** (`git worktree remove --force`),
+  so nothing done in it persists to the next review: edits, new files, and whatever the served
+  PR wrote under `data/` are all gone. Only its build output (`target/` and `apps/target/`) is
+  kept, parked in `../<repo>-review-cache` meanwhile, so the first build is slow and later ones
+  are not. Don't keep work there.
+- Run it from your own checkout, not from inside the review checkout it is about to replace.
 - A wrong PR number or a missing `gh` login fails before anything is created.
 - Comments, resolving conversations and merging still happen on GitHub; editors such as Zed
   can't review a PR yet. This command is for *running* one.
@@ -149,4 +152,4 @@ cargo xtask review 10 --checkout-only    # just check it out, to read it in your
 | `no user documentation for: <app>` | Write `data/shared/Docs/Apps/<app>.md` (see [Adding an app](#adding-an-app)) |
 | An app is under the bar | The table printed by `cargo xtask coverage` shows hits/lines per app; add tests for the branches you haven't covered |
 | `use of default to create a unit struct` | Give the app a field, or construct it as `MyApp` rather than `MyApp::default()` |
-| `has uncommitted changes, so it was left alone` (from `cargo xtask review`) | The review checkout holds edits; commit or discard them, or remove it as the message says |
+| `run this from your own checkout` (from `cargo xtask review`) | You ran it inside `../<repo>-review`, which it replaces; run it from your usual checkout |
