@@ -25,7 +25,8 @@ fn a_box_with_a_pocket_has_the_volume_freecad_says() {
     let temp = std::env::temp_dir().join(format!("ccosel-freecad-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&temp);
     std::fs::create_dir_all(&temp).unwrap();
-    let cad = Arc::new(Cad::from_env(&temp).unwrap());
+    // Only a FreeCAD already here: this test must never set off the 820 MB auto-install.
+    let cad = Arc::new(Cad::with_installer(None, &temp).unwrap());
     if !cad.available() {
         let script = temp.join("worker.py");
         assert!(Launch::freecad(&script).is_none());

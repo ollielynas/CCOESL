@@ -7,6 +7,7 @@ pub mod access;
 pub mod auth;
 pub mod build_api;
 pub mod cad_api;
+pub mod freecad_install;
 pub mod fs_api;
 pub mod idp;
 pub mod keycloak;

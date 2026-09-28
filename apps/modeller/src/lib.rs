@@ -68,6 +68,8 @@ pub struct Modeller {
     /// A step FreeCAD refused (its index, or `u32::MAX` for none in particular) and why.
     failure: Option<(u32, String)>,
     building: bool,
+    /// What a rebuild in progress is waiting on, from the server: installing FreeCAD, say.
+    note: String,
     /// The op list changed this frame: ask for its model before the frame ends, rather than
     /// a frame late.
     changed: bool,
@@ -95,6 +97,7 @@ impl Default for Modeller {
             preview: None,
             failure: None,
             building: false,
+            note: String::new(),
             changed: false,
             last: None,
             measure: Text::default(),
@@ -319,6 +322,9 @@ impl Modeller {
 
     /// Ask for the current op list's model, and take it when it is ready.
     fn poll(&mut self, ui: &mut Ui<'_>) {
+        if !self.building {
+            self.note.clear();
+        }
         self.building = false;
         if self.ops.is_empty() {
             self.shown = None;
@@ -338,6 +344,7 @@ impl Modeller {
             Poll::Ready(status) => match &status.result {
                 None => {
                     self.building = true;
+                    self.note.clone_from(&status.note);
                     ui.rpc().invalidate::<Regenerate>(&req);
                 }
                 Some(RegenResult::Ok(model)) => {
@@ -420,7 +427,11 @@ impl Modeller {
             };
         }
         if self.building {
-            return "Building…".to_owned();
+            return if self.note.is_empty() {
+                "Building…".to_owned()
+            } else {
+                self.note.clone()
+            };
         }
         match &self.shown {
             None => "Draw a rectangle on the ground to start.".to_owned(),

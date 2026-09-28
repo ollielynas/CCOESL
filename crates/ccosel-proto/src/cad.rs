@@ -87,6 +87,9 @@ pub struct RegenStatus {
     pub elapsed_ms: u64,
     /// Present exactly when `finished`.
     pub result: Option<RegenResult>,
+    /// What an unfinished rebuild is waiting for, if anything worth saying, such as the server
+    /// installing FreeCAD. Empty otherwise.
+    pub note: String,
 }
 
 pub struct Regenerate;

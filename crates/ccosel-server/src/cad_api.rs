@@ -34,6 +34,7 @@ use ccosel_proto::server_error;
 use ccosel_view3d::{Camera, Mesh, Style, render};
 use serde_json::{Value, json};
 
+use crate::freecad_install::{Installer, State};
 use crate::fs_api::Jail;
 
 /// The worker script, carried in the binary so a deployed server needs nothing beside it.
@@ -72,10 +73,15 @@ impl Launch {
     /// path, or a command line such as `/opt/FreeCAD.AppImage freecadcmd`), else the first of
     /// `freecadcmd` or `FreeCADCmd` on `PATH`. `None` if there is no FreeCAD to be found.
     pub fn freecad(script: &Path) -> Option<Self> {
-        let mut words: Vec<String> = match std::env::var("CCOSEL_FREECADCMD") {
+        let words: Vec<String> = match std::env::var("CCOSEL_FREECADCMD") {
             Ok(v) if !v.trim().is_empty() => v.split_whitespace().map(str::to_owned).collect(),
             _ => vec![find_on_path(&["freecadcmd", "FreeCADCmd"])?],
         };
+        Some(Self::freecadcmd(words, script))
+    }
+
+    /// `words` (a `freecadcmd` and any arguments before its own) running the worker script.
+    pub fn freecadcmd(mut words: Vec<String>, script: &Path) -> Self {
         let program = PathBuf::from(words.remove(0));
         let run = format!(
             "import runpy; runpy.run_path({:?}, run_name='__main__')",
@@ -83,10 +89,10 @@ impl Launch {
         );
         words.push("-c".to_owned());
         words.push(run);
-        Some(Self {
+        Self {
             program,
             args: words,
-        })
+        }
     }
 }
 
@@ -227,7 +233,11 @@ impl MeshStore {
 
 /// Everything CAD on the server. One per server, in `AppState`.
 pub struct Cad {
-    launch: Option<Launch>,
+    launch: Mutex<Option<Launch>>,
+    /// Installs FreeCAD when there is none; see `freecad_install`.
+    installer: Option<Installer>,
+    /// The worker script, for a launch made once an install finishes.
+    script: PathBuf,
     /// Why there is no `launch`, for the error an app shows.
     missing: String,
     worker: Mutex<Option<Worker>>,
@@ -240,21 +250,36 @@ pub struct Cad {
 impl Cad {
     /// The CAD service using the FreeCAD found by [`Launch::freecad`], with its worker script
     /// and export scratch files under `temp`.
+    ///
+    /// Without one, and unless `CCOSEL_FREECAD_AUTO_INSTALL=0`, FreeCAD is installed on first
+    /// use (`freecad_install`).
     pub fn from_env(temp: &Path) -> std::io::Result<Self> {
+        let installer = Installer::default_dir().and_then(|d| Installer::pinned(&d));
+        Self::with_installer(installer, temp)
+    }
+
+    /// The CAD service using FreeCAD from the environment, else from `installer`. For tests,
+    /// which install a fake from a local server.
+    pub fn with_installer(installer: Option<Installer>, temp: &Path) -> std::io::Result<Self> {
         std::fs::create_dir_all(temp)?;
         let script = temp.join("worker.py");
         std::fs::write(&script, WORKER_PY)?;
-        let launch = Launch::freecad(&script);
-        Ok(Self::new(launch, temp))
+        let mut cad = Self::new(Launch::freecad(&script), temp);
+        cad.script = script;
+        cad.installer = installer;
+        Ok(cad)
     }
 
     /// The CAD service with an explicit worker, or none. For tests, which stand a small fake
     /// in for FreeCAD.
     pub fn new(launch: Option<Launch>, temp: &Path) -> Self {
         Self {
-            launch,
-            missing: "FreeCAD is not installed on the server: install it, or set \
-                      CCOSEL_FREECADCMD to its freecadcmd"
+            launch: Mutex::new(launch),
+            installer: None,
+            script: temp.join("worker.py"),
+            missing: "FreeCAD is not installed on the server: install it, set \
+                      CCOSEL_FREECADCMD to its freecadcmd, or leave \
+                      CCOSEL_FREECAD_AUTO_INSTALL unset so the server installs it"
                 .to_owned(),
             worker: Mutex::new(None),
             next_id: AtomicU64::new(1),
@@ -264,17 +289,46 @@ impl Cad {
         }
     }
 
+    /// Whether rebuilds can work: FreeCAD is here, or can be installed.
     pub fn available(&self) -> bool {
-        self.launch.is_some()
+        self.launch().is_some() || self.installer.is_some()
+    }
+
+    /// How to start the worker, if FreeCAD is here yet.
+    fn launch(&self) -> Option<Launch> {
+        let mut launch = self.launch.lock().unwrap();
+        if launch.is_none()
+            && let Some(State::Ready(cmd)) = self.installer.as_ref().map(Installer::state)
+        {
+            *launch = Some(Launch::freecadcmd(
+                vec![cmd.display().to_string()],
+                &self.script,
+            ));
+        }
+        launch.clone()
+    }
+
+    /// Wait for an install started by [`Installer::start`] to finish, or fail.
+    fn await_install(&self) -> Result<(), String> {
+        let Some(installer) = &self.installer else {
+            return Err(self.missing.clone());
+        };
+        loop {
+            match installer.state() {
+                State::Ready(_) => return Ok(()),
+                State::Failed(_) | State::Idle => return Err(installer.state().describe()),
+                _ => std::thread::sleep(Duration::from_millis(250)),
+            }
+        }
     }
 
     /// Send one request to the worker, starting it first if need be. A worker that fails is
     /// dropped, so the next request gets a fresh one.
     fn call(&self, mut body: Value) -> Result<Value, String> {
-        let launch = self.launch.as_ref().ok_or_else(|| self.missing.clone())?;
+        let launch = self.launch().ok_or_else(|| self.missing.clone())?;
         let mut slot = self.worker.lock().unwrap();
         if slot.is_none() {
-            *slot = Some(Worker::start(launch)?);
+            *slot = Some(Worker::start(&launch)?);
         }
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         body["id"] = json!(id);
@@ -291,8 +345,12 @@ impl Cad {
     /// Start rebuilding `ops` if this list has not been seen, then say how it is going.
     pub fn regenerate(self: &Arc<Self>, ops: &[CadOp]) -> Result<RegenStatus, u32> {
         check_ops(ops)?;
-        if self.launch.is_none() {
-            return Err(server_error::UNAVAILABLE);
+        let installing = self.launch().is_none();
+        if installing {
+            match &self.installer {
+                None => return Err(server_error::UNAVAILABLE),
+                Some(i) => i.start(),
+            }
         }
         let key = *blake3::hash(&postcard::to_allocvec(ops).map_err(|_| server_error::MALFORMED)?)
             .as_bytes();
@@ -313,7 +371,16 @@ impl Cad {
                     });
                     let (cad, worker_job, ops) = (self.clone(), job.clone(), ops.to_vec());
                     std::thread::spawn(move || {
-                        let result = cad.rebuild(&ops);
+                        let result = match cad.launch() {
+                            Some(_) => cad.rebuild(&ops),
+                            None => match cad.await_install() {
+                                Ok(()) => cad.rebuild(&ops),
+                                Err(e) => RegenResult::Failed {
+                                    op: u32::MAX,
+                                    message: e,
+                                },
+                            },
+                        };
                         *worker_job.result.lock().unwrap() = Some(result);
                         *worker_job.finished_at.lock().unwrap() = Some(Instant::now());
                     });
@@ -322,10 +389,17 @@ impl Cad {
                 .clone()
         };
         let result = job.result.lock().unwrap().clone();
+        let note = match (&result, &self.installer) {
+            (None, Some(i)) if installing || !matches!(i.state(), State::Ready(_)) => {
+                i.state().describe()
+            }
+            _ => String::new(),
+        };
         Ok(RegenStatus {
             finished: result.is_some(),
             elapsed_ms: job.started.elapsed().as_millis() as u64,
             result,
+            note,
         })
     }
 
@@ -429,8 +503,17 @@ impl Cad {
         let target = jail
             .authorize_file_write(&req.path, user, false)
             .map_err(|c| (c, req.path.clone()))?;
-        if self.launch.is_none() {
-            return Err((server_error::UNAVAILABLE, self.missing.clone()));
+        if self.launch().is_none() {
+            return Err(match &self.installer {
+                Some(i) => {
+                    i.start();
+                    (
+                        server_error::UNAVAILABLE,
+                        format!("{}. Try again once it has finished.", i.state().describe()),
+                    )
+                }
+                None => (server_error::UNAVAILABLE, self.missing.clone()),
+            });
         }
         let scratch = self.temp.join(format!(
             "export-{}.{}",

@@ -22,6 +22,7 @@ fn built(m: Model) -> RegenStatus {
         finished: true,
         elapsed_ms: 40,
         result: Some(RegenResult::Ok(m)),
+        note: String::new(),
     }
 }
 
@@ -33,6 +34,7 @@ fn failed(op: u32, message: &str) -> RegenStatus {
             op,
             message: message.to_owned(),
         }),
+        note: String::new(),
     }
 }
 
@@ -41,6 +43,7 @@ fn running() -> RegenStatus {
         finished: false,
         elapsed_ms: 10,
         result: None,
+        note: String::new(),
     }
 }
 
@@ -578,4 +581,24 @@ fn numbers_are_shown_without_float_formatting() {
     assert_eq!(mm(-30.4), "-30 mm");
     assert_eq!(mm(0.2), "0 mm");
     assert_eq!(mm(1234.6), "1 235 mm");
+}
+
+#[test]
+fn the_server_installing_freecad_is_shown_while_the_first_model_waits() {
+    let mut h = fresh();
+    rectangle(&mut h, [0.0; 3], [10.0, 10.0, 0.0]);
+    h.reply::<Regenerate>(&RegenStatus {
+        note: "Installing FreeCAD on the server: downloading, 42% of 820 MB".to_owned(),
+        ..running()
+    });
+    h.frame();
+    h.frame();
+    assert_eq!(
+        status_line(&h),
+        "Installing FreeCAD on the server: downloading, 42% of 820 MB"
+    );
+    h.reply::<Regenerate>(&built(model("/cad/mesh/a", 1, 0, 0)));
+    h.frame();
+    h.frame();
+    assert_eq!(status_line(&h), "1 face");
 }

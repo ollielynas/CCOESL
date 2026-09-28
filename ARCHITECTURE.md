@@ -254,7 +254,13 @@ overlapping non-convex parts can occasionally draw in the wrong order. Edges are
 software depth buffer instead, so hidden edges are hidden exactly.
 
 FreeCAD runs as one long-lived worker process (`freecadcmd`, found on `PATH` or named by
-`CCOSEL_FREECADCMD`) that caches every step prefix it has built. It is killed and restarted if
+`CCOSEL_FREECADCMD`) that caches every step prefix it has built. **A server without FreeCAD
+installs it itself** the first time someone uses the Modeller (`freecad_install.rs`): the
+official AppImage of a pinned release, checked against a SHA-256 pinned in the source before
+anything in it runs, unpacked outside the jail into `CCOSEL_FREECAD_DIR` (default
+`~/.local/share/ccosel/freecad`). It needs about 4 GB free while installing and 3.1 GB after.
+The Modeller shows the progress; `CCOSEL_FREECAD_AUTO_INSTALL=0` turns it off. Linux x86_64 and
+ARM64 only, since those are the AppImages FreeCAD publishes. It is killed and restarted if
 it hangs or dies. Exports are written by the worker to a server scratch file and copied into
 the jail by the server, under the same checks as `WriteFile`.
 
