@@ -13,8 +13,10 @@
 
 extern crate alloc;
 
+pub mod build;
 pub mod fs;
 pub mod info;
+pub mod scratch;
 
 use serde::{Deserialize, Serialize};
 
@@ -29,11 +31,12 @@ pub enum Method {
     ListDir = 1,
     Stat = 2,
     ServerInfo = 3,
-    ReadFile = 4,
-    WriteFile = 5,
-    CreateDir = 6,
-    Access = 7,
-    Search = 8,
+    Compile = 4,
+    ReadFile = 5,
+    WriteFile = 6,
+    CreateDir = 7,
+    Access = 8,
+    Search = 9,
 }
 
 impl Method {
@@ -42,11 +45,12 @@ impl Method {
             1 => Some(Self::ListDir),
             2 => Some(Self::Stat),
             3 => Some(Self::ServerInfo),
-            4 => Some(Self::ReadFile),
-            5 => Some(Self::WriteFile),
-            6 => Some(Self::CreateDir),
-            7 => Some(Self::Access),
-            8 => Some(Self::Search),
+            4 => Some(Self::Compile),
+            5 => Some(Self::ReadFile),
+            6 => Some(Self::WriteFile),
+            7 => Some(Self::CreateDir),
+            8 => Some(Self::Access),
+            9 => Some(Self::Search),
             _ => None,
         }
     }
@@ -136,10 +140,12 @@ pub mod server_error {
     pub const IO: u32 = 4;
     pub const UNKNOWN_METHOD: u32 = 5;
     pub const MALFORMED: u32 = 6;
+    pub const NOT_A_CARGO_PROJECT: u32 = 7;
+    pub const TIMEOUT: u32 = 8;
     /// `ReadFile` on something that is not UTF-8 text.
-    pub const NOT_TEXT: u32 = 7;
+    pub const NOT_TEXT: u32 = 9;
     /// Over the size a single call may carry (see `fs::MAX_TEXT_BYTES`).
-    pub const TOO_LARGE: u32 = 8;
+    pub const TOO_LARGE: u32 = 10;
     /// `CreateDir`, or creating a file, where something already exists.
-    pub const EXISTS: u32 = 9;
+    pub const EXISTS: u32 = 11;
 }

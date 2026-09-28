@@ -354,6 +354,20 @@ fn a_plot_is_drawn_at_its_size_and_reported() {
     assert!(fill[2] - fill[0] > 120.0, "a zero-width plot fills the row");
 }
 
+#[test]
+fn upload_project_is_drawn_and_tracked() {
+    let buf = encode(&[Cmd::UploadProject { id: 50 }, Cmd::UploadProject { id: 51 }]);
+    let ctx = egui::Context::default();
+    let mut r = Replayer::new();
+    let recs = frame(&ctx, &mut r, &buf, raw_input()).unwrap();
+    assert_eq!(
+        recs.iter().map(|r| r.local_id).collect::<Vec<_>>(),
+        vec![50, 51]
+    );
+    assert_eq!(r.project_uploads(), &[50, 51]);
+    assert!(r.uploads().is_empty(), "not mixed up with UploadFolder");
+}
+
 /// Type `text` into whatever widget has keyboard focus.
 fn typing(text: &str) -> egui::RawInput {
     egui::RawInput {

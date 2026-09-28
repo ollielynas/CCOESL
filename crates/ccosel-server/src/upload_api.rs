@@ -42,6 +42,7 @@ pub async fn upload(
     if !valid_filename(&params.filename) {
         return StatusCode::BAD_REQUEST.into_response();
     }
+    state.scratch.touch(&params.path);
 
     // The same permissions as every other route: the new file, and every folder created on
     // the way to it, gets the rules of the folder it lands in.

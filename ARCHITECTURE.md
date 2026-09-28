@@ -224,6 +224,19 @@ the previous frame left standing.
 Tooltips are resolved in a pre-pass and attached on the way past, which is why they cost
 nothing despite responses being a frame stale.
 
+## Known limitation: building is running untrusted code
+
+`Compile` runs `cargo build` on whatever project is in the jail. Cargo runs that project's
+build scripts (`build.rs`) and procedural macros as part of the build, so **building a project
+runs arbitrary code as the server's user**, with its filesystem and network access. The jail
+is a path check on which directory gets built, not a sandbox around the build.
+
+Until that changes, only build projects you would be willing to run yourself. A real sandbox
+would need, at minimum: an unprivileged user or a fresh container per build; the filesystem
+limited to the project and the toolchain, read-only except the project's `target/`; no
+network (dependencies vendored or fetched by a separate step); and CPU, memory and time
+limits enforced from outside the build rather than by the build itself.
+
 ## Status
 
 - [x] `ccosel-abi` v0 — opcodes, frame structs, codec, validator, hostile-input tests

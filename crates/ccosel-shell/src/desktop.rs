@@ -257,6 +257,10 @@ impl Desktop {
                 self.uploads
                     .start(window.instance_id, widget, dest, ctx.clone());
             }
+            if let Some(widget) = window.clicked_project_upload() {
+                self.uploads
+                    .start_project(window.instance_id, widget, ctx.clone());
+            }
             if let Some(url) = window.clicked_open_url()
                 && let Err(e) = upload::open_url(&url)
             {
@@ -308,7 +312,13 @@ impl Desktop {
                 .iter_mut()
                 .find(|w| w.instance_id == done.instance)
             {
-                w.upload_finished(done.widget);
+                // A project upload that failed before it had a folder tells the app nothing:
+                // there's nothing to build, and the error list says why.
+                match (done.project, done.scratch) {
+                    (true, Some(id)) => w.project_uploaded(done.widget, id),
+                    (true, None) => {}
+                    (false, _) => w.upload_finished(done.widget),
+                }
             }
             for f in &done.failures {
                 self.errors.push(format!("upload: {f}"));

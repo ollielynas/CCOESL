@@ -302,6 +302,19 @@ impl<'a> Ui<'a> {
         self.response(id)
     }
 
+    /// A button that uploads a project folder from this computer into a new temporary folder
+    /// on the server, leaving out everything its `.gitignore` files exclude (and `.git/`).
+    ///
+    /// For building, not keeping: the server deletes the folder after an hour unused, or on
+    /// restart, and it never appears in the Files app. When an upload finishes,
+    /// [`Response::uploaded_project`] gives the folder's id; its path is
+    /// `ccosel_proto::scratch::path(id)`, and the picked folder is the one directory inside.
+    pub fn upload_project(&mut self) -> Response {
+        let id = self.auto_id();
+        self.rec.push(&Cmd::UploadProject { id });
+        self.response(id)
+    }
+
     /// Open `url` in a new browser tab. Useful for downloads: point `url` at `/files/{path}` to
     /// stream a file out of the jail.
     ///

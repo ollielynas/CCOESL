@@ -9,6 +9,7 @@ use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
+use ccosel_proto::build::CompileReq;
 use ccosel_proto::fs::{ListDirReq, PathReq, SearchReq, WriteFileReq};
 use ccosel_proto::info::ServerInfoReply;
 use ccosel_proto::{Method, PROTO_VERSION, WireReply, WireRequest, WireResult, server_error};
@@ -82,8 +83,29 @@ fn dispatch(state: &AppState, user: Option<&str>, req: &WireRequest<'_>) -> Outc
     let jail = &state.jail;
 
     match method {
-        Method::ListDir => run::<ListDirReq, _>(req, |a| (jail.list_dir(&a, user), a.path)),
+        Method::ListDir => run::<ListDirReq, _>(req, |a| {
+            state.scratch.touch(a.path);
+            let listing = jail.list_dir(&a, user).map(|mut listing| {
+                // Temporary project folders are the Compiler's business, not a folder anyone
+                // browses to.
+                if a.path.trim_matches('/').is_empty() {
+                    listing
+                        .entries
+                        .retain(|e| e.name != ccosel_proto::scratch::DIR);
+                }
+                listing
+            });
+            (listing, a.path)
+        }),
         Method::Stat => Outcome::Err(server_error::UNKNOWN_METHOD, String::new()),
+        Method::Compile => run::<CompileReq, _>(req, |a| {
+            state.scratch.touch(a.path);
+            // Building reads the project, so it needs the same permission as reading it.
+            let result = jail
+                .authorize(a.path, user, crate::fs_api::Need::Read)
+                .and_then(|_| crate::build_api::compile(jail, &state.jobs, &a));
+            (result, a.path)
+        }),
         Method::ServerInfo => {
             let host = stats::sample_host();
             let info = ServerInfoReply {

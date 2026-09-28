@@ -132,6 +132,8 @@ pub struct Replayer {
     /// checks these against the frame's clicks to know when to open the folder picker, and
     /// where the chosen folder goes.
     uploads: Vec<(u64, String)>,
+    /// Widget ids of this frame's `UploadProject` buttons.
+    project_uploads: Vec<u64>,
     /// Widget ids and target URLs from `OpenUrl` commands this frame. The shell checks these to
     /// know when, and where, to open a new browser tab (see #19).
     open_url_ids: Vec<(u64, String)>,
@@ -166,6 +168,7 @@ impl Replayer {
         // zero-latency despite responses being a frame stale.
         let mut tooltips: HashMap<u64, &str> = HashMap::new();
         self.uploads.clear();
+        self.project_uploads.clear();
         self.open_url_ids.clear();
         for cmd in &cmds {
             match *cmd {
@@ -173,6 +176,7 @@ impl Replayer {
                     tooltips.insert(id, text);
                 }
                 Cmd::UploadFolder { id, dest } => self.uploads.push((id, dest.to_owned())),
+                Cmd::UploadProject { id } => self.project_uploads.push(id),
                 Cmd::OpenUrl { id, url, .. } => self.open_url_ids.push((id, url.to_owned())),
                 _ => {}
             }
@@ -223,6 +227,11 @@ impl Replayer {
     /// successfully replayed frame. Acting on a click (the picker, the upload) is the shell's job.
     pub fn uploads(&self) -> &[(u64, String)] {
         &self.uploads
+    }
+
+    /// Widget ids of the `UploadProject` buttons in the last successfully replayed frame.
+    pub fn project_uploads(&self) -> &[u64] {
+        &self.project_uploads
     }
 
     /// Widget ids and target URLs from `OpenUrl` commands in the last successfully replayed
@@ -345,6 +354,12 @@ impl Cx<'_> {
 
                 Cmd::Separator => {
                     ui.separator();
+                }
+
+                Cmd::UploadProject { id } => {
+                    let r =
+                        ui.add(egui::Button::new("⬆ Upload project").frame_when_inactive(false));
+                    self.finish(id, r);
                 }
 
                 Cmd::UploadFolder { id, .. } => {

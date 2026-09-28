@@ -45,6 +45,14 @@ pub fn catalog() -> Vec<AppEntry> {
             default_size: [380.0, 560.0],
         },
         AppEntry {
+            id: "rust-compiler",
+            name: "Compiler",
+            icon: egui_phosphor::regular::HAMMER,
+            color: egui::Color32::from_rgb(0xea, 0x58, 0x0c),
+            url: "./dist/rust-compiler.wasm",
+            default_size: [480.0, 420.0],
+        },
+        AppEntry {
             id: "docs",
             name: "Docs",
             icon: egui_phosphor::regular::BOOK_OPEN,

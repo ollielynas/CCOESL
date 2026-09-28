@@ -73,6 +73,10 @@ pub enum Cmd<'a> {
         label: &'a str,
         url: &'a str,
     },
+    /// See `OpCode::UploadProject`.
+    UploadProject {
+        id: u64,
+    },
     Plot {
         id: u64,
         size: Vec2,
@@ -259,6 +263,7 @@ impl<'a> Decoder<'a> {
                 label: self.str()?,
                 url: self.str()?,
             },
+            OpCode::UploadProject => Cmd::UploadProject { id: self.u64()? },
             OpCode::Plot => Cmd::Plot {
                 id: self.u64()?,
                 size: Vec2::new(self.f32()?, self.f32()?),

@@ -10,6 +10,7 @@ machine on the network.
 - [Docs](Apps/docs.md): read, write and search documents, including these ones
 - [Clock](Apps/clock.md): a clock and stopwatch
 - [Server](Apps/server-dashboard.md): live graphs of how the server is doing
+- [Compiler](Apps/rust-compiler.md): build a Rust project on the server and download the result
 
 ## Where your files go
 
