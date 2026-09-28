@@ -38,8 +38,8 @@ pub use ui::{FrameCtx, Text, Ui, View3d, ViewResponse};
 /// The 3D viewport's vocabulary, re-exported so an app needs no `ccosel-abi` dependency.
 pub mod view3d {
     pub use ccosel_abi::view3d::{
-        Anchor, Extrude, NO_FACE, Render, Snap, ViewAction, ViewEvent, ViewTool, plane_basis,
-        rect_corners,
+        Anchor, Extrude, NO_FACE, Render, Snap, StdView, ViewAction, ViewCommand, ViewEvent,
+        ViewTool, plane_basis, rect_corners,
     };
 }
 

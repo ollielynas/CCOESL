@@ -289,6 +289,7 @@ struct Modeller {
     tool: Option<ccosel_sdk::view3d::ViewTool>,
     path: Vec<[f32; 3]>,
     seen: Vec<ccosel_sdk::view3d::ViewEvent>,
+    sketch_seen: Vec<Vec<u8>>,
 }
 
 impl App for Modeller {
@@ -301,6 +302,7 @@ impl App for Modeller {
             ..Default::default()
         });
         self.seen.extend(r.events);
+        self.sketch_seen.extend(r.sketch);
     }
 }
 
@@ -392,4 +394,19 @@ fn a_click_in_the_first_top_level_scope_reaches_exactly_one_widget() {
         assert_eq!(h.app.tab_clicks, tabs, "clicked {label}");
         assert_eq!(h.app.body_clicks, body, "clicked {label}");
     }
+}
+
+#[test]
+fn sketch_events_reach_the_viewport_that_raised_them_as_opaque_bytes() {
+    let mut h = Harness::new(Modeller::default());
+    h.frame();
+    h.view_sketch_event(&[1, 2, 3]);
+    assert!(h.app.sketch_seen.is_empty());
+    h.frame();
+    assert_eq!(h.app.sketch_seen, vec![vec![1, 2, 3]]);
+    h.frame();
+    assert_eq!(h.app.sketch_seen.len(), 1, "once");
+    let shown = &h.viewports()[0];
+    assert!(shown.sketch.is_empty());
+    assert_eq!(shown.view, ccosel_sdk::view3d::ViewCommand::default());
 }

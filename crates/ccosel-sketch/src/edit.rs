@@ -619,6 +619,12 @@ pub fn offset(sk: &mut Sketch, geos: &[i32], d: f64) -> Vec<i32> {
 
 /// Where on a curve a click lands, for the tools that take a point on one.
 pub fn closest_on(sk: &Sketch, g: i32, p: P2) -> Option<P2> {
+    // The axes are infinite lines, not the unit segments `curve` stands them in with.
+    match g {
+        ccosel_proto::sketch::H_AXIS => return Some([p[0], 0.0]),
+        ccosel_proto::sketch::V_AXIS => return Some([0.0, p[1]]),
+        _ => {}
+    }
     Some(match curve(sk, g)? {
         Curve::Line(a, b) => closest_on_segment(a, b, p).0,
         Curve::Circle { center, radius } | Curve::Arc { center, radius, .. } => {

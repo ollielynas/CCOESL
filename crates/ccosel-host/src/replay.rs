@@ -250,8 +250,8 @@ impl Replayer {
         self.views.render_done(key, bytes);
     }
 
-    /// Gestures finished in this app's viewports since the last call, as one `VIEWPORT` event
-    /// batch for the guest, or `None`.
+    /// Gestures finished and sketches edited in this app's viewports since the last call, as
+    /// one batch of `VIEWPORT` and `SKETCH` events for the guest, or `None`.
     pub fn take_view_events(&mut self) -> Option<Vec<u8>> {
         let payloads = self.views.take_events();
         if payloads.is_empty() {
@@ -259,7 +259,7 @@ impl Replayer {
         }
         let events: Vec<(u32, u32, &[u8])> = payloads
             .iter()
-            .map(|p| (event_kind::VIEWPORT, 0, p.as_slice()))
+            .map(|(kind, p)| (*kind, 0, p.as_slice()))
             .collect();
         Some(encode_batch(&events))
     }

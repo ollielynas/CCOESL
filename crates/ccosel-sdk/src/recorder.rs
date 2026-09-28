@@ -28,6 +28,8 @@ pub struct Recorder {
     deltas: Vec<PendingDelta>,
     /// Finished viewport gestures, handed to the app when it next draws that viewport.
     views: Vec<ViewEvent>,
+    /// Sketch edits and picks, as `(viewport id, postcard body)`, likewise.
+    sketches: Vec<(u64, Vec<u8>)>,
 }
 
 impl Default for Recorder {
@@ -43,6 +45,7 @@ impl Recorder {
             resp: Vec::new(),
             deltas: Vec::new(),
             views: Vec::new(),
+            sketches: Vec::new(),
         }
     }
 
@@ -83,6 +86,22 @@ impl Recorder {
             .partition(|e| e.id == id);
         self.views = rest;
         mine
+    }
+
+    pub(crate) fn queue_sketch_event(&mut self, id: u64, body: &[u8]) {
+        self.sketches.push((id, body.to_vec()));
+    }
+
+    /// Remove and return the sketch events waiting for viewport `id`, oldest first.
+    pub(crate) fn take_sketch_events(&mut self, id: u64) -> Vec<Vec<u8>> {
+        if self.sketches.is_empty() {
+            return Vec::new();
+        }
+        let (mine, rest): (Vec<_>, Vec<_>) = core::mem::take(&mut self.sketches)
+            .into_iter()
+            .partition(|(i, _)| *i == id);
+        self.sketches = rest;
+        mine.into_iter().map(|(_, b)| b).collect()
     }
 
     /// Install the response table the host wrote for the previous frame.

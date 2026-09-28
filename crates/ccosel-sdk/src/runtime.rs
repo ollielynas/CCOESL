@@ -134,6 +134,11 @@ pub(crate) fn deliver(rpc: &RpcCtx, rec: &mut Recorder, event: &ccosel_abi::Even
                 rec.queue_text_delta(&delta);
             }
         }
+        event_kind::SKETCH => {
+            if let Some((id, body)) = ccosel_abi::view3d::decode_sketch_event(event.payload) {
+                rec.queue_sketch_event(id, body);
+            }
+        }
         event_kind::VIEWPORT => {
             if let Some(e) = ccosel_abi::view3d::decode_view_event(event.payload) {
                 rec.queue_view_event(e);

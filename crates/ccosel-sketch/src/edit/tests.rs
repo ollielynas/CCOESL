@@ -298,4 +298,9 @@ fn closest_points_on_curves() {
     assert!(close(closest_on(&s, 1, [0.0, 9.0]).unwrap(), [0.0, 5.0]));
     assert_eq!(closest_on(&s, 1, [0.0, 0.0]), None);
     assert_eq!(closest_on(&s, 2, [0.0, 0.0]), Some([3.0, 3.0]));
+    assert_eq!(
+        closest_on(&s, ccosel_proto::sketch::H_AXIS, [40.0, 3.0]),
+        Some([40.0, 0.0])
+    );
+    assert_eq!(closest_on(&s, V_AXIS, [40.0, 3.0]), Some([0.0, 3.0]));
 }

@@ -24,9 +24,10 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use ccosel_abi::event::event_kind;
 use ccosel_abi::view3d::{
-    Extrude, NO_FACE, Render, Snap, ViewAction, ViewEvent, ViewTool, Viewport, encode_view_event,
-    rect_corners,
+    Extrude, NO_FACE, Render, Snap, StdView, ViewAction, ViewEvent, ViewTool, Viewport,
+    encode_sketch_event, encode_view_event, rect_corners,
 };
 use ccosel_proto::cad::{MeshData, RenderReq};
 use ccosel_proto::scene2d::{Scene2D, unpack};
@@ -83,6 +84,9 @@ pub(crate) struct ViewState {
     hover: Option<Resolved>,
     local: Option<(u64, Arc<Scene2D>)>,
     server: ServerFrames,
+    /// The last standard-view command obeyed.
+    view_seq: u32,
+    sketch: crate::sketch_view::SketchState,
 }
 
 #[derive(Default)]
@@ -103,7 +107,8 @@ pub(crate) struct Views {
     /// Render key -> viewport id, for routing a server frame back.
     job_view: HashMap<u64, u64>,
     next_key: u64,
-    events: Vec<Vec<u8>>,
+    /// Finished gestures and sketch edits, as `(event kind, payload)`.
+    events: Vec<(u32, Vec<u8>)>,
     frame: u64,
 }
 
@@ -135,7 +140,7 @@ impl Views {
         std::mem::take(&mut self.jobs)
     }
 
-    pub(crate) fn take_events(&mut self) -> Vec<Vec<u8>> {
+    pub(crate) fn take_events(&mut self) -> Vec<(u32, Vec<u8>)> {
         std::mem::take(&mut self.events)
     }
 
@@ -247,8 +252,25 @@ impl Views {
         let loading =
             !view.mesh.is_empty() && state.shown.as_ref().is_none_or(|(u, _)| u != view.mesh);
 
+        if view.view.seq != state.view_seq {
+            state.view_seq = view.view.seq;
+            let mesh = state.shown.as_ref().map(|(_, m)| m.clone());
+            let plane = state.sketch_plane(view);
+            apply_view(
+                &mut state.camera,
+                view.view.view,
+                mesh.as_deref(),
+                plane,
+                aspect,
+            );
+        }
+        let sketching = !view.sketch.is_empty();
         let events = state.input(ui, &r, rect, id, view, frame);
-        self.events.extend(events.iter().map(encode_view_event));
+        self.events.extend(
+            events
+                .iter()
+                .map(|e| (event_kind::VIEWPORT, encode_view_event(e))),
+        );
         let state = self.views.get_mut(&id).expect("inserted above");
 
         // The preview: the guest's own, else the one kept while a new mesh loads, else a
@@ -361,7 +383,21 @@ impl Views {
             paint_scene(&painter, rect.min, &scene);
         }
 
-        state.paint_overlay(&painter, rect, view);
+        if sketching {
+            let mesh = state.shown.as_ref().map(|(_, m)| m.clone());
+            let ViewState { sketch, camera, .. } = state;
+            for e in sketch.show(ui, &r, rect, camera, mesh.as_deref(), view, frame) {
+                if let Ok(body) = postcard::to_allocvec(&e) {
+                    self.events
+                        .push((event_kind::SKETCH, encode_sketch_event(id, &body)));
+                }
+            }
+            if let Some(e) = &sketch.error {
+                problem.get_or_insert_with(|| e.clone());
+            }
+        } else {
+            state.paint_overlay(&painter, rect, view);
+        }
         if let Some(p) = problem {
             painter.text(
                 rect.left_bottom() + egui::vec2(8.0, -8.0),
@@ -381,6 +417,54 @@ impl Views {
         }
         r
     }
+}
+
+impl ViewState {
+    /// The plane of the sketch the app is showing, if it is showing one.
+    fn sketch_plane(&self, view: &Viewport<'_>) -> Option<ccosel_proto::sketch::Plane> {
+        if view.sketch.is_empty() {
+            return None;
+        }
+        postcard::from_bytes::<ccosel_proto::sketch::SketchScene>(view.sketch)
+            .ok()
+            .map(|s| s.sketch.plane)
+    }
+}
+
+/// FreeCAD's standard views. Z is up; "front" looks along +Y, as in FreeCAD.
+fn apply_view(
+    cam: &mut Camera,
+    view: StdView,
+    mesh: Option<&Mesh>,
+    plane: Option<ccosel_proto::sketch::Plane>,
+    aspect: f32,
+) {
+    use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, PI};
+    let top = 1.55;
+    let (azimuth, elevation) = match view {
+        StdView::None => return,
+        StdView::Fit => {
+            if let Some(m) = mesh.filter(|m| m.radius > 0.0) {
+                cam.fit(m.center, m.radius, aspect);
+            }
+            return;
+        }
+        StdView::Sketch => {
+            if let Some(p) = plane {
+                crate::sketch_view::face(cam, &p);
+            }
+            return;
+        }
+        StdView::Isometric => (-FRAC_PI_4, 0.6155),
+        StdView::Front => (-FRAC_PI_2, 0.0),
+        StdView::Rear => (FRAC_PI_2, 0.0),
+        StdView::Right => (0.0, 0.0),
+        StdView::Left => (PI, 0.0),
+        StdView::Top => (-FRAC_PI_2, top),
+        StdView::Bottom => (-FRAC_PI_2, -top),
+    };
+    cam.state.azimuth = azimuth;
+    cam.state.elevation = elevation;
 }
 
 /// A cheap fingerprint of everything a local render depends on, so an idle viewport is not
@@ -478,6 +562,7 @@ impl ViewState {
         view: &Viewport<'_>,
         frame: u64,
     ) -> Vec<ViewEvent> {
+        let sketching = !view.sketch.is_empty();
         let mut events = Vec::new();
         let (w, h) = (rect.width(), rect.height());
         let pointer = r.hover_pos().or(r.interact_pointer_pos());
@@ -485,6 +570,7 @@ impl ViewState {
         let drawing = matches!(view.tool, ViewTool::Line | ViewTool::Rect);
 
         self.hover = match local {
+            _ if sketching => None,
             Some(p) if r.contains_pointer() || r.dragged() => {
                 self.resolve_at(p, rect, drawing, view)
             }
@@ -504,7 +590,11 @@ impl ViewState {
 
         let delta = r.drag_delta();
         let shift = ui.input(|i| i.modifiers.shift);
-        let orbit_with_primary = matches!(view.tool, ViewTool::Orbit | ViewTool::Select);
+        let orbit_with_primary = if sketching {
+            view.tool == ViewTool::Orbit
+        } else {
+            matches!(view.tool, ViewTool::Orbit | ViewTool::Select)
+        };
         if r.dragged_by(egui::PointerButton::Middle)
             || (r.dragged_by(egui::PointerButton::Primary) && orbit_with_primary)
         {
@@ -515,6 +605,10 @@ impl ViewState {
             }
         }
 
+        if sketching {
+            self.drag = None;
+            return events;
+        }
         let mesh = self.shown.as_ref().map(|(_, m)| m.clone());
         if view.tool == ViewTool::PushPull {
             if r.drag_started_by(egui::PointerButton::Primary)

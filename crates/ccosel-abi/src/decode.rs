@@ -8,7 +8,9 @@
 use crate::MAX_SCOPE_DEPTH;
 use crate::geom::{Align, Layout, ScopeKind, TextStyle, Vec2};
 use crate::opcode::OpCode;
-use crate::view3d::{Anchor, Extrude, Render, ViewTool, Viewport, check_path};
+use crate::view3d::{
+    Anchor, Extrude, Render, StdView, ViewCommand, ViewTool, Viewport, check_path,
+};
 
 /// One decoded command, borrowing its strings from the command buffer.
 ///
@@ -252,6 +254,12 @@ impl<'a> Decoder<'a> {
         };
         let selected = self.u32()?;
         let render = Render::from_u8(self.u8()?).ok_or(DecodeError::InvalidEnum)?;
+        let sketch = self.bytes()?;
+        let value = self.f32()?;
+        let view = ViewCommand {
+            view: StdView::from_u8(self.u8()?).ok_or(DecodeError::InvalidEnum)?,
+            seq: self.u32()?,
+        };
         Ok(Viewport {
             size,
             mesh,
@@ -261,6 +269,9 @@ impl<'a> Decoder<'a> {
             preview,
             selected,
             render,
+            sketch,
+            value,
+            view,
         })
     }
 

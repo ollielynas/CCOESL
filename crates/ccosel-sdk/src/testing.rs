@@ -25,7 +25,7 @@ use alloc::vec::Vec;
 
 use ccosel_abi::event::{Event, TextDelta, encode_error, encode_text_delta, event_kind};
 use ccosel_abi::view3d::{
-    Anchor, Extrude, Render, Snap, ViewAction, ViewEvent, ViewTool, encode_view_event,
+    Anchor, Extrude, Render, Snap, ViewAction, ViewCommand, ViewEvent, ViewTool, encode_view_event,
 };
 use ccosel_abi::{Cmd, Decoder, RespRecord, ResponseFlags, TextStyle};
 
@@ -48,6 +48,9 @@ pub struct ViewShown {
     pub preview: Option<Extrude>,
     pub selected: u32,
     pub render: Render,
+    pub sketch: Vec<u8>,
+    pub value: f32,
+    pub view: ViewCommand,
 }
 
 pub struct Harness<A: App> {
@@ -316,6 +319,9 @@ impl<A: App> Harness<A> {
                     preview: view.preview,
                     selected: view.selected,
                     render: view.render,
+                    sketch: view.sketch.to_vec(),
+                    value: view.value,
+                    view: view.view,
                 }),
                 _ => None,
             })
@@ -342,6 +348,31 @@ impl<A: App> Harness<A> {
         );
     }
 
+    /// Plays the shell reporting a sketch event (postcard `SketchEvent` bytes) from the first
+    /// viewport of the last frame.
+    pub fn view_sketch_event(&mut self, body: &[u8]) {
+        let id = self.first_viewport();
+        let payload = ccosel_abi::view3d::encode_sketch_event(id, body);
+        crate::runtime::deliver(
+            &self.rpc,
+            &mut self.rec,
+            &Event {
+                kind: event_kind::SKETCH,
+                call_id: 0,
+                payload: &payload,
+            },
+        );
+    }
+
+    fn first_viewport(&self) -> u64 {
+        self.commands()
+            .find_map(|c| match c {
+                Cmd::Viewport3d { id, .. } => Some(id),
+                _ => None,
+            })
+            .expect("no viewport in the last frame")
+    }
+
     fn view_event(
         &mut self,
         action: ViewAction,
@@ -351,13 +382,7 @@ impl<A: App> Harness<A> {
         snap: Snap,
         distance: f32,
     ) {
-        let id = self
-            .commands()
-            .find_map(|c| match c {
-                Cmd::Viewport3d { id, .. } => Some(id),
-                _ => None,
-            })
-            .expect("no viewport in the last frame");
+        let id = self.first_viewport();
         let payload = encode_view_event(&ViewEvent {
             id,
             action,

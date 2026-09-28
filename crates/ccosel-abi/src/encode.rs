@@ -219,6 +219,10 @@ impl Encoder {
                 }
                 self.u32(view.selected);
                 self.u8(view.render as u8);
+                self.bytes(view.sketch);
+                self.f32(view.value);
+                self.u8(view.view.view as u8);
+                self.u32(view.view.seq);
             }
         }
     }

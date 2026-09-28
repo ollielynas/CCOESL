@@ -34,6 +34,25 @@ pub enum ViewTool {
     PushPull = 3,
     /// The primary button orbits too, for a trackpad with no middle button.
     Orbit = 4,
+    // The Sketcher's tools, meaningful while the viewport shows a sketch. There, `Select`
+    // picks and drags sketch geometry, and `Line` and `Rect` draw into the sketch.
+    /// Connected lines; click the first point again, or the last twice, to finish.
+    Polyline = 5,
+    /// Centre, then a point on the circle.
+    Circle = 6,
+    /// Centre, start, end, counter-clockwise.
+    Arc = 7,
+    Point = 8,
+    /// Click the part of a curve to remove, back to where other curves cross it.
+    Trim = 9,
+    /// Click near the end of a line or arc to lengthen it to the next curve.
+    Extend = 10,
+    /// Click a line or arc where it should be cut in two.
+    Split = 11,
+    /// Click a corner to round it, with the radius in `Viewport::value`.
+    Fillet = 12,
+    /// Click an edge of the model to copy it into the sketch, fixed.
+    External = 13,
 }
 
 impl ViewTool {
@@ -44,6 +63,15 @@ impl ViewTool {
             2 => Some(Self::Rect),
             3 => Some(Self::PushPull),
             4 => Some(Self::Orbit),
+            5 => Some(Self::Polyline),
+            6 => Some(Self::Circle),
+            7 => Some(Self::Arc),
+            8 => Some(Self::Point),
+            9 => Some(Self::Trim),
+            10 => Some(Self::Extend),
+            11 => Some(Self::Split),
+            12 => Some(Self::Fillet),
+            13 => Some(Self::External),
             _ => None,
         }
     }
@@ -82,6 +110,59 @@ pub struct Viewport<'a> {
     /// A face to draw as selected, or [`NO_FACE`].
     pub selected: u32,
     pub render: Render,
+    /// The sketch being edited, as postcard `ccosel_proto::sketch::SketchScene` bytes the ABI
+    /// does not look inside, or empty when not sketching.
+    pub sketch: &'a [u8],
+    /// A number a tool needs: the Fillet radius, in millimetres.
+    pub value: f32,
+    /// A camera move for the shell to make once, when `view.seq` changes: FreeCAD's standard
+    /// views.
+    pub view: ViewCommand,
+}
+
+/// FreeCAD's View toolbar.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(u8)]
+pub enum StdView {
+    #[default]
+    None = 0,
+    /// Fit everything in view.
+    Fit = 1,
+    Isometric = 2,
+    Front = 3,
+    Top = 4,
+    Right = 5,
+    Rear = 6,
+    Bottom = 7,
+    Left = 8,
+    /// Look straight at the sketch being edited.
+    Sketch = 9,
+}
+
+impl StdView {
+    pub const fn from_u8(v: u8) -> Option<Self> {
+        Some(match v {
+            0 => Self::None,
+            1 => Self::Fit,
+            2 => Self::Isometric,
+            3 => Self::Front,
+            4 => Self::Top,
+            5 => Self::Right,
+            6 => Self::Rear,
+            7 => Self::Bottom,
+            8 => Self::Left,
+            9 => Self::Sketch,
+            _ => return None,
+        })
+    }
+}
+
+/// A one-off camera move. The command stream re-declares everything every frame, so a move
+/// carries a sequence number and the shell makes it once per new number.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ViewCommand {
+    pub view: StdView,
+    pub seq: u32,
 }
 
 /// Where a viewport's frames are drawn. The picture is the same either way (one renderer runs
@@ -237,6 +318,21 @@ pub fn decode_view_event(p: &[u8]) -> Option<ViewEvent> {
     })
 }
 
+/// A `SKETCH` event's payload: the viewport's id, then postcard
+/// `ccosel_proto::sketch::SketchEvent` bytes the ABI does not look inside.
+pub fn encode_sketch_event(id: u64, body: &[u8]) -> alloc::vec::Vec<u8> {
+    let mut out = alloc::vec::Vec::with_capacity(8 + body.len());
+    out.extend_from_slice(&id.to_le_bytes());
+    out.extend_from_slice(body);
+    out
+}
+
+/// The viewport id and body of a `SKETCH` event, or `None` if it is too short to have an id.
+pub fn decode_sketch_event(p: &[u8]) -> Option<(u64, &[u8])> {
+    let id = u64::from_le_bytes(p.get(..8)?.try_into().ok()?);
+    Some((id, &p[8..]))
+}
+
 fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
@@ -377,6 +473,25 @@ mod tests {
     }
 
     #[test]
+    fn sketch_events_carry_an_id_and_an_opaque_body() {
+        let e = encode_sketch_event(0xABCD, &[1, 2, 3]);
+        assert_eq!(decode_sketch_event(&e), Some((0xABCD, &[1u8, 2, 3][..])));
+        assert_eq!(decode_sketch_event(&e[..7]), None);
+    }
+
+    #[test]
+    fn enums_decode_every_value_they_encode() {
+        for v in 0..=13u8 {
+            assert_eq!(ViewTool::from_u8(v).map(|t| t as u8), Some(v));
+        }
+        assert_eq!(ViewTool::from_u8(14), None);
+        for v in 0..=9u8 {
+            assert_eq!(StdView::from_u8(v).map(|t| t as u8), Some(v));
+        }
+        assert_eq!(StdView::from_u8(10), None);
+    }
+
+    #[test]
     fn sqrt_is_accurate() {
         for x in [1e-6_f32, 0.25, 1.0, 2.0, 9.0, 1234.5, 1e12] {
             let r = sqrt(x);
@@ -435,6 +550,9 @@ mod tests {
             preview: None,
             selected: NO_FACE,
             render: Render::Auto,
+            sketch: &[],
+            value: 0.0,
+            view: ViewCommand::default(),
         };
         assert_eq!(vp.path_points().collect::<alloc::vec::Vec<_>>(), pts);
         assert!(check_path(&bytes).is_ok());

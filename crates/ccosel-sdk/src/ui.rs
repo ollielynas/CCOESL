@@ -2,7 +2,9 @@
 
 use alloc::string::String;
 use alloc::vec::Vec;
-use ccosel_abi::view3d::{self, Anchor, Extrude, Render, ViewEvent, ViewTool, Viewport};
+use ccosel_abi::view3d::{
+    self, Anchor, Extrude, Render, ViewCommand, ViewEvent, ViewTool, Viewport,
+};
 use ccosel_abi::{
     Align, Cmd, FrameInput, Layout, MAX_SCOPE_DEPTH, ScopeKind, TextStyle, Vec2, id as ids,
 };
@@ -287,6 +289,7 @@ impl<'a> Ui<'a> {
     pub fn viewport3d(&mut self, view: &View3d<'_>) -> ViewResponse {
         let id = self.auto_id();
         let events = self.rec.take_view_events(id);
+        let sketch = self.rec.take_sketch_events(id);
         let path = view3d::encode_path(view.path);
         self.rec.push(&Cmd::Viewport3d {
             id,
@@ -299,11 +302,15 @@ impl<'a> Ui<'a> {
                 preview: view.preview,
                 selected: view.selected,
                 render: view.render,
+                sketch: view.sketch,
+                value: view.value,
+                view: view.view,
             },
         });
         ViewResponse {
             response: self.response(id),
             events,
+            sketch,
         }
     }
 
@@ -414,6 +421,12 @@ pub struct View3d<'a> {
     pub selected: u32,
     /// Where frames are drawn; see `ccosel_abi::view3d::Render`.
     pub render: Render,
+    /// The sketch being edited (postcard `ccosel_proto::sketch::SketchScene`), or empty.
+    pub sketch: &'a [u8],
+    /// A number the tool needs: the Fillet radius.
+    pub value: f32,
+    /// A standard view to move the camera to, once per new `seq`.
+    pub view: ViewCommand,
 }
 
 impl Default for View3d<'_> {
@@ -427,6 +440,9 @@ impl Default for View3d<'_> {
             preview: None,
             selected: view3d::NO_FACE,
             render: Render::Auto,
+            sketch: &[],
+            value: 0.0,
+            view: ViewCommand::default(),
         }
     }
 }
@@ -437,6 +453,10 @@ impl Default for View3d<'_> {
 pub struct ViewResponse {
     pub response: Response,
     pub events: Vec<ViewEvent>,
+    /// Sketch edits and picks since it was last drawn, as postcard
+    /// `ccosel_proto::sketch::SketchEvent` bytes. Left undecoded here so an app that never
+    /// sketches links no decoder for them.
+    pub sketch: Vec<Vec<u8>>,
 }
 
 /// A text field's contents.

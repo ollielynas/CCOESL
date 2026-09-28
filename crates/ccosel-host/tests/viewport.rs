@@ -24,6 +24,9 @@ fn view(tool: ViewTool, render: Render) -> Viewport<'static> {
         preview: None,
         selected: NO_FACE,
         render,
+        sketch: &[],
+        value: 0.0,
+        view: ccosel_abi::view3d::ViewCommand::default(),
     }
 }
 

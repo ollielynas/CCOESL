@@ -127,6 +127,12 @@ fn sample() -> Vec<Cmd<'static>> {
                 }),
                 selected: 2,
                 render: view3d::Render::Server,
+                sketch: &[9, 8, 7],
+                value: 2.5,
+                view: view3d::ViewCommand {
+                    view: view3d::StdView::Top,
+                    seq: 3,
+                },
             },
         },
         Cmd::Viewport3d {
@@ -140,6 +146,9 @@ fn sample() -> Vec<Cmd<'static>> {
                 preview: None,
                 selected: view3d::NO_FACE,
                 render: view3d::Render::Server,
+                sketch: &[],
+                value: 0.0,
+                view: view3d::ViewCommand::default(),
             },
         },
         Cmd::EndWindow { id: win },
@@ -415,6 +424,9 @@ fn viewport_rejects_a_path_that_is_not_whole_points() {
             preview: None,
             selected: view3d::NO_FACE,
             render: view3d::Render::Server,
+            sketch: &[],
+            value: 0.0,
+            view: view3d::ViewCommand::default(),
         },
     }]);
     assert_eq!(decode(&buf), Err(DecodeError::InvalidEnum));
@@ -433,6 +445,9 @@ fn viewport_rejects_unknown_tools_and_flags() {
             preview: None,
             selected: 0,
             render: view3d::Render::Server,
+            sketch: &[],
+            value: 0.0,
+            view: view3d::ViewCommand::default(),
         },
     }]);
     // opcode, id (8), size (8), empty mesh (1): the tool byte comes next, then the anchor flag.
