@@ -349,3 +349,47 @@ fn viewport_carries_the_tool_and_its_path() {
     assert_eq!(shown.tool, ViewTool::Line);
     assert_eq!(shown.path, vec![[0.0; 3], [5.0, 0.0, 0.0]]);
 }
+
+/// Tabs in a top-level `horizontal`, then a body below it: the shape that made one click reach
+/// two widgets when an app's first scope shared the root id (#44).
+#[derive(Default)]
+struct Tabs {
+    tab_clicks: [u32; 2],
+    body_clicks: [u32; 2],
+}
+
+impl App for Tabs {
+    fn update(&mut self, ui: &mut Ui<'_>) {
+        ui.horizontal(|ui| {
+            if ui.button("Tab A").clicked() {
+                self.tab_clicks[0] += 1;
+            }
+            if ui.button("Tab B").clicked() {
+                self.tab_clicks[1] += 1;
+            }
+        });
+        if ui.button("Body A").clicked() {
+            self.body_clicks[0] += 1;
+        }
+        if ui.button("Body B").clicked() {
+            self.body_clicks[1] += 1;
+        }
+    }
+}
+
+#[test]
+fn a_click_in_the_first_top_level_scope_reaches_exactly_one_widget() {
+    for (label, tabs, body) in [
+        ("Tab A", [1, 0], [0, 0]),
+        ("Tab B", [0, 1], [0, 0]),
+        ("Body A", [0, 0], [1, 0]),
+        ("Body B", [0, 0], [0, 1]),
+    ] {
+        let mut h = Harness::new(Tabs::default());
+        h.frame();
+        h.click(label);
+        h.frame();
+        assert_eq!(h.app.tab_clicks, tabs, "clicked {label}");
+        assert_eq!(h.app.body_clicks, body, "clicked {label}");
+    }
+}

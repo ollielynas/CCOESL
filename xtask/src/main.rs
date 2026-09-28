@@ -67,7 +67,7 @@ fn help() {
          \x20 cargo xtask serve       serve web/ on :8777\n\
          \x20 cargo xtask new-app <name>   scaffold a new app crate under apps/\n\n\
          Trying a pull request (needs the GitHub CLI, `gh`):\n\n\
-         \x20 cargo xtask review 10                  check PR #10 out in ../<repo>-review and serve it\n\
+         \x20 cargo xtask review 10                  check PR #10 out in a fresh ../<repo>-review and serve it\n\
          \x20 cargo xtask review 10 --checkout-only  just check it out, to read it in your editor\n\n\
          Checks — what CI runs, one job each; `ci` runs them all and is the definition of done:\n\n\
          \x20 cargo xtask ci         fmt, clippy, test, test-wasm, coverage, then build-web\n\
@@ -273,6 +273,76 @@ fn review_dir_for(primary: &Path) -> PathBuf {
     primary.with_file_name(format!("{name}-review"))
 }
 
+/// Where the review checkout's build output waits while the checkout itself is recreated.
+fn review_cache_for(review_dir: &Path) -> PathBuf {
+    let mut name = review_dir.as_os_str().to_owned();
+    name.push("-cache");
+    PathBuf::from(name)
+}
+
+/// Build output kept across review checkouts, relative to the checkout. Both workspaces have
+/// one, and they are the only thing that makes the second review faster than the first.
+const REVIEW_KEPT_DIRS: [&str; 2] = ["target", "apps/target"];
+
+/// Replaces the review checkout with a clean one at `origin/main`, keeping only its build output.
+///
+/// It is removed with `git worktree remove --force` rather than cleaned in place, so whatever
+/// the last review left behind (uncommitted edits, untracked files, a served PR's `data/`) is
+/// gone, not just the tracked changes.
+fn fresh_review_checkout(root: &Path, dir: &Path) -> Result<()> {
+    if root.starts_with(dir) {
+        bail!(
+            "run this from your own checkout, not from {}: that checkout is about to be replaced",
+            dir.display()
+        );
+    }
+    let cache = review_cache_for(dir);
+    if dir.exists() {
+        for kept in REVIEW_KEPT_DIRS {
+            let (from, to) = (dir.join(kept), cache.join(kept));
+            if from.exists() {
+                if to.exists() {
+                    std::fs::remove_dir_all(&to)?;
+                }
+                std::fs::create_dir_all(to.parent().unwrap())?;
+                std::fs::rename(&from, &to)
+                    .with_context(|| format!("moving {} aside", from.display()))?;
+            }
+        }
+        println!(
+            "discarding the previous review checkout in {}",
+            dir.display()
+        );
+        run(
+            root,
+            "git",
+            &["worktree", "remove", "--force", dir.to_str().unwrap()],
+        )?;
+    }
+    // Forgets a review checkout that was deleted by hand, which would otherwise block the add.
+    run(root, "git", &["worktree", "prune"])?;
+    run(root, "git", &["fetch", "origin", "main"])?;
+    run(
+        root,
+        "git",
+        &[
+            "worktree",
+            "add",
+            "--detach",
+            dir.to_str().unwrap(),
+            "origin/main",
+        ],
+    )?;
+    for kept in REVIEW_KEPT_DIRS {
+        let (from, to) = (cache.join(kept), dir.join(kept));
+        if from.exists() {
+            std::fs::create_dir_all(to.parent().unwrap())?;
+            std::fs::rename(&from, &to).with_context(|| format!("restoring {}", to.display()))?;
+        }
+    }
+    Ok(())
+}
+
 /// The main checkout, even when xtask was started from another worktree (an agent's, or the
 /// review checkout itself), so there is one review directory however it was started.
 fn primary_checkout(from: &Path) -> Result<PathBuf> {
@@ -308,7 +378,8 @@ fn capture(dir: &Path, program: &str, args: &[&str]) -> Result<String> {
 ///
 /// By hand this is five commands (fetch, add a worktree, `gh pr checkout`, cd, `xtask dev`), and
 /// the way to get one subtly wrong is to check a PR out over your own work. This never touches
-/// the checkout it was started from, and refuses to overwrite edits in the review checkout.
+/// the checkout it was started from. The review checkout is recreated every time, so nothing
+/// done in it (edits, files a served PR wrote under `data/`) carries over to the next review.
 fn review(args: &[String]) -> Result<()> {
     let ReviewArgs {
         pr,
@@ -337,30 +408,7 @@ fn review(args: &[String]) -> Result<()> {
     println!("PR #{pr}: {summary}");
 
     let dir = review_dir_for(&primary_checkout(&root)?);
-    if dir.exists() {
-        // A reused checkout may hold someone's edits, and checking a PR out over them loses them.
-        let dirty = capture(&dir, "git", &["status", "--porcelain"])?;
-        if !dirty.is_empty() {
-            bail!(
-                "{0} has uncommitted changes, so it was left alone. Commit or discard them, or \
-                 remove the checkout with `git worktree remove --force {0}`",
-                dir.display()
-            );
-        }
-    } else {
-        run(&root, "git", &["fetch", "origin", "main"])?;
-        run(
-            &root,
-            "git",
-            &[
-                "worktree",
-                "add",
-                "--detach",
-                dir.to_str().unwrap(),
-                "origin/main",
-            ],
-        )?;
-    }
+    fresh_review_checkout(&root, &dir)?;
     run(&dir, "gh", &["pr", "checkout", &pr_arg, "--detach"])?;
 
     println!("\nPR #{pr} is checked out in {}", dir.display());
@@ -1021,6 +1069,100 @@ end_of_record
         assert_eq!(
             review_dir_for(Path::new("/home/me/2026/CCOSEL")),
             PathBuf::from("/home/me/2026/CCOSEL-review")
+        );
+    }
+
+    /// A scratch directory under the system temp dir, removed when dropped.
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new(name: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!("xtask-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn git(dir: &Path, args: &[&str]) {
+        let ok = Command::new("git")
+            .current_dir(dir)
+            .args([
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "init.defaultBranch=main",
+            ])
+            .args(args)
+            .output()
+            .unwrap()
+            .status
+            .success();
+        assert!(ok, "git {args:?} failed");
+    }
+
+    #[test]
+    fn a_new_review_starts_clean_but_keeps_its_build_output() {
+        let scratch = Scratch::new("review");
+        let upstream = scratch.0.join("upstream");
+        let repo = scratch.0.join("repo");
+        let review = scratch.0.join("repo-review");
+        std::fs::create_dir_all(&upstream).unwrap();
+        git(&upstream, &["init", "-q"]);
+        std::fs::write(upstream.join("README.md"), "hello\n").unwrap();
+        git(&upstream, &["add", "."]);
+        git(&upstream, &["commit", "-q", "-m", "init"]);
+        git(
+            &scratch.0,
+            &[
+                "clone",
+                "-q",
+                upstream.to_str().unwrap(),
+                repo.to_str().unwrap(),
+            ],
+        );
+
+        fresh_review_checkout(&repo, &review).unwrap();
+        // What a review leaves behind: an edit, a new file, and a warm build.
+        std::fs::write(review.join("README.md"), "edited\n").unwrap();
+        std::fs::create_dir_all(review.join("data/shared")).unwrap();
+        std::fs::write(review.join("data/shared/MyDOC.md"), "x").unwrap();
+        for kept in REVIEW_KEPT_DIRS {
+            std::fs::create_dir_all(review.join(kept)).unwrap();
+            std::fs::write(review.join(kept).join("built"), "x").unwrap();
+        }
+
+        fresh_review_checkout(&repo, &review).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(review.join("README.md")).unwrap(),
+            "hello\n"
+        );
+        assert!(
+            !review.join("data").exists(),
+            "untracked files must not persist"
+        );
+        for kept in REVIEW_KEPT_DIRS {
+            assert!(review.join(kept).join("built").exists(), "{kept} was lost");
+        }
+
+        // Started from inside the review checkout, it refuses rather than deleting its own root.
+        let err = fresh_review_checkout(&review, &review).unwrap_err();
+        assert!(err.to_string().contains("run this from your own checkout"));
+    }
+
+    #[test]
+    fn build_output_waits_beside_the_review_checkout() {
+        assert_eq!(
+            review_cache_for(Path::new("/home/me/2026/CCOSEL-review")),
+            PathBuf::from("/home/me/2026/CCOSEL-review-cache")
         );
     }
 
