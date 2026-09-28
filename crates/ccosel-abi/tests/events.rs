@@ -5,8 +5,30 @@
 //! produces a panic.
 
 use ccosel_abi::event::{
-    EventError, decode_batch, decode_error, encode_batch, encode_error, event_kind, rpc_error,
+    EventError, TextDelta, decode_batch, decode_error, decode_text_delta, encode_batch,
+    encode_error, encode_text_delta, event_kind, rpc_error,
 };
+
+#[test]
+fn text_deltas_round_trip() {
+    let d = TextDelta {
+        id: 0x0102_0304_0506_0708,
+        version: 42,
+        start: 3,
+        end: 7,
+        inserted: "héllo",
+    };
+    let bytes = encode_text_delta(&d);
+    assert_eq!(decode_text_delta(&bytes), Some(d));
+
+    // Short or non-UTF-8 payloads are refused, never a panic.
+    for n in 0..bytes.len().min(20) {
+        assert_eq!(decode_text_delta(&bytes[..n]), None);
+    }
+    let mut bad = encode_text_delta(&TextDelta { inserted: "", ..d });
+    bad.push(0xff);
+    assert_eq!(decode_text_delta(&bad), None);
+}
 
 #[test]
 fn round_trips_a_batch() {

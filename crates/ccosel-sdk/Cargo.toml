@@ -21,3 +21,5 @@ testing = []
 # Compiles the harness whenever the SDK's own tests, clippy or coverage run, without anyone
 # having to remember `--features testing`.
 ccosel-sdk = { path = ".", features = ["testing"] }
+# Checks `icons` against the font the shell actually loads. Test-only: it never reaches an app.
+egui-phosphor = "0.14"

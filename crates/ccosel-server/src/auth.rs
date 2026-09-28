@@ -301,15 +301,27 @@ pub fn router() -> Router<AppState> {
 /// every request passes, exactly as before login existed; with it, a request needs a live
 /// session cookie or gets `401`. `SameSite=Lax` on that cookie is also what keeps another site
 /// from making a signed-in browser `POST` to `/rpc` on its behalf.
-pub async fn require_session(State(state): State<AppState>, req: Request, next: Next) -> Response {
-    if state.auth.oauth.is_some() {
-        let cookie = req
-            .headers()
-            .get(header::COOKIE)
-            .and_then(|v| v.to_str().ok());
-        if state.auth.session_login(cookie).is_none() {
-            return (StatusCode::UNAUTHORIZED, "sign in first: /auth/login").into_response();
-        }
+///
+/// It is also where the caller becomes a [`User`](crate::access::User): the signed-in login
+/// goes into the request's extensions, and every permission check downstream reads it from
+/// there. A `User` already present (see `crate::as_user`) is left alone.
+pub async fn require_session(
+    State(state): State<AppState>,
+    mut req: Request,
+    next: Next,
+) -> Response {
+    let cookie = req
+        .headers()
+        .get(header::COOKIE)
+        .and_then(|v| v.to_str().ok());
+    let login = state.auth.session_login(cookie);
+    if state.auth.oauth.is_some() && login.is_none() {
+        return (StatusCode::UNAUTHORIZED, "sign in first: /auth/login").into_response();
+    }
+    if let Some(login) = login
+        && req.extensions().get::<crate::access::User>().is_none()
+    {
+        req.extensions_mut().insert(crate::access::User(login));
     }
     next.run(req).await
 }

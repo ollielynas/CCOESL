@@ -3,6 +3,7 @@
 //! Serves the shell, the app modules and the RPC endpoint from **one origin**, which is why
 //! there is no CORS configuration anywhere in this project.
 
+pub mod access;
 pub mod auth;
 pub mod build_api;
 pub mod fs_api;
@@ -17,16 +18,30 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use axum::Router;
 use axum::extract::{DefaultBodyLimit, Path as AxPath, State};
 use axum::http::{StatusCode, header};
 use axum::middleware;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
+use axum::{Extension, Router};
 use tower_http::services::ServeDir;
 
+use access::User;
 use auth::AuthState;
-use fs_api::Jail;
+use fs_api::{Jail, Need};
+
+/// The caller's user name, if they are signed in under a name that can safely own a folder.
+/// Anything else is treated as anonymous, which can only ever see less.
+pub(crate) fn caller(user: Option<&User>) -> Option<&str> {
+    user.map(|u| u.0.as_str()).filter(|n| User::valid_name(n))
+}
+
+/// Treat every request as coming from `name`, whatever its session says. For tests, and for
+/// embedding the server behind something else that has already identified the user; never on
+/// a router real people reach directly.
+pub fn as_user(router: Router, name: String) -> Router {
+    router.layer(Extension(User(name)))
+}
 
 #[derive(Clone)]
 pub struct AppState {
@@ -103,14 +118,19 @@ pub fn app(jail: Jail, web_dir: PathBuf, auth: AuthState) -> Router {
         .with_state(state)
 }
 
-/// Streams a file out of the jail, unconditionally. This is the plain jailed-path counterpart
+/// Streams a file out of the jail, if the caller may read it. This is the plain jailed-path counterpart
 /// to `ListDir` rather than the content-addressed `/cas/{blake3}` scheme `ARCHITECTURE.md`
 /// describes for other assets, which needs `ccosel-cas` to exist first. It discloses no more
 /// than `ListDir` already does: anything under the jail is already fair game to enumerate, this
-/// just answers "and can I have the bytes."
-async fn download(State(state): State<AppState>, AxPath(path): AxPath<String>) -> Response {
+/// just answers "and can I have the bytes." — under the same permissions (see `access`).
+async fn download(
+    State(state): State<AppState>,
+    user: Option<Extension<User>>,
+    AxPath(path): AxPath<String>,
+) -> Response {
     state.scratch.touch(&path);
-    let Ok(real) = state.jail.resolve(&path) else {
+    let user = caller(user.as_ref().map(|u| &u.0));
+    let Ok(real) = state.jail.authorize(&path, user, Need::Read) else {
         return StatusCode::FORBIDDEN.into_response();
     };
     let Ok(bytes) = tokio::fs::read(&real).await else {

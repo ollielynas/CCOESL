@@ -3,8 +3,9 @@
 use std::collections::HashMap;
 use std::ops::Range;
 
+use ccosel_abi::event::{TextDelta, encode_batch, encode_text_delta, event_kind};
 use ccosel_abi::{
-    Align, Cmd, DecodeError, Decoder, RespRecord, ResponseFlags, ScopeKind, validate,
+    Align, Cmd, DecodeError, Decoder, RespRecord, ResponseFlags, ScopeKind, TextStyle, validate,
 };
 
 use crate::convert;
@@ -33,10 +34,93 @@ impl std::error::Error for ReplayError {}
 /// Authoritative text state. The shell owns the buffer, the cursor, the selection, the undo
 /// stack and IME — all of which egui already implements and none of which survives a trip
 /// through a command stream.
+///
+/// It also remembers what the *guest* holds (`synced`), so that after the user types, the shell
+/// can send the guest the smallest edit that brings its copy up to date — see
+/// [`Replayer::take_text_events`].
 #[derive(Default)]
 struct TextState {
     buf: String,
     version: u32,
+    /// The guest's copy of the buffer, and its version, as of the last delta or `set`.
+    synced: String,
+    synced_version: u32,
+    /// The version of the last `set` accepted from the guest, so a frame replayed twice (the
+    /// shell re-renders the previous buffer when a guest fails) cannot apply it twice and
+    /// clobber what the user typed in between.
+    set_version: Option<u32>,
+}
+
+impl TextState {
+    /// Reconcile with what the guest emitted this frame.
+    fn sync_from_guest(&mut self, version: u32, set: Option<&str>, is_new: bool) {
+        match set {
+            // An explicit `Text::set` is the app saying "this is the text now", e.g. loading a
+            // file into an editor. It wins over anything typed since, and the version resets
+            // to the guest's, so later deltas carry versions the guest will accept.
+            Some(new_text) if self.set_version != Some(version) => {
+                self.buf.clear();
+                self.buf.push_str(new_text);
+                self.synced.clear();
+                self.synced.push_str(new_text);
+                self.version = version;
+                self.synced_version = version;
+                self.set_version = Some(version);
+            }
+            Some(_) => {}
+            // A field seen for the first time adopts the guest's version. Both sides start
+            // empty, so the texts already agree; the versions have to as well, or the guest
+            // would reject the first delta as stale.
+            None if is_new => {
+                self.version = version;
+                self.synced_version = version;
+            }
+            None => {}
+        }
+    }
+
+    /// The edit that turns the guest's copy into the shell's buffer, if they differ.
+    fn delta(&mut self, id: u64) -> Option<Vec<u8>> {
+        if self.version == self.synced_version {
+            return None;
+        }
+        let (start, old_end, new_end) = diff_range(&self.synced, &self.buf);
+        let payload = encode_text_delta(&TextDelta {
+            id,
+            version: self.version,
+            start: start as u32,
+            end: old_end as u32,
+            inserted: &self.buf[start..new_end],
+        });
+        self.synced.clear();
+        self.synced.push_str(&self.buf);
+        self.synced_version = self.version;
+        Some(payload)
+    }
+}
+
+/// The byte range that changed between `old` and `new`: `(start, end in old, end in new)`,
+/// after trimming the common prefix and suffix. Both ends land on char boundaries.
+fn diff_range(old: &str, new: &str) -> (usize, usize, usize) {
+    let prefix: usize = old
+        .chars()
+        .zip(new.chars())
+        .take_while(|(a, b)| a == b)
+        .map(|(a, _)| a.len_utf8())
+        .sum();
+    let max_suffix = old.len().min(new.len()) - prefix;
+    let suffix: usize = old[prefix..]
+        .chars()
+        .rev()
+        .zip(new[prefix..].chars().rev())
+        .take_while(|(a, b)| a == b)
+        .map(|(a, _)| a.len_utf8())
+        .scan(0usize, |acc, n| {
+            *acc += n;
+            (*acc <= max_suffix).then_some(n)
+        })
+        .sum();
+    (prefix, old.len() - suffix, new.len() - suffix)
 }
 
 /// Per-app replay state that must persist across frames.
@@ -118,6 +202,27 @@ impl Replayer {
             .map(|t| (t.buf.as_str(), t.version))
     }
 
+    /// The edits the user made to this app's text fields since the last call, as one
+    /// `TEXT_DELTA` event batch ready for the guest, or `None` if nothing changed. The shell
+    /// delivers it before the guest's next frame, which is how an app learns what was typed.
+    pub fn take_text_events(&mut self) -> Option<Vec<u8>> {
+        let mut ids: Vec<u64> = self.text.keys().copied().collect();
+        // Deterministic order, so a batch is reproducible in tests.
+        ids.sort_unstable();
+        let payloads: Vec<Vec<u8>> = ids
+            .into_iter()
+            .filter_map(|id| self.text.get_mut(&id).and_then(|t| t.delta(id)))
+            .collect();
+        if payloads.is_empty() {
+            return None;
+        }
+        let events: Vec<(u32, u32, &[u8])> = payloads
+            .iter()
+            .map(|p| (event_kind::TEXT_DELTA, 0, p.as_slice()))
+            .collect();
+        Some(encode_batch(&events))
+    }
+
     /// Widget ids and destination folders of the `UploadFolder` buttons in the last
     /// successfully replayed frame. Acting on a click (the picker, the upload) is the shell's job.
     pub fn uploads(&self) -> &[(u64, String)] {
@@ -182,6 +287,41 @@ impl Cx<'_> {
             None => response,
         };
         self.out.push(to_record(local_id, &response));
+    }
+
+    fn text_edit(
+        &mut self,
+        ui: &mut egui::Ui,
+        id: u64,
+        version: u32,
+        set: Option<&str>,
+        multiline: bool,
+    ) {
+        let is_new = !self.text.contains_key(&id);
+        let state = self.text.entry(id).or_default();
+        state.sync_from_guest(version, set, is_new);
+        let edit = if multiline {
+            // Monospace, full width and tab-to-indent: this is for writing documents and
+            // code, where columns line up and a tab should not move focus away.
+            egui::TextEdit::multiline(&mut state.buf)
+                .code_editor()
+                .desired_width(f32::INFINITY)
+                .desired_rows(16)
+        } else {
+            egui::TextEdit::singleline(&mut state.buf)
+        };
+        let r = ui.add(edit.id(egui::Id::new((self.app_instance, id))));
+        if r.changed() {
+            state.version = state.version.wrapping_add(1);
+        }
+        // `aux` carries the committed version so the guest can tell whether the shell holds
+        // newer text than it does.
+        let mut rec = to_record(id, &r);
+        rec.aux = state.version;
+        if let Some(tip) = self.tooltips.get(&id) {
+            r.on_hover_text(*tip);
+        }
+        self.out.push(rec);
     }
 
     fn render(
@@ -271,31 +411,26 @@ impl Cx<'_> {
                 }
 
                 Cmd::TextEditSingle { id, version, set } => {
-                    let state = self.text.entry(id).or_default();
-                    // The guest only wins if it carries a newer version; otherwise the shell's
-                    // buffer is authoritative and the guest's `set` is a stale echo.
-                    if let Some(new_text) = set
-                        && version > state.version
-                    {
-                        state.buf.clear();
-                        state.buf.push_str(new_text);
-                        state.version = version;
-                    }
-                    let r = ui.add(
-                        egui::TextEdit::singleline(&mut state.buf)
-                            .id(egui::Id::new((self.app_instance, id))),
-                    );
-                    if r.changed() {
-                        state.version = state.version.wrapping_add(1);
-                    }
-                    // `aux` carries the committed version so the guest can tell whether the
-                    // shell holds newer text than it does.
-                    let mut rec = to_record(id, &r);
-                    rec.aux = state.version;
-                    if let Some(tip) = self.tooltips.get(&id) {
-                        r.on_hover_text(*tip);
-                    }
-                    self.out.push(rec);
+                    self.text_edit(ui, id, version, set, false);
+                }
+
+                Cmd::TextEditMulti { id, version, set } => {
+                    self.text_edit(ui, id, version, set, true);
+                }
+
+                Cmd::Selectable { id, text, selected } => {
+                    let r = ui.selectable_label(selected, text);
+                    self.finish(id, r);
+                }
+
+                Cmd::Styled { id, text, style } => {
+                    let rich = rich_text(ui, text, style);
+                    let r = if style.contains(TextStyle::LINK) {
+                        ui.add(egui::Link::new(rich))
+                    } else {
+                        ui.label(rich)
+                    };
+                    self.finish(id, r);
                 }
 
                 Cmd::BeginScope { id, layout } => {
@@ -350,6 +485,50 @@ impl Cx<'_> {
                             (ScopeKind::Group, _) => {
                                 ui.scope(|ui| self.render(ui, cmds, closes, inner.clone()));
                             }
+                            (ScopeKind::Sidebar, _) => {
+                                // A fixed-width column with a rule after it. Its width does not
+                                // follow its content, so the main column beside it stays put as
+                                // the guest opens folders with longer names.
+                                let width = (ui.available_width() * 0.3).clamp(160.0, 240.0);
+                                ui.vertical(|ui| {
+                                    ui.set_width(width);
+                                    self.render(ui, cmds, closes, inner.clone())
+                                });
+                                ui.separator();
+                            }
+                            (ScopeKind::Scroll, _) => {
+                                // The shell already scrolls the whole window, which gives its
+                                // content unbounded height; this bounds it to what is actually
+                                // visible below here, so the region scrolls instead of the
+                                // window, and two of them side by side scroll separately.
+                                let visible = ui.clip_rect().bottom() - ui.cursor().top();
+                                let height = (visible - ui.spacing().item_spacing.y).max(80.0);
+                                egui::ScrollArea::vertical()
+                                    .id_salt(self.egui_id(id))
+                                    .auto_shrink([false, false])
+                                    .max_height(height)
+                                    .min_scrolled_height(height)
+                                    .show(ui, |ui| {
+                                        // Top to bottom, whatever row it sits in: a scroll area
+                                        // otherwise inherits its parent's direction.
+                                        ui.vertical(|ui| {
+                                            self.render(ui, cmds, closes, inner.clone())
+                                        })
+                                    });
+                            }
+                            (ScopeKind::Indent, _) => {
+                                ui.indent(self.egui_id(id), |ui| {
+                                    self.render(ui, cmds, closes, inner.clone())
+                                });
+                            }
+                            (ScopeKind::Wrapped, _) => {
+                                ui.horizontal_wrapped(|ui| {
+                                    // Runs of styled text carry their own spaces, so the
+                                    // default gap between widgets would double them up.
+                                    ui.spacing_mut().item_spacing.x = 0.0;
+                                    self.render(ui, cmds, closes, inner.clone())
+                                });
+                            }
                         }
                     });
 
@@ -379,6 +558,58 @@ impl Cx<'_> {
             i += 1;
         }
     }
+}
+
+/// The egui form of a `Styled` run. Sizes are relative to the body font, so the app's
+/// headings scale with the shell's theme rather than being fixed pixel sizes.
+fn rich_text(ui: &egui::Ui, text: &str, style: TextStyle) -> egui::RichText {
+    let mut rich = egui::RichText::new(text);
+    let level = style.heading_level();
+    if level > 0 {
+        let scale = match level {
+            1 => 1.6,
+            2 => 1.35,
+            _ => 1.15,
+        };
+        let body = ui
+            .style()
+            .text_styles
+            .get(&egui::TextStyle::Body)
+            .map_or(14.0, |f| f.size);
+        rich = rich.size(body * scale).color(strong_color(ui.visuals()));
+    }
+    if style.contains(TextStyle::STRONG) {
+        rich = rich.color(strong_color(ui.visuals()));
+    }
+    if style.contains(TextStyle::ITALIC) {
+        rich = rich.italics();
+    }
+    if style.contains(TextStyle::CODE) {
+        rich = rich.code();
+    }
+    if style.contains(TextStyle::STRIKE) {
+        rich = rich.strikethrough();
+    }
+    if style.contains(TextStyle::WEAK) {
+        rich = rich.weak();
+    }
+    rich
+}
+
+/// The colour for headings and bold text.
+///
+/// Not `RichText::strong`: egui takes that from the *active* widget's text colour, which the
+/// shell's theme sets to white so pressed accent buttons stay readable. In light mode that
+/// made every heading white on white. This takes the theme's body text colour and moves it
+/// halfway to full contrast instead, so strong text stands out in either mode.
+pub(crate) fn strong_color(visuals: &egui::Visuals) -> egui::Color32 {
+    let body = visuals.text_color();
+    let extreme = if visuals.dark_mode {
+        egui::Color32::WHITE
+    } else {
+        egui::Color32::BLACK
+    };
+    body.lerp_to_gamma(extreme, 0.5)
 }
 
 fn to_record(local_id: u64, r: &egui::Response) -> RespRecord {
@@ -461,4 +692,50 @@ fn paint_plot(ui: &egui::Ui, rect: egui::Rect, samples: &[u8]) {
         ));
     }
     painter.add(egui::Shape::line(points, egui::Stroke::new(2.0, accent)));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{diff_range, strong_color};
+
+    #[test]
+    fn strong_text_is_never_the_white_of_a_pressed_button() {
+        // The shell's theme, reduced to the part that caused this: white text on active
+        // widgets. Headings and bold text were drawn in it, white on a light window.
+        let mut light = egui::Visuals::light();
+        light.widgets.active.fg_stroke.color = egui::Color32::WHITE;
+        let c = strong_color(&light);
+        assert!(
+            c.r() < 80 && c.g() < 80 && c.b() < 80,
+            "dark on light: {c:?}"
+        );
+
+        let mut dark = egui::Visuals::dark();
+        dark.widgets.active.fg_stroke.color = egui::Color32::BLACK;
+        let c = strong_color(&dark);
+        assert!(
+            c.r() > 180 && c.g() > 180 && c.b() > 180,
+            "light on dark: {c:?}"
+        );
+    }
+
+    #[test]
+    fn diff_range_trims_the_common_ends() {
+        assert_eq!(diff_range("abc", "abc"), (3, 3, 3));
+        assert_eq!(diff_range("", "new"), (0, 0, 3));
+        assert_eq!(diff_range("hello world", "hello, world"), (5, 5, 6));
+        assert_eq!(diff_range("abcdef", "abef"), (2, 4, 2));
+        // A repeated character: prefix and suffix must not overlap.
+        assert_eq!(diff_range("aa", "aaa"), (2, 2, 3));
+        assert_eq!(diff_range("aaa", "aa"), (2, 3, 2));
+    }
+
+    #[test]
+    fn diff_range_stays_on_char_boundaries() {
+        let (old, new) = ("né", "nè");
+        let (start, old_end, new_end) = diff_range(old, new);
+        assert!(old.is_char_boundary(start) && old.is_char_boundary(old_end));
+        assert!(new.is_char_boundary(new_end));
+        assert_eq!(&new[start..new_end], "è");
+    }
 }

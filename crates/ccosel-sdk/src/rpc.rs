@@ -31,7 +31,7 @@ use core::any::Any;
 use core::cell::RefCell;
 
 use ccosel_abi::event::{Event, decode_error, event_kind, rpc_error};
-use ccosel_proto::{Method, Query, Rpc};
+use ccosel_proto::{Command, Method, Query, Rpc};
 
 /// Entries untouched for this many frames are dropped, cancelling them if still in flight.
 /// Long enough to survive a frame where a window is occluded, short enough that abandoned
@@ -71,6 +71,10 @@ impl RpcError {
     }
 }
 
+/// Names a command sent with [`RpcCtx::send`], for asking later how it went.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CallId(u32);
+
 /// A queued outbound call, drained by the runtime after `update()` returns.
 pub struct OutCall {
     pub call_id: u32,
@@ -109,6 +113,10 @@ struct Inner {
     entries: BTreeMap<Key, Entry>,
     /// Reverse index so an arriving reply can find its entry.
     by_call: BTreeMap<u32, Key>,
+    /// Commands, keyed by call id. Kept apart from `entries` because they are not a cache: each
+    /// send is its own call, and its outcome is held until the app collects it rather than
+    /// being swept, so a save cannot silently lose its result.
+    commands: BTreeMap<u32, Slot>,
     outbox: Vec<OutCall>,
     cancels: Vec<u32>,
     next_call_id: u32,
@@ -160,10 +168,7 @@ impl RpcCtx {
             };
         }
 
-        let call_id = {
-            inner.next_call_id = inner.next_call_id.wrapping_add(1).max(1);
-            inner.next_call_id
-        };
+        let call_id = Self::next_id(&mut inner);
         inner.outbox.push(OutCall {
             call_id,
             method: M::METHOD as u32,
@@ -181,6 +186,71 @@ impl RpcCtx {
             },
         );
         Poll::Pending
+    }
+
+    fn next_id(inner: &mut Inner) -> u32 {
+        inner.next_call_id = inner.next_call_id.wrapping_add(1).max(1);
+        inner.next_call_id
+    }
+
+    /// Send a command: a write, such as saving a file. Every call goes out, exactly once —
+    /// nothing is cached, coalesced or retried. Keep the returned id and pass it to
+    /// [`RpcCtx::outcome`] each frame until the call finishes.
+    pub fn send<M: Command>(&self, req: &M::Req<'_>) -> CallId {
+        let mut inner = self.inner.borrow_mut();
+        let call_id = Self::next_id(&mut inner);
+        match postcard::to_allocvec(req) {
+            Ok(args) => {
+                inner.outbox.push(OutCall {
+                    call_id,
+                    method: M::METHOD as u32,
+                    args,
+                });
+                inner.commands.insert(
+                    call_id,
+                    Slot::InFlight {
+                        call_id,
+                        decode: decode_reply::<M>,
+                    },
+                );
+            }
+            Err(_) => {
+                inner.commands.insert(
+                    call_id,
+                    Slot::Failed(RpcError {
+                        code: rpc_error::DECODE,
+                    }),
+                );
+            }
+        }
+        CallId(call_id)
+    }
+
+    /// How a command sent with [`RpcCtx::send`] went. `Ready` or `Failed` is returned **once**:
+    /// the result is handed over and forgotten, so the app should act on it then, typically by
+    /// clearing the id it kept. An id that is unknown or already collected reads as `Failed`
+    /// with [`rpc_error::CANCELLED`].
+    pub fn outcome<M: Command>(&self, id: CallId) -> Poll<Rc<M::Reply>> {
+        let mut inner = self.inner.borrow_mut();
+        match inner.commands.get(&id.0) {
+            Some(Slot::InFlight { .. }) => return Poll::Pending,
+            None => {
+                return Poll::Failed(RpcError {
+                    code: rpc_error::CANCELLED,
+                });
+            }
+            Some(_) => {}
+        }
+        match inner.commands.remove(&id.0) {
+            Some(Slot::Ready(any)) => match any.downcast::<M::Reply>() {
+                Ok(v) => Poll::Ready(v),
+                Err(_) => Poll::Failed(RpcError {
+                    code: rpc_error::DECODE,
+                }),
+            },
+            Some(Slot::Failed(e)) => Poll::Failed(e),
+            _ => Poll::Pending,
+        }
     }
 
     /// Drop a cached result so the next `get` re-issues it. This is what a Refresh button does.
@@ -206,6 +276,14 @@ impl RpcCtx {
     /// Apply one delivered event. Called by the runtime, never by app code.
     pub(crate) fn deliver(&self, event: &Event<'_>) {
         let mut inner = self.inner.borrow_mut();
+        if let Some(slot) = inner.commands.get_mut(&event.call_id) {
+            if let Slot::InFlight { decode, .. } = *slot
+                && let Some(done) = Self::resolve(event, decode)
+            {
+                *slot = done;
+            }
+            return;
+        }
         let Some(key) = inner.by_call.remove(&event.call_id) else {
             // A reply for something we cancelled or already resolved. Dropping it is the
             // contract: after a cancel, no event for that id is ever observable.
@@ -218,7 +296,16 @@ impl RpcCtx {
             return;
         };
 
-        entry.slot = match event.kind {
+        if let Some(done) = Self::resolve(event, decode) {
+            entry.slot = done;
+        }
+    }
+
+    /// The terminal slot an event puts an in-flight call into, or `None` for an event kind
+    /// this SDK does not know. Unknown kinds are ignored rather than treated as failures, so the
+    /// shell can add kinds without breaking older cached modules.
+    fn resolve(event: &Event<'_>, decode: Decoder) -> Option<Slot> {
+        Some(match event.kind {
             event_kind::RPC_OK => match decode(event.payload) {
                 Some(value) => Slot::Ready(value),
                 None => Slot::Failed(RpcError {
@@ -229,10 +316,8 @@ impl RpcCtx {
                 let (code, _detail) = decode_error(event.payload);
                 Slot::Failed(RpcError { code })
             }
-            // Unknown event kinds are ignored rather than treated as failures, so the shell can
-            // add kinds without breaking older cached modules.
-            _ => return,
-        };
+            _ => return None,
+        })
     }
 
     /// Advance the frame counter and drop stale entries. Called by the runtime each frame,
@@ -280,6 +365,11 @@ pub fn method_name(method: u32) -> String {
         Some(Method::Compile) => "compile",
         Some(Method::WhoAmI) => "who_am_i",
         Some(Method::SignOut) => "sign_out",
+        Some(Method::ReadFile) => "read_file",
+        Some(Method::WriteFile) => "write_file",
+        Some(Method::CreateDir) => "create_dir",
+        Some(Method::Access) => "access",
+        Some(Method::Search) => "search",
         None => "unknown",
     };
     String::from(name)

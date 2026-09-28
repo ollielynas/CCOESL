@@ -123,8 +123,12 @@ impl Encoder {
                 self.u8(OpCode::EndWindow as u8);
                 self.u64(id);
             }
-            Cmd::TextEditSingle { id, version, set } => {
-                self.u8(OpCode::TextEditSingle as u8);
+            Cmd::TextEditSingle { id, version, set } | Cmd::TextEditMulti { id, version, set } => {
+                self.u8(if matches!(cmd, Cmd::TextEditMulti { .. }) {
+                    OpCode::TextEditMulti as u8
+                } else {
+                    OpCode::TextEditSingle as u8
+                });
                 self.u64(id);
                 self.u32(version);
                 // `None` means "you already hold the buffer, shell" — the common case, and the
@@ -170,6 +174,18 @@ impl Encoder {
                 self.f32(size.x);
                 self.f32(size.y);
                 self.bytes(samples);
+            }
+            Cmd::Styled { id, text, style } => {
+                self.u8(OpCode::Styled as u8);
+                self.u64(id);
+                self.str(text);
+                self.u8(style.0);
+            }
+            Cmd::Selectable { id, text, selected } => {
+                self.u8(OpCode::Selectable as u8);
+                self.u64(id);
+                self.str(text);
+                self.u8(u8::from(selected));
             }
         }
     }

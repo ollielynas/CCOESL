@@ -35,6 +35,11 @@ pub enum Method {
     Compile = 4,
     WhoAmI = 5,
     SignOut = 6,
+    ReadFile = 7,
+    WriteFile = 8,
+    CreateDir = 9,
+    Access = 10,
+    Search = 11,
 }
 
 impl Method {
@@ -46,6 +51,11 @@ impl Method {
             4 => Some(Self::Compile),
             5 => Some(Self::WhoAmI),
             6 => Some(Self::SignOut),
+            7 => Some(Self::ReadFile),
+            8 => Some(Self::WriteFile),
+            9 => Some(Self::CreateDir),
+            10 => Some(Self::Access),
+            11 => Some(Self::Search),
             _ => None,
         }
     }
@@ -137,4 +147,10 @@ pub mod server_error {
     pub const MALFORMED: u32 = 6;
     pub const NOT_A_CARGO_PROJECT: u32 = 7;
     pub const TIMEOUT: u32 = 8;
+    /// `ReadFile` on something that is not UTF-8 text.
+    pub const NOT_TEXT: u32 = 9;
+    /// Over the size a single call may carry (see `fs::MAX_TEXT_BYTES`).
+    pub const TOO_LARGE: u32 = 10;
+    /// `CreateDir`, or creating a file, where something already exists.
+    pub const EXISTS: u32 = 11;
 }

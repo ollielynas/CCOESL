@@ -4,16 +4,20 @@
 //! share one set of headers and one round trip. It also means the envelope is unchanged if
 //! this ever moves onto a WebSocket, so that swap stays a transport detail.
 
+use axum::Extension;
 use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use ccosel_proto::account::Account;
 use ccosel_proto::build::CompileReq;
-use ccosel_proto::fs::ListDirReq;
+use ccosel_proto::fs::{ListDirReq, PathReq, SearchReq, WriteFileReq};
 use ccosel_proto::info::ServerInfoReply;
 use ccosel_proto::{Method, PROTO_VERSION, WireReply, WireRequest, WireResult, server_error};
 
+use serde::Serialize;
+
+use crate::access::{self, User};
 use crate::{AppState, stats};
 
 /// What one call produced, before it is borrowed into a `WireReply`.
@@ -22,10 +26,23 @@ enum Outcome {
     Err(u32, String),
 }
 
-pub async fn handle(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
+pub async fn handle(
+    State(state): State<AppState>,
+    user: Option<Extension<User>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
     let Ok(requests) = postcard::from_bytes::<Vec<WireRequest>>(&body) else {
         return (StatusCode::BAD_REQUEST, "malformed rpc batch").into_response();
     };
+    let user = crate::caller(user.as_ref().map(|u| &u.0));
+    if let Some(name) = user {
+        // A user's private folder exists from their first request, so an app can offer it
+        // without first having to create it.
+        if let Err(e) = access::ensure_home(state.jail.root(), name) {
+            eprintln!("rpc: creating the home folder for {name}: {e}");
+        }
+    }
 
     // Two passes: run every call into owned buffers, then borrow those into the reply batch.
     // `WireResult::Ok` borrows its payload, so the buffers have to outlive the encoding.
@@ -34,7 +51,7 @@ pub async fn handle(State(state): State<AppState>, headers: HeaderMap, body: Byt
     let cookie = headers.get(header::COOKIE).and_then(|v| v.to_str().ok());
     let mut outcomes: Vec<(u32, Outcome)> = Vec::with_capacity(requests.len());
     for req in &requests {
-        outcomes.push((req.seq, dispatch(&state, cookie, req).await));
+        outcomes.push((req.seq, dispatch(&state, cookie, user, req).await));
     }
 
     let replies: Vec<WireReply> = outcomes
@@ -63,54 +80,47 @@ pub async fn handle(State(state): State<AppState>, headers: HeaderMap, body: Byt
 
 /// A failed call is a failed *entry*, never a failed batch: one bad path must not take down
 /// the other calls that were coalesced into the same request.
-async fn dispatch(state: &AppState, cookie: Option<&str>, req: &WireRequest<'_>) -> Outcome {
+async fn dispatch(
+    state: &AppState,
+    cookie: Option<&str>,
+    user: Option<&str>,
+    req: &WireRequest<'_>,
+) -> Outcome {
     state.stats.count_rpc();
     let Some(method) = Method::from_u16(req.method) else {
         return Outcome::Err(server_error::UNKNOWN_METHOD, String::new());
     };
+    let jail = &state.jail;
 
     match method {
-        Method::ListDir => {
-            let Ok(args) = postcard::from_bytes::<ListDirReq>(req.args) else {
-                return Outcome::Err(server_error::MALFORMED, String::new());
-            };
-            state.scratch.touch(args.path);
-            match state.jail.list_dir(&args) {
-                Ok(mut listing) => {
-                    // Temporary project folders are the Compiler's business, not a folder
-                    // anyone browses to.
-                    if args.path.trim_matches('/').is_empty() {
-                        listing
-                            .entries
-                            .retain(|e| e.name != ccosel_proto::scratch::DIR);
-                    }
-                    match postcard::to_allocvec(&listing) {
-                        Ok(bytes) => Outcome::Ok(bytes),
-                        Err(_) => Outcome::Err(server_error::IO, String::new()),
-                    }
+        Method::ListDir => run::<ListDirReq, _>(req, |a| {
+            state.scratch.touch(a.path);
+            let listing = jail.list_dir(&a, user).map(|mut listing| {
+                // Temporary project folders are the Compiler's business, not a folder anyone
+                // browses to.
+                if a.path.trim_matches('/').is_empty() {
+                    listing
+                        .entries
+                        .retain(|e| e.name != ccosel_proto::scratch::DIR);
                 }
-                Err(code) => Outcome::Err(code, args.path.to_owned()),
-            }
-        }
+                listing
+            });
+            (listing, a.path)
+        }),
         Method::Stat => Outcome::Err(server_error::UNKNOWN_METHOD, String::new()),
-        Method::Compile => {
-            let Ok(args) = postcard::from_bytes::<CompileReq>(req.args) else {
-                return Outcome::Err(server_error::MALFORMED, String::new());
-            };
-            state.scratch.touch(args.path);
-            match crate::build_api::compile(&state.jail, &state.jobs, &args) {
-                Ok(status) => match postcard::to_allocvec(&status) {
-                    Ok(bytes) => Outcome::Ok(bytes),
-                    Err(_) => Outcome::Err(server_error::IO, String::new()),
-                },
-                Err(code) => Outcome::Err(code, args.path.to_owned()),
-            }
-        }
+        Method::Compile => run::<CompileReq, _>(req, |a| {
+            state.scratch.touch(a.path);
+            // Building reads the project, so it needs the same permission as reading it.
+            let result = jail
+                .authorize(a.path, user, crate::fs_api::Need::Read)
+                .and_then(|_| crate::build_api::compile(jail, &state.jobs, &a));
+            (result, a.path)
+        }),
         Method::ServerInfo => {
             let host = stats::sample_host();
             let info = ServerInfoReply {
                 proto_version: PROTO_VERSION,
-                root: state.jail.root().display().to_string(),
+                root: jail.root().display().to_string(),
                 uptime_ms: state.stats.uptime_ms(),
                 rpc_calls: state.stats.rpc_calls(),
                 cpus: host.cpus,
@@ -129,6 +139,30 @@ async fn dispatch(state: &AppState, cookie: Option<&str>, req: &WireRequest<'_>)
             state.auth.end_session(cookie).await;
             encode(&())
         }
+        Method::ReadFile => run::<PathReq, _>(req, |a| (jail.read_file(a.path, user), a.path)),
+        Method::WriteFile => run::<WriteFileReq, _>(req, |a| (jail.write_file(&a, user), a.path)),
+        Method::CreateDir => run::<PathReq, _>(req, |a| (jail.create_dir(a.path, user), a.path)),
+        Method::Access => run::<PathReq, _>(req, |a| (jail.access(a.path, user), a.path)),
+        Method::Search => run::<SearchReq, _>(req, |a| (jail.search(&a, user), a.path)),
+    }
+}
+
+/// Decode a call's arguments, run it, and encode what it returned. A failure's detail is the
+/// path it was about, which is what an error message most needs to show.
+fn run<'a, A, T>(
+    req: &WireRequest<'a>,
+    call: impl FnOnce(A) -> (Result<T, u32>, &'a str),
+) -> Outcome
+where
+    A: serde::Deserialize<'a>,
+    T: Serialize,
+{
+    let Ok(args) = postcard::from_bytes::<A>(req.args) else {
+        return Outcome::Err(server_error::MALFORMED, String::new());
+    };
+    match call(args) {
+        (Ok(reply), _) => encode(&reply),
+        (Err(code), path) => Outcome::Err(code, path.to_owned()),
     }
 }
 
