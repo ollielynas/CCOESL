@@ -578,6 +578,145 @@ async fn over_plain_http_the_cookie_is_not_secure() {
     assert!(!set_cookie.contains("Secure"), "{set_cookie}");
 }
 
+/// A stricter stand-in for Keycloak: like the real one, it stamps tokens with the address the
+/// browser used and refuses them (`401`, empty body, reason in `WWW-Authenticate`) when this
+/// server asks about them from any other address. Records the `X-Forwarded-Host` of every
+/// call, keyed by endpoint.
+#[derive(Clone, Default)]
+struct StrictProvider {
+    calls: Arc<Mutex<Vec<(&'static str, Option<String>)>>>,
+}
+
+impl StrictProvider {
+    fn record(&self, endpoint: &'static str, headers: &HeaderMap) -> Option<String> {
+        let host = headers
+            .get("x-forwarded-host")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned);
+        self.calls.lock().unwrap().push((endpoint, host.clone()));
+        host
+    }
+}
+
+const BROWSER_HOST: &str = "ccosel.lan:8777";
+
+async fn strict_token(
+    AxState(p): AxState<StrictProvider>,
+    headers: HeaderMap,
+) -> axum::Json<Value> {
+    p.record("token", &headers);
+    axum::Json(json!({ "access_token": "at", "refresh_token": "rt" }))
+}
+
+async fn strict_user(AxState(p): AxState<StrictProvider>, headers: HeaderMap) -> Response {
+    if p.record("user", &headers).as_deref() != Some(BROWSER_HOST) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            [(
+                header::WWW_AUTHENTICATE,
+                r#"Bearer error="invalid_token", error_description="Token verification failed""#,
+            )],
+        )
+            .into_response();
+    }
+    axum::Json(json!({ "preferred_username": "alice" })).into_response()
+}
+
+async fn strict_logout(AxState(p): AxState<StrictProvider>, headers: HeaderMap) {
+    p.record("logout", &headers);
+}
+
+async fn spawn_strict_provider() -> (String, StrictProvider) {
+    let provider = StrictProvider::default();
+    let router = AxRouter::new()
+        .route("/token", ax_post(strict_token))
+        .route("/user", ax_get(strict_user))
+        .route("/logout", ax_post(strict_logout))
+        .with_state(provider.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+    (format!("http://{addr}"), provider)
+}
+
+/// Runs `/auth/login` then `/auth/callback` as a browser that reached the server at
+/// [`BROWSER_HOST`], and returns the callback's response.
+async fn sign_in_as_browser_at_host(addr: std::net::SocketAddr) -> reqwest::Response {
+    let client = no_redirect_client();
+    let login = client
+        .get(format!("http://{addr}/auth/login"))
+        .header(reqwest::header::HOST, BROWSER_HOST)
+        .send()
+        .await
+        .unwrap();
+    let location = login.headers()[reqwest::header::LOCATION].to_str().unwrap();
+    let state = query_param(location, "state").unwrap().to_string();
+    client
+        .get(format!(
+            "http://{addr}/auth/callback?code=good-code&state={state}"
+        ))
+        .header(reqwest::header::HOST, BROWSER_HOST)
+        .send()
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn a_proxied_keycloak_is_asked_about_tokens_from_the_browsers_address() {
+    let (provider, seen) = spawn_strict_provider().await;
+    let addr = spawn_app(
+        AuthState::new(Some(oauth_config_for(&provider)))
+            .with_idp_proxy(crate::idp::IdpProxy::new(provider.clone(), "ccosel".into())),
+    )
+    .await;
+
+    let callback = sign_in_as_browser_at_host(addr).await;
+    assert_eq!(callback.status(), reqwest::StatusCode::SEE_OTHER);
+    let cookie = callback.headers()[reqwest::header::SET_COOKIE]
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_string();
+
+    // Signing out later, from anywhere, still speaks for the address the session began at.
+    no_redirect_client()
+        .get(format!("http://{addr}/auth/logout"))
+        .header(reqwest::header::COOKIE, &cookie)
+        .send()
+        .await
+        .unwrap();
+
+    let host = Some(BROWSER_HOST.to_string());
+    assert_eq!(
+        *seen.calls.lock().unwrap(),
+        [
+            ("token", host.clone()),
+            ("user", host.clone()),
+            ("logout", host)
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_refused_lookup_says_why_instead_of_failing_to_parse() {
+    let (provider, seen) = spawn_strict_provider().await;
+    // Not proxied: no forwarded headers go out, so the strict provider refuses the token, the
+    // way Keycloak refused them before this server sent them.
+    let addr = spawn_app(AuthState::new(Some(oauth_config_for(&provider)))).await;
+
+    let callback = sign_in_as_browser_at_host(addr).await;
+    assert_eq!(callback.status(), reqwest::StatusCode::BAD_GATEWAY);
+    let body = callback.text().await.unwrap();
+    assert!(body.contains("refused"), "{body}");
+    assert!(body.contains("Token verification failed"), "{body}");
+    // A Keycloak of the user's own is reached at one address by everyone: nothing to claim.
+    assert!(seen.calls.lock().unwrap().iter().all(|(_, h)| h.is_none()));
+}
+
 #[test]
 fn a_proxied_keycloak_sends_browsers_to_same_origin_paths() {
     let config = OAuthConfig::proxied_keycloak(

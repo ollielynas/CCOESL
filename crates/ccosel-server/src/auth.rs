@@ -106,7 +106,25 @@ struct Session {
     login: String,
     /// What the provider needs to end its side of the session, if it issued one.
     refresh_token: Option<String>,
+    /// The address the browser signed in through, for a proxied Keycloak. See
+    /// [`AuthState::backchannel_headers`].
+    forwarded: Option<Forwarded>,
     expires_at: Instant,
+}
+
+/// The address a browser reached this server at, as `X-Forwarded-*` headers describe it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Forwarded {
+    pub proto: String,
+    /// `host[:port]`.
+    pub host: String,
+}
+
+impl Forwarded {
+    pub(crate) fn apply(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        req.header("x-forwarded-proto", &self.proto)
+            .header("x-forwarded-host", &self.host)
+    }
 }
 
 /// Everything the auth routes need, cloned into [`AppState`] like `jail` is. `oauth` is `None`
@@ -158,9 +176,37 @@ impl AuthState {
         self
     }
 
-    /// The public URL, if one was set.
-    pub(crate) fn public_url(&self) -> Option<&str> {
-        self.public_url.as_deref()
+    /// The address this request's browser used: the public URL behind a tunnel, else the
+    /// request's own `Host` over `http://`.
+    pub(crate) fn forwarded(&self, headers: &HeaderMap) -> Forwarded {
+        match &self.public_url {
+            Some(public) => {
+                let (proto, rest) = public.split_once("://").unwrap_or(("http", public));
+                // Just `host[:port]`: the server is always mounted at the root of its URL.
+                let host = rest.split('/').next().unwrap_or(rest);
+                Forwarded {
+                    proto: proto.to_owned(),
+                    host: host.to_owned(),
+                }
+            }
+            None => Forwarded {
+                proto: "http".to_owned(),
+                host: headers
+                    .get(header::HOST)
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("localhost")
+                    .to_owned(),
+            },
+        }
+    }
+
+    /// Headers for this server's own calls to a proxied Keycloak (token exchange, user info,
+    /// sign-out). Keycloak stamps a token with the address the browser signed in through, and
+    /// refuses it at any other address, so these calls must claim that same address even
+    /// though they go straight to its loopback port. `None` for a Keycloak of the user's own,
+    /// which browsers and this server reach at the same address anyway.
+    fn backchannel_headers(&self, headers: &HeaderMap) -> Option<Forwarded> {
+        self.idp.as_ref().map(|_| self.forwarded(headers))
     }
 
     fn cookie_attrs(&self) -> &'static str {
@@ -227,16 +273,13 @@ impl AuthState {
         if let Some(secret) = &oauth.client_secret {
             form.push(("client_secret", secret));
         }
+        let mut req = self.http.post(&oauth.logout_url).form(&form);
+        if let Some(forwarded) = &session.forwarded {
+            req = forwarded.apply(req);
+        }
         // Our session is already gone, so failing here only leaves the provider's alive: the
         // next sign-in skips the password prompt. Worth a line in the log, not an error page.
-        if let Err(e) = self
-            .http
-            .post(&oauth.logout_url)
-            .form(&form)
-            .send()
-            .await
-            .and_then(|r| r.error_for_status())
-        {
+        if let Err(e) = req.send().await.and_then(|r| r.error_for_status()) {
             eprintln!(
                 "warning: could not end the provider session for {}: {e}",
                 session.login
@@ -347,11 +390,19 @@ async fn callback(
     }
 
     let redirect_uri = format!("{}/auth/callback", state.auth.origin(&headers));
-    let (login, refresh_token) =
-        match exchange_and_fetch_login(&state.auth.http, oauth, &code, &redirect_uri).await {
-            Ok(found) => found,
-            Err(msg) => return (StatusCode::BAD_GATEWAY, msg).into_response(),
-        };
+    let forwarded = state.auth.backchannel_headers(&headers);
+    let (login, refresh_token) = match exchange_and_fetch_login(
+        &state.auth.http,
+        oauth,
+        &code,
+        &redirect_uri,
+        forwarded.as_ref(),
+    )
+    .await
+    {
+        Ok(found) => found,
+        Err(msg) => return (StatusCode::BAD_GATEWAY, msg).into_response(),
+    };
 
     let token = random_token(48);
     state.auth.sessions.lock().unwrap().insert(
@@ -359,6 +410,7 @@ async fn callback(
         Session {
             login,
             refresh_token,
+            forwarded,
             expires_at: Instant::now() + SESSION_TTL,
         },
     );
@@ -379,14 +431,20 @@ async fn callback(
 
 /// The two calls a provider's OAuth flow needs after the redirect: trade the one-time `code`
 /// for an access token, then ask who it belongs to. Returns the login and, if the provider
-/// issued one, the refresh token that [`AuthState::end_session`] later signs out with. Split out from [`callback`] so the network
-/// half is one function with one error path, independent of routing and session bookkeeping.
+/// issued one, the refresh token that [`AuthState::end_session`] later signs out with. Split
+/// out from [`callback`] so the network half is one function with one error path, independent
+/// of routing and session bookkeeping.
 async fn exchange_and_fetch_login(
     http: &reqwest::Client,
     oauth: &OAuthConfig,
     code: &str,
     redirect_uri: &str,
+    forwarded: Option<&Forwarded>,
 ) -> Result<(String, Option<String>), String> {
+    let with_forwarded = |req: reqwest::RequestBuilder| match forwarded {
+        Some(f) => f.apply(req),
+        None => req,
+    };
     #[derive(Deserialize)]
     struct TokenResp {
         access_token: Option<String>,
@@ -405,8 +463,7 @@ async fn exchange_and_fetch_login(
         form.push(("client_secret", secret));
     }
 
-    let token_resp: TokenResp = http
-        .post(&oauth.token_url)
+    let token_resp: TokenResp = with_forwarded(http.post(&oauth.token_url))
         .header(header::ACCEPT, "application/json")
         .form(&form)
         .send()
@@ -428,13 +485,27 @@ async fn exchange_and_fetch_login(
         preferred_username: Option<String>,
     }
 
-    let user: UserResp = http
-        .get(&oauth.user_url)
+    let user_resp = with_forwarded(http.get(&oauth.user_url))
         .header(header::AUTHORIZATION, format!("Bearer {token}"))
         .header(header::USER_AGENT, "ccosel-server")
         .send()
         .await
-        .map_err(|e| format!("could not fetch the account from the OAuth provider: {e}"))?
+        .map_err(|e| format!("could not fetch the account from the OAuth provider: {e}"))?;
+    // A refusal comes back with an empty body and the reason in `WWW-Authenticate`; say that
+    // rather than failing to parse nothing as JSON.
+    if !user_resp.status().is_success() {
+        let reason = user_resp
+            .headers()
+            .get(header::WWW_AUTHENTICATE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_owned();
+        return Err(format!(
+            "the OAuth provider refused to say who signed in ({}) {reason}",
+            user_resp.status()
+        ));
+    }
+    let user: UserResp = user_resp
         .json()
         .await
         .map_err(|e| format!("the OAuth provider's account response was not understood: {e}"))?;

@@ -155,24 +155,10 @@ pub async fn forward(State(state): State<AppState>, req: Request) -> Response {
         url.push_str(query);
     }
 
-    // Keycloak builds every link and redirect from these, so they describe the address the
-    // browser used: the public URL behind a tunnel, else the request's own `Host`.
-    let (proto, host) = match state.auth.public_url() {
-        Some(public) => {
-            let (proto, rest) = public.split_once("://").unwrap_or(("http", public));
-            // Just `host[:port]`: the server is always mounted at the root of its URL.
-            let host = rest.split('/').next().unwrap_or(rest);
-            (proto.to_owned(), host.to_owned())
-        }
-        None => (
-            "http".to_owned(),
-            req.headers()
-                .get(header::HOST)
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("localhost")
-                .to_owned(),
-        ),
-    };
+    // Keycloak builds every link and redirect from these, and stamps tokens with them, so they
+    // describe the address the browser used. The server's own calls to Keycloak send the same
+    // (see `AuthState::backchannel_headers`), or it would refuse the tokens it issued here.
+    let forwarded = state.auth.forwarded(req.headers());
 
     let method = req.method().clone();
     let mut headers = HeaderMap::new();
@@ -191,7 +177,10 @@ pub async fn forward(State(state): State<AppState>, req: Request) -> Response {
     {
         headers.insert(header::COOKIE, value);
     }
-    for (name, value) in [("x-forwarded-proto", proto), ("x-forwarded-host", host)] {
+    for (name, value) in [
+        ("x-forwarded-proto", forwarded.proto),
+        ("x-forwarded-host", forwarded.host),
+    ] {
         if let Ok(value) = HeaderValue::from_str(&value) {
             headers.insert(name, value);
         }
