@@ -431,11 +431,19 @@ mod tests {
     #[wasm_bindgen_test]
     fn windows_stay_on_the_desktop_so_their_title_bar_stays_reachable() {
         let mut rig = Rig::new(1);
-        assert!(DESKTOP.contains_rect(rig.rect(0)), "opened at {:?}", rig.rect(0));
+        assert!(
+            DESKTOP.contains_rect(rig.rect(0)),
+            "opened at {:?}",
+            rig.rect(0)
+        );
 
         let grip = rig.title_bar(0).left_center() + vec2(60.0, 0.0);
         rig.drag(grip, vec2(-500.0, -500.0));
-        assert!(DESKTOP.contains_rect(rig.rect(0)), "dragged to {:?}", rig.rect(0));
+        assert!(
+            DESKTOP.contains_rect(rig.rect(0)),
+            "dragged to {:?}",
+            rig.rect(0)
+        );
     }
 
     #[wasm_bindgen_test]
