@@ -9,6 +9,7 @@ pub mod build_api;
 pub mod fs_api;
 pub mod idp;
 pub mod keycloak;
+pub mod octave_api;
 pub mod rpc;
 pub mod scratch;
 pub mod stats;
@@ -53,6 +54,8 @@ pub struct AppState {
     pub stats: Arc<stats::Stats>,
     /// Temporary project folders. See `scratch`.
     pub scratch: Arc<scratch::Scratch>,
+    /// Everyone's Octave sessions. See `octave_api`.
+    pub octave: Arc<octave_api::Octave>,
 }
 
 /// Build the router. Separated from `serve` so tests can drive it on an ephemeral port.
@@ -86,6 +89,9 @@ pub fn app(jail: Jail, web_dir: PathBuf, auth: AuthState) -> Router {
         auth,
         jobs: Arc::new(build_api::Jobs::new()),
         stats: Arc::new(stats::Stats::new()),
+        octave: Arc::new(octave_api::Octave::detect(
+            std::env::temp_dir().join(format!("ccosel-octave-{}", std::process::id())),
+        )),
     };
 
     // Everything that reads or writes the jail needs a session once OAuth is configured. The

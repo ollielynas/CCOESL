@@ -13,6 +13,7 @@ use ccosel_proto::account::Account;
 use ccosel_proto::build::CompileReq;
 use ccosel_proto::fs::{ListDirReq, PathReq, SearchReq, WriteFileReq};
 use ccosel_proto::info::ServerInfoReply;
+use ccosel_proto::octave::{OctavePollReq, OctaveRunReq};
 use ccosel_proto::{Method, PROTO_VERSION, WireReply, WireRequest, WireResult, server_error};
 
 use serde::Serialize;
@@ -144,6 +145,10 @@ async fn dispatch(
         Method::CreateDir => run::<PathReq, _>(req, |a| (jail.create_dir(a.path, user), a.path)),
         Method::Access => run::<PathReq, _>(req, |a| (jail.access(a.path, user), a.path)),
         Method::Search => run::<SearchReq, _>(req, |a| (jail.search(&a, user), a.path)),
+        Method::OctaveRun => {
+            run::<OctaveRunReq, _>(req, |a| (state.octave.run(jail, user, &a), ""))
+        }
+        Method::OctavePoll => run::<OctavePollReq, _>(req, |a| (state.octave.poll(user, &a), "")),
     }
 }
 

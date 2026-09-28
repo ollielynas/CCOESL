@@ -1,0 +1,10 @@
+x =
+
+   1   2
+   3   4
+
+@TAG STATUS	0	@CWD
+@TAG VAR	g	double	1x1	7	global
+@TAG VAR	s	char	1x2	"hi"	
+@TAG VAR	x	double	2x2	[1 2;3 4]	
+@TAG DONE

@@ -17,6 +17,7 @@ pub mod account;
 pub mod build;
 pub mod fs;
 pub mod info;
+pub mod octave;
 pub mod scratch;
 
 use serde::{Deserialize, Serialize};
@@ -40,6 +41,8 @@ pub enum Method {
     CreateDir = 9,
     Access = 10,
     Search = 11,
+    OctaveRun = 12,
+    OctavePoll = 13,
 }
 
 impl Method {
@@ -56,6 +59,8 @@ impl Method {
             9 => Some(Self::CreateDir),
             10 => Some(Self::Access),
             11 => Some(Self::Search),
+            12 => Some(Self::OctaveRun),
+            13 => Some(Self::OctavePoll),
             _ => None,
         }
     }
