@@ -43,7 +43,9 @@ pub mod event_kind {
     /// empty. Deliberately *not* postcard: an app must be able to render a failure without
     /// linking a decoder for it.
     pub const RPC_ERR: u32 = 2;
-    /// Reserved: shell→guest text buffer deltas.
+    /// The user edited a text field. `call_id` is zero; the payload is a [`TextDelta`]
+    /// (see [`encode_text_delta`]). This is how an app learns what was typed: the shell owns
+    /// the buffer, so without it the app's copy would never change.
     pub const TEXT_DELTA: u32 = 3;
     /// Reserved: sent after `ccosel_restore_state`, before the first frame.
     pub const RESTORED: u32 = 4;
@@ -193,6 +195,59 @@ pub fn decode_error(payload: &[u8]) -> (u32, &str) {
     let code = u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
     let detail = core::str::from_utf8(&payload[4..]).unwrap_or("");
     (code, detail)
+}
+
+/// One edit to a text field, as the shell reports it to the guest: replace the byte range
+/// `start..end` of the guest's copy with `inserted`, and take `version` as the field's new
+/// version. Sent as the smallest range covering the change, so typing one character into a
+/// long document costs a few bytes rather than the document.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TextDelta<'a> {
+    /// The field's widget id, as the guest emitted it.
+    pub id: u64,
+    pub version: u32,
+    pub start: u32,
+    pub end: u32,
+    pub inserted: &'a str,
+}
+
+const TEXT_DELTA_HEADER: usize = 8 + 4 + 4 + 4;
+
+/// Encode a `TEXT_DELTA` payload: id, version, start, end (little-endian), then the inserted
+/// UTF-8.
+pub fn encode_text_delta(d: &TextDelta<'_>) -> alloc::vec::Vec<u8> {
+    let mut out = alloc::vec::Vec::with_capacity(TEXT_DELTA_HEADER + d.inserted.len());
+    out.extend_from_slice(&d.id.to_le_bytes());
+    out.extend_from_slice(&d.version.to_le_bytes());
+    out.extend_from_slice(&d.start.to_le_bytes());
+    out.extend_from_slice(&d.end.to_le_bytes());
+    out.extend_from_slice(d.inserted.as_bytes());
+    out
+}
+
+/// Decode a `TEXT_DELTA` payload. `None` if it is too short or the text is not UTF-8; the guest
+/// drops such a delta rather than corrupting its copy.
+pub fn decode_text_delta(payload: &[u8]) -> Option<TextDelta<'_>> {
+    if payload.len() < TEXT_DELTA_HEADER {
+        return None;
+    }
+    let u32_at = |at: usize| {
+        u32::from_le_bytes([
+            payload[at],
+            payload[at + 1],
+            payload[at + 2],
+            payload[at + 3],
+        ])
+    };
+    let mut id = [0u8; 8];
+    id.copy_from_slice(&payload[..8]);
+    Some(TextDelta {
+        id: u64::from_le_bytes(id),
+        version: u32_at(8),
+        start: u32_at(12),
+        end: u32_at(16),
+        inserted: core::str::from_utf8(&payload[TEXT_DELTA_HEADER..]).ok()?,
+    })
 }
 
 #[cfg(test)]

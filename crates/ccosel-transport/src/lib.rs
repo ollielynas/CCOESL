@@ -74,6 +74,12 @@ fn policy(method: u16) -> (Coalesce, u32) {
         Some(Method::ListDir) => (Coalesce::ByArgs, 8_000),
         Some(Method::Stat) => (Coalesce::ByArgs, 4_000),
         Some(Method::ServerInfo) => (Coalesce::ByArgs, 4_000),
+        Some(Method::ReadFile) => (Coalesce::ByArgs, 8_000),
+        Some(Method::Access) => (Coalesce::ByArgs, 4_000),
+        Some(Method::Search) => (Coalesce::ByArgs, 8_000),
+        // Writes: two identical saves are two saves, so they are never merged.
+        Some(Method::WriteFile) => (Coalesce::None, 15_000),
+        Some(Method::CreateDir) => (Coalesce::None, 8_000),
         None => (Coalesce::None, 4_000),
     }
 }
@@ -281,7 +287,12 @@ fn map_server_error(code: u32) -> u32 {
     use ccosel_proto::server_error as se;
     match code {
         se::DENIED => rpc_error::DENIED,
-        se::NOT_FOUND | se::NOT_A_DIRECTORY | se::IO => rpc_error::SERVER,
+        se::NOT_FOUND
+        | se::NOT_A_DIRECTORY
+        | se::IO
+        | se::NOT_TEXT
+        | se::TOO_LARGE
+        | se::EXISTS => rpc_error::SERVER,
         se::UNKNOWN_METHOD | se::MALFORMED => rpc_error::DECODE,
         _ => rpc_error::SERVER,
     }

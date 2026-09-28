@@ -1,7 +1,9 @@
 //! The egui-shaped recording facade.
 
 use alloc::string::String;
-use ccosel_abi::{Align, Cmd, FrameInput, Layout, MAX_SCOPE_DEPTH, ScopeKind, Vec2, id as ids};
+use ccosel_abi::{
+    Align, Cmd, FrameInput, Layout, MAX_SCOPE_DEPTH, ScopeKind, TextStyle, Vec2, id as ids,
+};
 
 use crate::recorder::Recorder;
 use crate::response::Response;
@@ -161,6 +163,12 @@ impl<'a> Ui<'a> {
         self.scope(ScopeKind::Vertical, Align::Min, add)
     }
 
+    /// A row that wraps like a paragraph, with no gap between children: put [`Ui::styled`]
+    /// runs in it (each carrying its own spaces) to lay out formatted text.
+    pub fn wrapped<R>(&mut self, add: impl FnOnce(&mut Ui<'_>) -> R) -> R {
+        self.scope(ScopeKind::Wrapped, Align::Min, add)
+    }
+
     /// A visually framed group.
     pub fn group<R>(&mut self, add: impl FnOnce(&mut Ui<'_>) -> R) -> R {
         self.scope(ScopeKind::Frame, Align::Min, add)
@@ -239,18 +247,45 @@ impl<'a> Ui<'a> {
 
     /// A single-line text field. See [`Text`] for why the buffer usually isn't sent.
     pub fn text_edit(&mut self, text: &mut Text) -> Response {
+        self.text_field(text, false)
+    }
+
+    /// A multi-line, monospace text area for documents and code. Same protocol as
+    /// [`Ui::text_edit`]: typing costs the guest a small delta, not the document.
+    pub fn text_edit_multiline(&mut self, text: &mut Text) -> Response {
+        self.text_field(text, true)
+    }
+
+    fn text_field(&mut self, text: &mut Text, multiline: bool) -> Response {
         let id = self.auto_id();
+        // Apply what the user typed since this field was last drawn. Skipped when the app has
+        // just called `Text::set`: the set replaces the whole buffer, and the shell accepts it
+        // over anything typed in the meantime, so the two sides still agree.
+        for d in self.rec.take_text_deltas(id) {
+            if !text.push_pending {
+                text.apply_delta(d.version, d.start, d.end, &d.inserted);
+            }
+        }
         let set = if text.push_pending {
             Some(text.buf.as_str())
         } else {
             None
         };
-        self.rec.push(&Cmd::TextEditSingle {
-            id,
-            version: text.version,
-            set,
+        let version = text.version;
+        self.rec.push(&if multiline {
+            Cmd::TextEditMulti { id, version, set }
+        } else {
+            Cmd::TextEditSingle { id, version, set }
         });
         text.push_pending = false;
+        self.response(id)
+    }
+
+    /// A run of formatted text: a heading, bold, a code span, a link. Links respond to
+    /// [`Response::clicked`]; what a click does is up to the app.
+    pub fn styled(&mut self, text: &str, style: TextStyle) -> Response {
+        let id = self.auto_id();
+        self.rec.push(&Cmd::Styled { id, text, style });
         self.response(id)
     }
 

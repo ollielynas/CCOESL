@@ -29,6 +29,11 @@ pub enum Method {
     ListDir = 1,
     Stat = 2,
     ServerInfo = 3,
+    ReadFile = 4,
+    WriteFile = 5,
+    CreateDir = 6,
+    Access = 7,
+    Search = 8,
 }
 
 impl Method {
@@ -37,6 +42,11 @@ impl Method {
             1 => Some(Self::ListDir),
             2 => Some(Self::Stat),
             3 => Some(Self::ServerInfo),
+            4 => Some(Self::ReadFile),
+            5 => Some(Self::WriteFile),
+            6 => Some(Self::CreateDir),
+            7 => Some(Self::Access),
+            8 => Some(Self::Search),
             _ => None,
         }
     }
@@ -126,4 +136,10 @@ pub mod server_error {
     pub const IO: u32 = 4;
     pub const UNKNOWN_METHOD: u32 = 5;
     pub const MALFORMED: u32 = 6;
+    /// `ReadFile` on something that is not UTF-8 text.
+    pub const NOT_TEXT: u32 = 7;
+    /// Over the size a single call may carry (see `fs::MAX_TEXT_BYTES`).
+    pub const TOO_LARGE: u32 = 8;
+    /// `CreateDir`, or creating a file, where something already exists.
+    pub const EXISTS: u32 = 9;
 }

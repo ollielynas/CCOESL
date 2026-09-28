@@ -3,7 +3,8 @@
 //! No wasm, no window, no browser — the point of keeping `ccosel-host` free of any wasm
 //! runtime is that the hardest code in the project is testable like ordinary Rust.
 
-use ccosel_abi::{Cmd, Encoder, RespRecord, ResponseFlags};
+use ccosel_abi::event::{decode_batch, decode_text_delta, event_kind};
+use ccosel_abi::{Align, Cmd, Encoder, Layout, RespRecord, ResponseFlags, ScopeKind, TextStyle};
 use ccosel_host::{ReplayError, Replayer};
 
 const APP: u64 = 1;
@@ -351,4 +352,168 @@ fn a_plot_is_drawn_at_its_size_and_reported() {
     assert_eq!(fixed[3] - fixed[1], 30.0);
     let fill = find(&recs, 41).rect;
     assert!(fill[2] - fill[0] > 120.0, "a zero-width plot fills the row");
+}
+
+/// Type `text` into whatever widget has keyboard focus.
+fn typing(text: &str) -> egui::RawInput {
+    egui::RawInput {
+        events: vec![egui::Event::Text(text.to_owned())],
+        ..raw_input()
+    }
+}
+
+/// Click at `pos`: press and release in one frame.
+fn click_at(pos: egui::Pos2) -> egui::RawInput {
+    let button = |pressed| egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    egui::RawInput {
+        events: vec![egui::Event::PointerMoved(pos), button(true), button(false)],
+        ..raw_input()
+    }
+}
+
+fn centre(rec: &RespRecord) -> egui::Pos2 {
+    egui::pos2(
+        (rec.rect[0] + rec.rect[2]) / 2.0,
+        (rec.rect[1] + rec.rect[3]) / 2.0,
+    )
+}
+
+#[test]
+fn typed_text_comes_back_to_the_guest_as_a_minimal_delta() {
+    let ctx = egui::Context::default();
+    let mut r = Replayer::new();
+    let field = |set: Option<&'static str>, version| {
+        encode(&[Cmd::TextEditMulti {
+            id: 40,
+            version,
+            set,
+        }])
+    };
+
+    // The guest loads a document. Nothing needs sending back: the guest wrote it.
+    let recs = frame(&ctx, &mut r, &field(Some("hello world"), 1), raw_input()).unwrap();
+    assert!(r.take_text_events().is_none());
+
+    // Focus the field, then type. The cursor lands at the end of the text.
+    let at = centre(&find(&recs, 40));
+    frame(&ctx, &mut r, &field(None, 1), click_at(at)).unwrap();
+    frame(&ctx, &mut r, &field(None, 1), typing("!")).unwrap();
+    assert_eq!(r.text(40).unwrap().0, "hello world!");
+
+    let batch = r.take_text_events().expect("the edit is reported");
+    let events = decode_batch(&batch).unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].kind, event_kind::TEXT_DELTA);
+    let d = decode_text_delta(events[0].payload).unwrap();
+    assert_eq!((d.id, d.version), (40, 2));
+    // Only the new character crosses, not the document.
+    assert_eq!((d.start, d.end, d.inserted), (11, 11, "!"));
+
+    // Reported once.
+    assert!(r.take_text_events().is_none());
+}
+
+#[test]
+fn a_new_empty_field_adopts_the_guests_version() {
+    // `Text::new("")` starts at version 1 and sends nothing. If the shell kept its own 0, its
+    // first edit would carry version 1 and the guest would drop it as stale.
+    let ctx = egui::Context::default();
+    let mut r = Replayer::new();
+    let buf = encode(&[Cmd::TextEditSingle {
+        id: 41,
+        version: 1,
+        set: None,
+    }]);
+    let recs = frame(&ctx, &mut r, &buf, raw_input()).unwrap();
+    assert_eq!(find(&recs, 41).aux, 1);
+
+    frame(&ctx, &mut r, &buf, click_at(centre(&find(&recs, 41)))).unwrap();
+    frame(&ctx, &mut r, &buf, typing("ab")).unwrap();
+    let batch = r.take_text_events().unwrap();
+    let d = decode_text_delta(decode_batch(&batch).unwrap()[0].payload).unwrap();
+    assert_eq!(d.version, 2);
+    assert_eq!((d.start, d.end, d.inserted), (0, 0, "ab"));
+}
+
+#[test]
+fn a_guest_set_is_applied_once_even_if_the_frame_is_replayed() {
+    let ctx = egui::Context::default();
+    let mut r = Replayer::new();
+    let set = encode(&[Cmd::TextEditSingle {
+        id: 42,
+        version: 5,
+        set: Some("loaded"),
+    }]);
+    let recs = frame(&ctx, &mut r, &set, raw_input()).unwrap();
+    frame(&ctx, &mut r, &set, click_at(centre(&find(&recs, 42)))).unwrap();
+    // The same buffer again, as the shell does when a guest's next frame fails, with the user
+    // typing meanwhile: the old `set` must not wipe the keystroke.
+    frame(&ctx, &mut r, &set, typing("!")).unwrap();
+    assert_eq!(r.text(42).unwrap().0, "loaded!");
+
+    // A genuinely new set, even at a lower version than the shell reached, wins.
+    let again = encode(&[Cmd::TextEditSingle {
+        id: 42,
+        version: 6,
+        set: Some("reloaded"),
+    }]);
+    frame(&ctx, &mut r, &again, raw_input()).unwrap();
+    assert_eq!(r.text(42).unwrap(), ("reloaded", 6));
+}
+
+#[test]
+fn styled_text_and_wrapped_rows_render_and_links_are_clickable() {
+    let ctx = egui::Context::default();
+    let mut r = Replayer::new();
+    let buf = encode(&[
+        Cmd::Styled {
+            id: 50,
+            text: "Title",
+            style: TextStyle::heading(1),
+        },
+        Cmd::BeginScope {
+            id: 51,
+            layout: Layout::new(ScopeKind::Wrapped, Align::Min),
+        },
+        Cmd::Styled {
+            id: 52,
+            text: "plain, ",
+            style: TextStyle::PLAIN,
+        },
+        Cmd::Styled {
+            id: 53,
+            text: "bold code",
+            style: TextStyle::STRONG
+                | TextStyle::ITALIC
+                | TextStyle::CODE
+                | TextStyle::STRIKE
+                | TextStyle::WEAK,
+        },
+        Cmd::Styled {
+            id: 54,
+            text: "a link",
+            style: TextStyle::LINK,
+        },
+        Cmd::EndScope { id: 51 },
+    ]);
+    let recs = frame(&ctx, &mut r, &buf, raw_input()).unwrap();
+    let title = find(&recs, 50);
+    let body = find(&recs, 52);
+    assert!(
+        title.rect[3] - title.rect[1] > body.rect[3] - body.rect[1],
+        "a heading is taller than body text"
+    );
+    // Wrapped runs sit on one line, edge to edge.
+    let (a, b) = (find(&recs, 52), find(&recs, 53));
+    assert_eq!(a.rect[1], b.rect[1]);
+    assert!((b.rect[0] - a.rect[2]).abs() < 0.5);
+
+    let link = find(&recs, 54);
+    let recs = frame(&ctx, &mut r, &buf, click_at(centre(&link))).unwrap();
+    assert!(find(&recs, 54).clicked());
 }

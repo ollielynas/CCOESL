@@ -206,6 +206,13 @@ impl<I: AppInstance> AppWindow<I> {
                         }
                     }
                     self.responses = responses;
+                    // What the user typed goes back to the guest before its next frame. That
+                    // frame has to happen even if nothing else moves, or the app would only
+                    // see a keystroke when the *next* one arrived.
+                    if let Some(batch) = self.replayer.take_text_events() {
+                        self.events.borrow_mut().push_back(batch);
+                        ui.ctx().request_repaint();
+                    }
                 }
                 Err(e) => {
                     // A malformed frame is dropped whole; the previous one stays up.

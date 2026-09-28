@@ -19,11 +19,12 @@
 //! Off by default: this is test scaffolding and the SDK's budget is measured in kilobytes. Apps
 //! enable it as a dev-dependency only, so it never reaches a shipped module.
 
+use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
-use ccosel_abi::event::{Event, encode_error, event_kind};
-use ccosel_abi::{Cmd, Decoder, RespRecord, ResponseFlags};
+use ccosel_abi::event::{Event, TextDelta, encode_error, encode_text_delta, event_kind};
+use ccosel_abi::{Cmd, Decoder, RespRecord, ResponseFlags, TextStyle};
 
 /// The codes [`Harness::fail`] takes, re-exported so an app's tests need no `ccosel-abi`
 /// dependency of their own.
@@ -47,6 +48,9 @@ pub struct Harness<A: App> {
     uploads_finished: Vec<(u64, u32)>,
     calls: Vec<OutCall>,
     last: Vec<u8>,
+    /// The "shell's" copy of each text field, `(text, version)`, kept by the same rules as the
+    /// real one so [`Harness::type_text`] produces the deltas a real shell would.
+    texts: BTreeMap<u64, (String, u32)>,
 }
 
 impl<A: App> Harness<A> {
@@ -60,6 +64,7 @@ impl<A: App> Harness<A> {
             uploads_finished: Vec::new(),
             calls: Vec::new(),
             last: Vec::new(),
+            texts: BTreeMap::new(),
         }
     }
 
@@ -93,6 +98,121 @@ impl<A: App> Harness<A> {
         let _ = self.rpc.take_cancels();
         self.last = self.rec.commands().to_vec();
         ccosel_abi::validate(&self.last).expect("the app emitted a malformed command buffer");
+        self.sync_texts();
+    }
+
+    /// Mirror the shell's text bookkeeping: take the guest's `set`s, and adopt its version for
+    /// a field seen for the first time.
+    fn sync_texts(&mut self) {
+        let fields: Vec<(u64, u32, Option<String>)> = self
+            .commands()
+            .filter_map(|c| match c {
+                Cmd::TextEditSingle { id, version, set }
+                | Cmd::TextEditMulti { id, version, set } => {
+                    Some((id, version, set.map(ToString::to_string)))
+                }
+                _ => None,
+            })
+            .collect();
+        for (id, version, set) in fields {
+            match (set, self.texts.get_mut(&id)) {
+                (Some(text), _) => {
+                    self.texts.insert(id, (text, version));
+                }
+                (None, None) => {
+                    self.texts.insert(id, (String::new(), version));
+                }
+                (None, Some(_)) => {}
+            }
+        }
+    }
+
+    fn text_field_ids(&self) -> Vec<u64> {
+        self.commands()
+            .filter_map(|c| match c {
+                Cmd::TextEditSingle { id, .. } | Cmd::TextEditMulti { id, .. } => Some(id),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// What each text field drawn in the last frame holds, as the shell sees it, in order.
+    pub fn text_fields(&self) -> Vec<String> {
+        self.text_field_ids()
+            .iter()
+            .map(|id| self.texts.get(id).map(|t| t.0.clone()).unwrap_or_default())
+            .collect()
+    }
+
+    /// Plays the user replacing everything in the `index`th text field of the last frame
+    /// (counting single- and multi-line fields together) with `text`. The app sees it the next
+    /// time it draws that field, as with a real shell.
+    pub fn type_text(&mut self, index: usize, text: &str) {
+        let ids = self.text_field_ids();
+        let id = *ids.get(index).unwrap_or_else(|| {
+            panic!(
+                "no text field {index} in the last frame; there were {}",
+                ids.len()
+            )
+        });
+        let (old, version) = self.texts.entry(id).or_default();
+        *version += 1;
+        let payload = encode_text_delta(&TextDelta {
+            id,
+            version: *version,
+            start: 0,
+            end: old.len() as u32,
+            inserted: text,
+        });
+        *old = text.to_string();
+        crate::runtime::deliver(
+            &self.rpc,
+            &mut self.rec,
+            &Event {
+                kind: event_kind::TEXT_DELTA,
+                call_id: 0,
+                payload: &payload,
+            },
+        );
+    }
+
+    /// Every styled run drawn in the last frame, in order.
+    pub fn styled(&self) -> Vec<(String, TextStyle)> {
+        self.commands()
+            .filter_map(|c| match c {
+                Cmd::Styled { text, style, .. } => Some((text.to_string(), style)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Whether any label or styled run in the last frame reads exactly `text`.
+    pub fn has_text(&self, text: &str) -> bool {
+        self.has_label(text) || self.styled().iter().any(|(t, _)| t == text)
+    }
+
+    /// Clicks the first styled *link* reading `text`. Panics, listing the links, if none does.
+    pub fn click_link(&mut self, text: &str) {
+        let id = self
+            .commands()
+            .find_map(|c| match c {
+                Cmd::Styled { id, text: t, style }
+                    if t == text && style.contains(TextStyle::LINK) =>
+                {
+                    Some(id)
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| {
+                let links: Vec<String> = self
+                    .styled()
+                    .into_iter()
+                    .filter(|(_, s)| s.contains(TextStyle::LINK))
+                    .map(|(t, _)| t)
+                    .collect();
+                panic!("no link reading {text:?} in the last frame; links were {links:?}")
+            });
+        self.press(id);
     }
 
     fn commands(&self) -> impl Iterator<Item = Cmd<'_>> {
@@ -198,6 +318,10 @@ impl<A: App> Harness<A> {
                     self.buttons()
                 )
             });
+        self.press(id);
+    }
+
+    fn press(&mut self, id: u64) {
         self.clicks.push(RespRecord {
             local_id: id,
             flags: ResponseFlags::CLICKED | ResponseFlags::HOVERED | ResponseFlags::ENABLED,
@@ -235,10 +359,14 @@ impl<A: App> Harness<A> {
             .position(|c| c.method == M::METHOD as u32)
             .expect("the app has no outstanding call to answer");
         let call = self.calls.remove(at);
-        self.rpc.deliver(&Event {
-            kind,
-            call_id: call.call_id,
-            payload,
-        });
+        crate::runtime::deliver(
+            &self.rpc,
+            &mut self.rec,
+            &Event {
+                kind,
+                call_id: call.call_id,
+                payload,
+            },
+        );
     }
 }

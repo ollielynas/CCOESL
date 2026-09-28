@@ -30,6 +30,12 @@ pub enum OpCode {
     /// A line graph of `samples`, each already scaled by the guest to `0..=255`. The shell draws
     /// it, so a live chart costs one byte per point on the wire and no guest-side rendering.
     Plot = 0x0E,
+    /// A multi-line text area. Same payload and the same delta protocol as `TextEditSingle`;
+    /// only the widget the shell draws differs.
+    TextEditMulti = 0x0F,
+    /// A label with typographic style (heading level, bold, italic, code, link, ...), so an app
+    /// can render formatted text such as Markdown without the shell knowing any markup.
+    Styled = 0x10,
     // 0x40..0x4F reserved for subtree caching (BeginCached / EndCached / CachedRef).
     // Not implemented yet, but the space is reserved so adding it is not an ABI break.
 }
@@ -51,6 +57,8 @@ impl OpCode {
             0x0C => Some(Self::UploadFolder),
             0x0D => Some(Self::OpenUrl),
             0x0E => Some(Self::Plot),
+            0x0F => Some(Self::TextEditMulti),
+            0x10 => Some(Self::Styled),
             _ => None,
         }
     }

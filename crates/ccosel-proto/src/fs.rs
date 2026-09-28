@@ -4,7 +4,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use serde::{Deserialize, Serialize};
 
-use crate::{Coalesce, Effect, Method, Query, Rpc};
+use crate::{Coalesce, Command, Effect, Method, Query, Rpc};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EntryKind {
@@ -60,3 +60,144 @@ impl Rpc for ListDir {
 }
 
 impl Query for ListDir {}
+
+/// The most text one `ReadFile` or `WriteFile` carries. A document, not a dataset: anything
+/// larger belongs on `/files` and `/upload`, which stream rather than buffering in an RPC batch.
+pub const MAX_TEXT_BYTES: usize = 1024 * 1024;
+
+/// A path, and nothing else. Shared by the methods that only need one.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PathReq<'a> {
+    #[serde(borrow)]
+    pub path: &'a str,
+}
+
+/// A text file's contents.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct FileText {
+    pub text: String,
+    /// Whether the caller may save over it, so an app can offer "Edit" only when a save
+    /// would succeed. The server checks again on write; this is a hint for the UI, not a lock.
+    pub writable: bool,
+}
+
+/// Read a UTF-8 text file of at most [`MAX_TEXT_BYTES`].
+pub struct ReadFile;
+
+impl Rpc for ReadFile {
+    const METHOD: Method = Method::ReadFile;
+    const COALESCE: Coalesce = Coalesce::ByArgs;
+    const EFFECT: Effect = Effect::Idempotent;
+    const DEADLINE_MS: u32 = 8_000;
+    type Req<'a> = PathReq<'a>;
+    type Reply = FileText;
+}
+
+impl Query for ReadFile {}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct WriteFileReq<'a> {
+    #[serde(borrow)]
+    pub path: &'a str,
+    #[serde(borrow)]
+    pub text: &'a str,
+    /// Refuse with `EXISTS` rather than overwrite, so "New document" cannot clobber one that
+    /// is already there.
+    pub create_only: bool,
+}
+
+/// Write a text file, replacing it if it exists (unless `create_only`). The folder it goes in
+/// must already exist.
+pub struct WriteFile;
+
+impl Rpc for WriteFile {
+    const METHOD: Method = Method::WriteFile;
+    const COALESCE: Coalesce = Coalesce::None;
+    const EFFECT: Effect = Effect::Effectful;
+    const DEADLINE_MS: u32 = 15_000;
+    type Req<'a> = WriteFileReq<'a>;
+    type Reply = ();
+}
+
+impl Command for WriteFile {}
+
+/// Create one folder. Its parent must exist.
+pub struct CreateDir;
+
+impl Rpc for CreateDir {
+    const METHOD: Method = Method::CreateDir;
+    const COALESCE: Coalesce = Coalesce::None;
+    const EFFECT: Effect = Effect::Effectful;
+    const DEADLINE_MS: u32 = 8_000;
+    type Req<'a> = PathReq<'a>;
+    type Reply = ();
+}
+
+impl Command for CreateDir {}
+
+/// What the caller may do with a path, and who the server thinks the caller is.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AccessReply {
+    pub read: bool,
+    pub write: bool,
+    /// The signed-in user, or `None` for an anonymous caller. An app finds the user's private
+    /// folder here: it is `/home/{user}`.
+    pub user: Option<String>,
+}
+
+/// Ask what the caller may do with a path, which need not exist yet.
+pub struct Access;
+
+impl Rpc for Access {
+    const METHOD: Method = Method::Access;
+    const COALESCE: Coalesce = Coalesce::ByArgs;
+    const EFFECT: Effect = Effect::Idempotent;
+    const DEADLINE_MS: u32 = 4_000;
+    type Req<'a> = PathReq<'a>;
+    type Reply = AccessReply;
+}
+
+impl Query for Access {}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SearchReq<'a> {
+    /// The folder to search under, recursively.
+    #[serde(borrow)]
+    pub path: &'a str,
+    /// Matched case-insensitively against file names and, for text files, their contents.
+    #[serde(borrow)]
+    pub query: &'a str,
+    /// Only files whose name ends with this, e.g. `".md"`. Empty means every file.
+    #[serde(borrow)]
+    pub suffix: &'a str,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SearchHit {
+    /// Full jail path, e.g. `/Docs/Apps/files.md`.
+    pub path: String,
+    /// The first matching line, trimmed, or empty when only the name matched.
+    pub line: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SearchReply {
+    pub hits: Vec<SearchHit>,
+    /// The server stops at a fixed number of hits, like `DirListing::truncated`.
+    pub truncated: bool,
+}
+
+/// Find files under a folder by name or content. Only files the caller may read are searched,
+/// and folders it may not read are not entered.
+pub struct Search;
+
+impl Rpc for Search {
+    const METHOD: Method = Method::Search;
+    const COALESCE: Coalesce = Coalesce::ByArgs;
+    const EFFECT: Effect = Effect::Idempotent;
+    const DEADLINE_MS: u32 = 8_000;
+    type Req<'a> = SearchReq<'a>;
+    type Reply = SearchReply;
+}
+
+impl Query for Search {}
