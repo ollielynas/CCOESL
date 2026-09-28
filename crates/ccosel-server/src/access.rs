@@ -26,9 +26,8 @@
 //! `.access` files are invisible through the API: not listed, not readable, not writable. They
 //! are configuration for whoever runs the server, not content.
 //!
-//! Who the caller is comes from a [`User`] request extension. Nothing on `main` signs people
-//! in yet, so today it is set only by `--user` (see `main.rs`); a sign-in layer sets the same
-//! extension, and everything here works unchanged.
+//! Who the caller is comes from a [`User`] request extension, which `auth::require_session`
+//! sets from the sign-in session. With login turned off, every caller is anonymous.
 
 use std::path::{Component, Path, PathBuf};
 

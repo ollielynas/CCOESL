@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use ccosel_proto::build::{CompileReq, CompileResult, CompileStatus};
 use ccosel_proto::fs::{DirListing, ListDirReq};
 use ccosel_proto::{Method, WireReply, WireRequest, WireResult, scratch};
+use ccosel_server::auth::AuthState;
 use ccosel_server::fs_api::Jail;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -39,7 +40,7 @@ async fn spawn() -> SocketAddr {
     .unwrap();
 
     let jail = Jail::new(&dir).unwrap();
-    let app = ccosel_server::app(jail, dir.clone());
+    let app = ccosel_server::app(jail, dir.clone(), AuthState::default());
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

@@ -6,6 +6,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use ccosel_server::auth::AuthState;
 use ccosel_server::fs_api::Jail;
 use ccosel_server::upload_api::MAX_UPLOAD_BYTES;
 
@@ -24,7 +25,7 @@ async fn spawn() -> (SocketAddr, PathBuf) {
     fs::create_dir_all(&dir).unwrap();
 
     let jail = Jail::new(&dir).unwrap();
-    let app = ccosel_server::app(jail, dir.clone());
+    let app = ccosel_server::app(jail, dir.clone(), AuthState::default());
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

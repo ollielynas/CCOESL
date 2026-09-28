@@ -4,8 +4,11 @@
 //! there is no CORS configuration anywhere in this project.
 
 pub mod access;
+pub mod auth;
 pub mod build_api;
 pub mod fs_api;
+pub mod idp;
+pub mod keycloak;
 pub mod rpc;
 pub mod scratch;
 pub mod stats;
@@ -17,12 +20,14 @@ use std::sync::Arc;
 
 use axum::extract::{DefaultBodyLimit, Path as AxPath, State};
 use axum::http::{StatusCode, header};
+use axum::middleware;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Extension, Router};
 use tower_http::services::ServeDir;
 
 use access::User;
+use auth::AuthState;
 use fs_api::{Jail, Need};
 
 /// The caller's user name, if they are signed in under a name that can safely own a folder.
@@ -31,8 +36,9 @@ pub(crate) fn caller(user: Option<&User>) -> Option<&str> {
     user.map(|u| u.0.as_str()).filter(|n| User::valid_name(n))
 }
 
-/// Treat every request as coming from `name`. For trying per-user folders on a machine of
-/// your own before sign-in exists; on a shared network it hands everyone that user's files.
+/// Treat every request as coming from `name`, whatever its session says. For tests, and for
+/// embedding the server behind something else that has already identified the user; never on
+/// a router real people reach directly.
 pub fn as_user(router: Router, name: String) -> Router {
     router.layer(Extension(User(name)))
 }
@@ -40,6 +46,7 @@ pub fn as_user(router: Router, name: String) -> Router {
 #[derive(Clone)]
 pub struct AppState {
     pub jail: Arc<Jail>,
+    pub auth: AuthState,
     /// Builds outlive the request that started them, so they live on the server rather than in
     /// any one call. See `build_api`.
     pub jobs: Arc<build_api::Jobs>,
@@ -52,7 +59,7 @@ pub struct AppState {
 ///
 /// Panics if it can't create `.scratch` in the jail: a server that can't write to its own jail
 /// can't accept uploads either, and failing at start is clearer than failing on first use.
-pub fn app(jail: Jail, web_dir: PathBuf) -> Router {
+pub fn app(jail: Jail, web_dir: PathBuf, auth: AuthState) -> Router {
     let scratch = Arc::new(
         scratch::Scratch::new(jail.root()).expect("create the .scratch directory in the jail"),
     );
@@ -76,11 +83,15 @@ pub fn app(jail: Jail, web_dir: PathBuf) -> Router {
     let state = AppState {
         scratch,
         jail: Arc::new(jail),
+        auth,
         jobs: Arc::new(build_api::Jobs::new()),
         stats: Arc::new(stats::Stats::new()),
     };
 
-    Router::new()
+    // Everything that reads or writes the jail needs a session once OAuth is configured. The
+    // shell and app modules (the fallback below) stay public: they hold no user data, and the
+    // boot page needs them reachable to show its sign-in button in the first place.
+    let protected = Router::new()
         .route("/rpc", post(rpc::handle))
         .route(
             "/upload",
@@ -88,6 +99,14 @@ pub fn app(jail: Jail, web_dir: PathBuf) -> Router {
         )
         .route("/files/{*path}", get(download))
         .route("/scratch", post(new_scratch))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth::require_session,
+        ));
+
+    Router::new()
+        .merge(protected)
+        .merge(auth::router())
         .fallback_service(
             // Precompressed assets are served as-is when the client accepts them: compressing
             // a 5 MB shell on every request would be absurd, and `xtask` can do it once at
@@ -152,18 +171,10 @@ pub async fn serve(
     addr: SocketAddr,
     jail: Jail,
     web_dir: PathBuf,
-    user: Option<String>,
+    auth: AuthState,
 ) -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
     println!("CCOSEL serving http://{addr}/");
-    let mut router = app(jail, web_dir);
-    if let Some(name) = user {
-        if !User::valid_name(&name) {
-            anyhow::bail!("--user {name:?} is not a usable user name");
-        }
-        println!("every request is signed in as {name} (--user)");
-        router = as_user(router, name);
-    }
-    axum::serve(listener, router).await?;
+    axum::serve(listener, app(jail, web_dir, auth)).await?;
     Ok(())
 }

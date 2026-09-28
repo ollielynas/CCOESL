@@ -208,8 +208,9 @@ as before. `/home/{user}` is built in and private to its owner. `.access` files 
 hidden and cannot be read or written through the server. `ccosel-server/src/access.rs` has
 the details.
 
-The caller is a `User` request extension. Until sign-in lands, `--user NAME` sets it for every
-request. A session layer only has to insert the same extension. Apps ask the server what they
+The caller is a `User` request extension, which `auth::require_session` fills in from the
+sign-in session, so it is the Keycloak login. With login turned off, every caller is anonymous:
+they have no home folder, and only folders open to `*` are theirs to use. Apps ask the server what they
 may do (`Access`, `FileText::writable`) so they can hide buttons that would fail, but the
 server re-checks every write.
 

@@ -13,6 +13,7 @@
 
 extern crate alloc;
 
+pub mod account;
 pub mod build;
 pub mod fs;
 pub mod info;
@@ -32,11 +33,13 @@ pub enum Method {
     Stat = 2,
     ServerInfo = 3,
     Compile = 4,
-    ReadFile = 5,
-    WriteFile = 6,
-    CreateDir = 7,
-    Access = 8,
-    Search = 9,
+    WhoAmI = 5,
+    SignOut = 6,
+    ReadFile = 7,
+    WriteFile = 8,
+    CreateDir = 9,
+    Access = 10,
+    Search = 11,
 }
 
 impl Method {
@@ -46,11 +49,13 @@ impl Method {
             2 => Some(Self::Stat),
             3 => Some(Self::ServerInfo),
             4 => Some(Self::Compile),
-            5 => Some(Self::ReadFile),
-            6 => Some(Self::WriteFile),
-            7 => Some(Self::CreateDir),
-            8 => Some(Self::Access),
-            9 => Some(Self::Search),
+            5 => Some(Self::WhoAmI),
+            6 => Some(Self::SignOut),
+            7 => Some(Self::ReadFile),
+            8 => Some(Self::WriteFile),
+            9 => Some(Self::CreateDir),
+            10 => Some(Self::Access),
+            11 => Some(Self::Search),
             _ => None,
         }
     }

@@ -363,6 +363,8 @@ pub fn method_name(method: u32) -> String {
         Some(Method::Stat) => "stat",
         Some(Method::ServerInfo) => "server_info",
         Some(Method::Compile) => "compile",
+        Some(Method::WhoAmI) => "who_am_i",
+        Some(Method::SignOut) => "sign_out",
         Some(Method::ReadFile) => "read_file",
         Some(Method::WriteFile) => "write_file",
         Some(Method::CreateDir) => "create_dir",

@@ -7,8 +7,9 @@
 use axum::Extension;
 use axum::body::Bytes;
 use axum::extract::State;
-use axum::http::{StatusCode, header};
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
+use ccosel_proto::account::Account;
 use ccosel_proto::build::CompileReq;
 use ccosel_proto::fs::{ListDirReq, PathReq, SearchReq, WriteFileReq};
 use ccosel_proto::info::ServerInfoReply;
@@ -28,6 +29,7 @@ enum Outcome {
 pub async fn handle(
     State(state): State<AppState>,
     user: Option<Extension<User>>,
+    headers: HeaderMap,
     body: Bytes,
 ) -> Response {
     let Ok(requests) = postcard::from_bytes::<Vec<WireRequest>>(&body) else {
@@ -44,10 +46,13 @@ pub async fn handle(
 
     // Two passes: run every call into owned buffers, then borrow those into the reply batch.
     // `WireResult::Ok` borrows its payload, so the buffers have to outlive the encoding.
-    let outcomes: Vec<(u32, Outcome)> = requests
-        .iter()
-        .map(|req| (req.seq, dispatch(&state, user, req)))
-        .collect();
+    // In order, one at a time: a batch that signs out and then asks who is signed in should
+    // see the sign-out.
+    let cookie = headers.get(header::COOKIE).and_then(|v| v.to_str().ok());
+    let mut outcomes: Vec<(u32, Outcome)> = Vec::with_capacity(requests.len());
+    for req in &requests {
+        outcomes.push((req.seq, dispatch(&state, cookie, user, req).await));
+    }
 
     let replies: Vec<WireReply> = outcomes
         .iter()
@@ -75,7 +80,12 @@ pub async fn handle(
 
 /// A failed call is a failed *entry*, never a failed batch: one bad path must not take down
 /// the other calls that were coalesced into the same request.
-fn dispatch(state: &AppState, user: Option<&str>, req: &WireRequest<'_>) -> Outcome {
+async fn dispatch(
+    state: &AppState,
+    cookie: Option<&str>,
+    user: Option<&str>,
+    req: &WireRequest<'_>,
+) -> Outcome {
     state.stats.count_rpc();
     let Some(method) = Method::from_u16(req.method) else {
         return Outcome::Err(server_error::UNKNOWN_METHOD, String::new());
@@ -120,6 +130,15 @@ fn dispatch(state: &AppState, user: Option<&str>, req: &WireRequest<'_>) -> Outc
             };
             encode(&info)
         }
+        Method::WhoAmI => encode(&Account {
+            login_enabled: state.auth.enabled(),
+            name: state.auth.session_login(cookie),
+            account_url: state.auth.account_url().map(str::to_owned),
+        }),
+        Method::SignOut => {
+            state.auth.end_session(cookie).await;
+            encode(&())
+        }
         Method::ReadFile => run::<PathReq, _>(req, |a| (jail.read_file(a.path, user), a.path)),
         Method::WriteFile => run::<WriteFileReq, _>(req, |a| (jail.write_file(&a, user), a.path)),
         Method::CreateDir => run::<PathReq, _>(req, |a| (jail.create_dir(a.path, user), a.path)),
@@ -147,7 +166,7 @@ where
     }
 }
 
-fn encode(reply: &impl Serialize) -> Outcome {
+fn encode<T: serde::Serialize>(reply: &T) -> Outcome {
     match postcard::to_allocvec(reply) {
         Ok(bytes) => Outcome::Ok(bytes),
         Err(_) => Outcome::Err(server_error::IO, String::new()),

@@ -11,12 +11,13 @@ machine on the network.
 - [Clock](Apps/clock.md): a clock and stopwatch
 - [Server](Apps/server-dashboard.md): live graphs of how the server is doing
 - [Compiler](Apps/rust-compiler.md): build a Rust project on the server and download the result
+- [Account](Apps/account.md): see who you are signed in as, and sign out
 
 ## Where your files go
 
 | Folder | Who can see it |
 |---|---|
-| `/home/your-name` | Only you. Everyone who signs in gets one. |
+| `/home/your-name` | Only you. Everyone who signs in gets one. Open it with **🏠 My documents** in Docs. |
 | `/Docs` | Everyone, read-only. The developers keep it up to date. |
 | Everything else | Depends on the folder. Open it in **Docs** to see whether you can add to it. |
 

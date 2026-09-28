@@ -42,7 +42,11 @@ async fn site() -> Site {
 
     let jail_root = Jail::new(&dir).unwrap().root().to_path_buf();
     let spawn = |user: Option<&str>| {
-        let mut app = ccosel_server::app(Jail::new(&dir).unwrap(), dir.clone());
+        let mut app = ccosel_server::app(
+            Jail::new(&dir).unwrap(),
+            dir.clone(),
+            ccosel_server::auth::AuthState::default(),
+        );
         if let Some(name) = user {
             app = ccosel_server::as_user(app, name.to_owned());
         }
