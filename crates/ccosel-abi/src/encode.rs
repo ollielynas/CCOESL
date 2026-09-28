@@ -160,6 +160,10 @@ impl Encoder {
                 self.str(label);
                 self.str(url);
             }
+            Cmd::UploadProject { id } => {
+                self.u8(OpCode::UploadProject as u8);
+                self.u64(id);
+            }
             Cmd::Plot { id, size, samples } => {
                 self.u8(OpCode::Plot as u8);
                 self.u64(id);

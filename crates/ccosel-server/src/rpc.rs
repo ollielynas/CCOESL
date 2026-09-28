@@ -9,6 +9,7 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use ccosel_proto::account::Account;
+use ccosel_proto::build::CompileReq;
 use ccosel_proto::fs::ListDirReq;
 use ccosel_proto::info::ServerInfoReply;
 use ccosel_proto::{Method, PROTO_VERSION, WireReply, WireRequest, WireResult, server_error};
@@ -73,15 +74,38 @@ async fn dispatch(state: &AppState, cookie: Option<&str>, req: &WireRequest<'_>)
             let Ok(args) = postcard::from_bytes::<ListDirReq>(req.args) else {
                 return Outcome::Err(server_error::MALFORMED, String::new());
             };
+            state.scratch.touch(args.path);
             match state.jail.list_dir(&args) {
-                Ok(listing) => match postcard::to_allocvec(&listing) {
+                Ok(mut listing) => {
+                    // Temporary project folders are the Compiler's business, not a folder
+                    // anyone browses to.
+                    if args.path.trim_matches('/').is_empty() {
+                        listing
+                            .entries
+                            .retain(|e| e.name != ccosel_proto::scratch::DIR);
+                    }
+                    match postcard::to_allocvec(&listing) {
+                        Ok(bytes) => Outcome::Ok(bytes),
+                        Err(_) => Outcome::Err(server_error::IO, String::new()),
+                    }
+                }
+                Err(code) => Outcome::Err(code, args.path.to_owned()),
+            }
+        }
+        Method::Stat => Outcome::Err(server_error::UNKNOWN_METHOD, String::new()),
+        Method::Compile => {
+            let Ok(args) = postcard::from_bytes::<CompileReq>(req.args) else {
+                return Outcome::Err(server_error::MALFORMED, String::new());
+            };
+            state.scratch.touch(args.path);
+            match crate::build_api::compile(&state.jail, &state.jobs, &args) {
+                Ok(status) => match postcard::to_allocvec(&status) {
                     Ok(bytes) => Outcome::Ok(bytes),
                     Err(_) => Outcome::Err(server_error::IO, String::new()),
                 },
                 Err(code) => Outcome::Err(code, args.path.to_owned()),
             }
         }
-        Method::Stat => Outcome::Err(server_error::UNKNOWN_METHOD, String::new()),
         Method::ServerInfo => {
             let host = stats::sample_host();
             let info = ServerInfoReply {

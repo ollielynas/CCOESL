@@ -733,6 +733,10 @@ name = "ccosel-connection"
 version = "0.1.0"
 
 [[package]]
+name = "ccosel-gitignore"
+version = "0.1.0"
+
+[[package]]
 name = "ccosel-host"
 version = "0.1.0"
 dependencies = [
@@ -812,6 +816,7 @@ version = "0.1.0"
 dependencies = [
  "ccosel-abi",
  "ccosel-connection",
+ "ccosel-gitignore",
  "ccosel-host",
  "ccosel-host-web",
  "ccosel-proto",

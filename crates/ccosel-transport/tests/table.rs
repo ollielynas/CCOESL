@@ -71,6 +71,7 @@ fn setup() -> (Transport, Rc<RefCell<Vec<Vec<Outgoing>>>>) {
 }
 
 const LIST: u16 = Method::ListDir as u16;
+const COMPILE: u16 = Method::Compile as u16;
 
 #[test]
 fn identical_calls_share_one_request_and_both_get_the_reply() {
@@ -352,4 +353,31 @@ fn a_dropped_connection_fails_every_outstanding_call() {
             .all(|(k, _, c)| *k == event_kind::RPC_ERR && *c == rpc_error::TRANSPORT)
     );
     assert_eq!(t.in_flight(), 0);
+}
+
+#[test]
+fn compile_server_errors_map_to_guest_error_codes() {
+    let (mut t, sent) = setup();
+    let q = queue();
+    t.enqueue(
+        PendingKey {
+            instance: 1,
+            call: 10,
+        },
+        COMPILE,
+        b"/proj".to_vec(),
+        q.clone(),
+        0.0,
+    );
+    t.flush();
+    let seq = sent.borrow()[0][0].seq;
+
+    t.on_replies(vec![Incoming {
+        seq,
+        result: Err((server_error::NOT_A_CARGO_PROJECT, "/proj".into())),
+    }]);
+    assert_eq!(
+        events(&q),
+        vec![(event_kind::RPC_ERR, 10, rpc_error::SERVER)]
+    );
 }

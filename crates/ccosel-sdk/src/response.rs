@@ -69,6 +69,13 @@ impl Response {
         self.rec.aux
     }
 
+    /// For an [`upload_project`](crate::Ui::upload_project) button: the temporary folder id of
+    /// the last upload from it that finished, or `None` before any has. A new value means a new
+    /// upload landed.
+    pub fn uploaded_project(&self) -> Option<u32> {
+        (self.rec.aux != 0).then_some(self.rec.aux)
+    }
+
     /// Text version for a text edit — compare against your own to decide whether the shell has
     /// newer content than you do.
     pub fn text_version(&self) -> u32 {

@@ -97,6 +97,15 @@ impl<I: AppInstance> AppWindow<I> {
             .cloned()
     }
 
+    /// The `UploadProject` button clicked this frame, if any.
+    pub fn clicked_project_upload(&self) -> Option<u64> {
+        self.replayer
+            .project_uploads()
+            .iter()
+            .copied()
+            .find(|&id| self.clicked(id))
+    }
+
     /// The target of the `OpenUrl` button clicked this frame, if any.
     pub fn clicked_open_url(&self) -> Option<String> {
         self.replayer
@@ -115,6 +124,12 @@ impl<I: AppInstance> AppWindow<I> {
     /// An upload started from this window's `widget` button has finished.
     pub fn upload_finished(&mut self, widget: u64) {
         *self.uploads_finished.entry(widget).or_default() += 1;
+    }
+
+    /// A project upload from this window's `widget` button has finished, into temporary
+    /// folder `scratch`. Reported to the app in that button's response.
+    pub fn project_uploaded(&mut self, widget: u64, scratch: u32) {
+        self.uploads_finished.insert(widget, scratch);
     }
 
     /// A delivery handle for the transport's pending table.

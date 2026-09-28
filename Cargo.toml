@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/ccosel-abi",
     "crates/ccosel-connection",
+    "crates/ccosel-gitignore",
     "crates/ccosel-proto",
     "crates/ccosel-server",
     "crates/ccosel-transport",
@@ -16,7 +17,10 @@ members = [
 ]
 # `apps/` is deliberately a SEPARATE workspace: guest modules need
 # opt-level="z" / lto="fat" / panic="abort", and [profile] is workspace-global.
-exclude = ["apps"]
+# `data/` is the jail `cargo xtask serve` (and `review`) serves. Without this, cargo building a
+# project someone put there walks up, finds this workspace, and refuses: "current package
+# believes it's in a workspace when it's not".
+exclude = ["apps", "data"]
 
 [workspace.package]
 version = "0.1.0"
@@ -26,6 +30,7 @@ license = "MIT OR Apache-2.0"
 [workspace.dependencies]
 ccosel-abi = { path = "crates/ccosel-abi" }
 ccosel-connection = { path = "crates/ccosel-connection" }
+ccosel-gitignore = { path = "crates/ccosel-gitignore" }
 ccosel-proto = { path = "crates/ccosel-proto" }
 ccosel-host = { path = "crates/ccosel-host" }
 ccosel-cas = { path = "crates/ccosel-cas" }
