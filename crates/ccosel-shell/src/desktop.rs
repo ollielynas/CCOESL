@@ -459,6 +459,9 @@ impl Desktop {
 
     /// What the desktop says when nothing is open. A blank screen with no affordance is a
     /// worse first impression than one line pointing at the dock.
+    ///
+    /// On a card, like a window: straight onto the wallpaper, text can land on any part of a
+    /// photo and be unreadable.
     fn empty_state(&self, ui: &mut egui::Ui) {
         let t = theme::tokens();
         egui::CentralPanel::default()
@@ -467,20 +470,37 @@ impl Desktop {
                 if !self.windows.is_empty() || *self.pending.borrow() > 0 {
                     return;
                 }
-                ui.vertical_centered(|ui| {
-                    ui.add_space(ui.available_height() * 0.30);
-                    ui.label(
-                        egui::RichText::new(egui_phosphor::regular::SQUARES_FOUR)
-                            .size(44.0)
-                            .color(t.text_dim),
-                    );
-                    ui.add_space(6.0);
-                    ui.label(
-                        egui::RichText::new("CCOSEL")
-                            .font(theme::heading_font(t.heading))
-                            .color(t.ink),
-                    );
-                    ui.label(egui::RichText::new("Pick an app from the dock").color(t.text_dim));
+                let area = ui.max_rect();
+                let card = egui::Rect::from_center_size(
+                    egui::pos2(area.center().x, area.top() + area.height() * 0.42),
+                    egui::vec2(300.0, 180.0),
+                );
+                let painter = ui.painter();
+                painter.add(t.shadow.as_shape(card, 0));
+                painter.rect(
+                    card,
+                    0,
+                    t.surface,
+                    egui::Stroke::new(t.stroke, t.ink),
+                    egui::StrokeKind::Inside,
+                );
+                ui.scope_builder(egui::UiBuilder::new().max_rect(card.shrink(24.0)), |ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.label(
+                            egui::RichText::new(egui_phosphor::regular::SQUARES_FOUR)
+                                .size(40.0)
+                                .color(t.ink),
+                        );
+                        ui.add_space(4.0);
+                        ui.label(
+                            egui::RichText::new("CCOSEL")
+                                .font(theme::heading_font(t.heading))
+                                .color(t.ink),
+                        );
+                        ui.label(
+                            egui::RichText::new("Pick an app from the dock").color(t.text_dim),
+                        );
+                    });
                 });
             });
     }
