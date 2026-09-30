@@ -80,9 +80,11 @@ fn policy(method: u16) -> (Coalesce, u32) {
         Some(Method::ReadFile) => (Coalesce::ByArgs, 8_000),
         Some(Method::Access) => (Coalesce::ByArgs, 4_000),
         Some(Method::Search) => (Coalesce::ByArgs, 8_000),
+        Some(Method::OctavePoll) => (Coalesce::ByArgs, 8_000),
         // Writes: two identical saves are two saves, so they are never merged.
         Some(Method::WriteFile) => (Coalesce::None, 15_000),
         Some(Method::CreateDir) => (Coalesce::None, 8_000),
+        Some(Method::OctaveRun) => (Coalesce::None, 8_000),
         None => (Coalesce::None, 4_000),
     }
 }

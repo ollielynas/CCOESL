@@ -159,3 +159,66 @@ async fn reports_server_info_over_http() {
         assert!(info.load_milli.is_some());
     }
 }
+
+/// One call of `method` with `args`, over HTTP, returning its reply payload or error code.
+async fn call<T: serde::Serialize>(
+    addr: SocketAddr,
+    method: Method,
+    args: &T,
+) -> Result<Vec<u8>, u32> {
+    let args = postcard::to_allocvec(args).unwrap();
+    let batch = vec![WireRequest {
+        seq: 1,
+        method: method as u16,
+        args: &args,
+    }];
+    let reply = post_rpc(addr, postcard::to_allocvec(&batch).unwrap()).await;
+    let replies: Vec<WireReply> = postcard::from_bytes(&reply).unwrap();
+    match replies[0].result {
+        WireResult::Ok(bytes) => Ok(bytes.to_vec()),
+        WireResult::Err { code, .. } => Err(code),
+    }
+}
+
+#[tokio::test]
+async fn runs_octave_over_http_or_says_it_cannot() {
+    use ccosel_proto::octave::{OctaveInput, OctavePollReq, OctaveRunReq, OctaveStatus};
+
+    let (addr, _root) = spawn().await;
+    let run = OctaveRunReq {
+        client: 9,
+        seq: 1,
+        input: OctaveInput::Code("z = 5;"),
+    };
+    let started: bool =
+        postcard::from_bytes(&call(addr, Method::OctaveRun, &run).await.unwrap()).unwrap();
+    let poll = OctavePollReq {
+        client: 9,
+        seq: 1,
+        from: 0,
+    };
+    if !started {
+        // No Octave here: nothing was started, so there is nothing to follow.
+        assert_eq!(
+            call(addr, Method::OctavePoll, &poll).await,
+            Err(server_error::NOT_FOUND)
+        );
+        return;
+    }
+    for _ in 0..600 {
+        let status: OctaveStatus =
+            postcard::from_bytes(&call(addr, Method::OctavePoll, &poll).await.unwrap()).unwrap();
+        if let Some(result) = status.result {
+            assert!(!result.error, "{}", status.output);
+            assert!(
+                result
+                    .variables
+                    .iter()
+                    .any(|v| v.name == "z" && v.value == "5")
+            );
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    panic!("the Octave job never finished");
+}

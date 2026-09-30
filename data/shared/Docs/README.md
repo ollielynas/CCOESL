@@ -11,6 +11,7 @@ machine on the network.
 - [Clock](Apps/clock.md): a clock and stopwatch
 - [Server](Apps/server-dashboard.md): live graphs of how the server is doing
 - [Compiler](Apps/rust-compiler.md): build a Rust project on the server and download the result
+- [Octave](Apps/octave.md): run GNU Octave code, keep variables between commands, and plot
 - [Account](Apps/account.md): see who you are signed in as, and sign out
 
 ## Where your files go

@@ -68,5 +68,13 @@ pub fn catalog() -> Vec<AppEntry> {
             url: "./dist/docs.wasm",
             default_size: [560.0, 560.0],
         },
+        AppEntry {
+            id: "octave",
+            name: "Octave",
+            icon: egui_phosphor::regular::FUNCTION,
+            color: egui::Color32::from_rgb(0x06, 0x7a, 0xb8),
+            url: "./dist/octave.wasm",
+            default_size: [760.0, 540.0],
+        },
     ]
 }
