@@ -22,6 +22,7 @@ fn entry(name: &str, kind: EntryKind) -> DirEntry {
         kind,
         size: 10,
         mtime_s: 0,
+        writable: true,
     }
 }
 

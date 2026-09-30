@@ -42,6 +42,7 @@ fn listing(names: &[&str]) -> DirListing {
                 kind: EntryKind::File,
                 size: 1,
                 mtime_s: 0,
+                writable: true,
             })
             .collect(),
         truncated: false,

@@ -17,6 +17,7 @@ fn dir(name: &str) -> DirEntry {
         kind: EntryKind::Dir,
         size: 0,
         mtime_s: 0,
+        writable: true,
     }
 }
 
@@ -26,6 +27,7 @@ fn file(name: &str) -> DirEntry {
         kind: EntryKind::File,
         size: 100,
         mtime_s: 0,
+        writable: true,
     }
 }
 

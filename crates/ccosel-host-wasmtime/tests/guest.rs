@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use ccosel_abi::{Cmd, Decoder, RespRecord};
-use ccosel_host::{AppHost, AppInstance, FrameArgs, Replayer};
+use ccosel_host::{AppHost, AppInstance, FrameArgs, OutboundCall, Replayer};
 use ccosel_host_wasmtime::WasmtimeHost;
 
 const APP: u64 = 1;
@@ -86,6 +86,14 @@ fn button_id(buf: &[u8], want: &str) -> u64 {
         .unwrap_or_else(|| panic!("no button labelled {want:?}"))
 }
 
+/// Just the `ListDir` calls among what the guest sent.
+fn listings(calls: Vec<OutboundCall>) -> Vec<OutboundCall> {
+    calls
+        .into_iter()
+        .filter(|c| c.method == ccosel_proto::Method::ListDir as u32)
+        .collect()
+}
+
 /// Build the reply the server would have sent for a `list_dir`.
 fn listing_reply(names: &[(&str, bool)]) -> Vec<u8> {
     use ccosel_proto::fs::{DirEntry, DirListing, EntryKind};
@@ -101,6 +109,7 @@ fn listing_reply(names: &[(&str, bool)]) -> Vec<u8> {
                 },
                 size: 12,
                 mtime_s: 0,
+                writable: true,
             })
             .collect(),
         truncated: false,
@@ -126,13 +135,13 @@ fn drives_a_real_guest_module_end_to_end() {
         labels(&f1.commands)
     );
 
-    let calls = app.take_outbox();
+    // It also asks what the caller may do there (`Access`), which this test leaves unanswered.
+    let calls = listings(app.take_outbox());
     assert_eq!(
         calls.len(),
         1,
         "exactly one request for the initial listing"
     );
-    assert_eq!(calls[0].method, ccosel_proto::Method::ListDir as u32);
 
     // Waiting is not animating: an app blocked on the network must not be re-run every frame.
     assert_eq!(f1.wants_repaint_after_ms, ccosel_abi::REPAINT_ON_INPUT_ONLY);
@@ -232,7 +241,7 @@ fn entering_a_directory_issues_a_new_request_for_the_new_path() {
     let mut replayer = Replayer::new();
 
     app.frame(&FrameArgs::default()).expect("frame");
-    let first = app.take_outbox();
+    let first = listings(app.take_outbox());
     let payload = listing_reply(&[("Projects", true)]);
     let batch = ccosel_abi::event::encode_batch(&[(
         ccosel_abi::event::event_kind::RPC_OK,
@@ -296,7 +305,7 @@ fn entering_a_directory_issues_a_new_request_for_the_new_path() {
     })
     .expect("frame");
 
-    let second = app.take_outbox();
+    let second = listings(app.take_outbox());
     assert_eq!(second.len(), 1, "entering a directory requests it");
     let req: ccosel_proto::fs::ListDirReq = postcard::from_bytes(&second[0].args).unwrap();
     assert_eq!(req.path, "/Projects");

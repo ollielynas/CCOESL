@@ -53,8 +53,11 @@ pub async fn upload(
         return StatusCode::FORBIDDEN.into_response();
     };
     parts.push(params.filename.clone());
-    if params.filename == access::ACCESS_FILE || !access::perms(root, &parts, user).write {
+    if params.filename == access::ACCESS_FILE {
         return StatusCode::FORBIDDEN.into_response();
+    }
+    if let Some(refused) = refusal(access::perms(root, &parts, user)) {
+        return refused.into_response();
     }
 
     let dir = match resolve_dir_create(state.jail.root(), &params.path).await {
@@ -64,8 +67,9 @@ pub async fn upload(
 
     let file_path = dir.join(&params.filename);
     // Checked again where the folder really is, in case a symlink led somewhere else.
-    if !access::perms_of_real(root, &file_path, user).is_some_and(|p| p.write) {
-        return StatusCode::FORBIDDEN.into_response();
+    let real = access::perms_of_real(root, &file_path, user).unwrap_or_default();
+    if let Some(refused) = refusal(real) {
+        return refused.into_response();
     }
 
     if let Err(e) = tokio::fs::write(&file_path, &body).await {
@@ -74,6 +78,18 @@ pub async fn upload(
     }
 
     StatusCode::OK.into_response()
+}
+
+/// Why an upload with these permissions is refused, if it is. A folder the caller may not
+/// read is `404`, as if it were not there, like everywhere else (see `fs_api::check`).
+fn refusal(p: access::Perms) -> Option<StatusCode> {
+    if !p.read {
+        Some(StatusCode::NOT_FOUND)
+    } else if !p.write {
+        Some(StatusCode::FORBIDDEN)
+    } else {
+        None
+    }
 }
 
 /// No path separator (so the client cannot smuggle a subdirectory or an escape into what is

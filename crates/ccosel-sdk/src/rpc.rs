@@ -391,6 +391,7 @@ mod tests {
                     kind: EntryKind::File,
                     size: 1,
                     mtime_s: 0,
+                    writable: true,
                 })
                 .collect(),
             truncated: false,
