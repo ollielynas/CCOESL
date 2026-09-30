@@ -6,6 +6,10 @@ publish = false
 
 [dependencies]
 anyhow = { workspace = true }
+# `test-image` speaks the shell's RPC protocol to the container, with the shell's own types.
+ccosel-proto = { workspace = true, features = ["std"] }
+postcard = { workspace = true, features = ["use-std"] }
+serde_json = "1"
 
 [dev-dependencies]
 tempfile = "3"

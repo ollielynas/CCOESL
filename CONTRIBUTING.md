@@ -13,7 +13,8 @@ the owner, outside contributors, and the Claude agents that work tickets.
 
 ## One-time setup
 
-You need `rustup` and `node`; the rest is two `cargo install`s.
+You need `rustup`, `node`, `curl` and Docker (for `cargo xtask test-image`); the rest is two
+`cargo install`s.
 
 ```sh
 cargo install cargo-llvm-cov --locked                       # the per-app coverage gate
@@ -48,9 +49,15 @@ Each CI job is one `cargo xtask` command. To reproduce a red job, run the same c
 | `test-wasm` | `cargo xtask test-wasm` | A browser-backend test fails under node | — |
 | `apps-coverage` | `cargo xtask coverage` | An app has no documentation page, or is under the coverage bar | See [Adding an app](#adding-an-app) and [Testing apps](#testing-apps) |
 | `build-web` | `cargo xtask build-web` | The build breaks, or an app exceeds 100 KiB gzipped | Trim the app; avoid float `Display` |
+| `test-image` | `cargo xtask test-image` | The Docker image doesn't build, or a person couldn't use it: sign in through `/idp`, use the apps, build in the Compiler, keep their account and files when the container is replaced | Read the step it names; the container's log is printed below it |
 | `ci-ok` | *(GitHub only)* | Any job above did not succeed | It's the one required check |
 
 `cargo xtask ci` runs all of them in order. `cargo xtask` alone lists every command.
+
+`test-image` is the slowest, because it builds the whole image and waits for Keycloak to start
+twice. It publishes the container on free loopback ports, so a dev server on 8777 doesn't get in
+its way, and it removes the container and volume it made. `cargo xtask test-image --no-build`
+reruns the checks against the last image it built.
 
 ## Testing apps
 
@@ -159,3 +166,5 @@ cargo xtask review 10 --checkout-only    # just check it out, to read it in your
 | An app is under the bar | The table printed by `cargo xtask coverage` shows hits/lines per app; add tests for the branches you haven't covered |
 | `use of default to create a unit struct` | Give the app a field, or construct it as `MyApp` rather than `MyApp::default()` |
 | `run this from your own checkout` (from `cargo xtask review`) | You ran it inside `../<repo>-review`, which it replaces; run it from your usual checkout |
+| `docker is required for test-image` | Install Docker, and make sure your user can run `docker` without `sudo` |
+| `login is off` (from `cargo xtask test-image`) | Keycloak didn't start or couldn't be set up in the container. Its reason is in the container log printed after the error |
