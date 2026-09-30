@@ -90,14 +90,20 @@ Real examples: `apps/clock/src/tests.rs` (time as an input) and `apps/file-brows
 
 ## Tickets
 
-Work is tracked as GitHub issues. Open one with the **Agent task** form: a goal, and acceptance
-criteria that a test or a reviewer can check. Write it so someone with no context could finish it.
+Work is tracked as GitHub issues. Use one of the task forms:
+
+- **Agent task** for work a Claude agent should do with `/work-issue`.
+- **Human task** for work that is too complex for an agent run and must be done manually.
+
+Both forms ask for a goal and acceptance criteria that a test or reviewer can check. Write them so
+someone with no context could finish the work.
 
 - **Outside contributors:** pick an open issue, or open one first for anything larger than a
   small fix so the direction is agreed before you build it. Fork, branch, and open a PR.
-- **The owner can hand a ticket to a Claude agent** with `/work-issue <number>`. The agent works
-  in its own git worktree on a branch named `agent/<number>-<slug>`, runs `cargo xtask ci` until
-  it is green, opens a PR that says `Closes #<number>`, and stops. It never merges.
+- **The owner can hand an Agent task ticket to a Claude agent** with `/work-issue <number>`.
+  Agents must not start **Human task** tickets. The agent works in its own git worktree on a branch
+  named `agent/<number>-<slug>`, runs `cargo xtask ci` until it is green, opens a PR that says
+  `Closes #<number>`, and stops. It never merges.
 - Feedback goes on the PR as ordinary review comments. For an agent's PR the owner then runs
   `/address-feedback <pr-number>`, and the agent replies to each comment and pushes fixes.
 

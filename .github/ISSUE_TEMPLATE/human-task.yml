@@ -1,0 +1,37 @@
+name: Human task
+description: A ticket for work that is too complex for `/work-issue` and must be handled manually
+title: "[human-task] "
+labels: ["human-task"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this when the work is too complex for a Claude agent run.
+        Do not start this with `/work-issue`; a human should own and deliver it.
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+      description: What should be true when this is done, and why it matters.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Each line something a test or a reviewer can check.
+      placeholder: |
+        - [ ] ...
+        - [ ] ...
+    validations:
+      required: true
+  - type: textarea
+    id: where
+    attributes:
+      label: Where to look
+      description: Files, crates or apps this likely touches. Optional.
+  - type: textarea
+    id: out-of-scope
+    attributes:
+      label: Out of scope
+      description: Things this change should leave alone. Optional.
