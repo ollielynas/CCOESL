@@ -9,6 +9,8 @@ use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 
+mod image;
+
 /// App modules are the recurring download, so they get a hard budget. The shell is fetched
 /// once and cached forever, so it is reported but not gated.
 const GUEST_BUDGET_GZIP: u64 = 100 * 1024;
@@ -22,6 +24,17 @@ const WASM: &str = "wasm32-unknown-unknown";
 /// Where each app's user documentation lives, as `<app>.md`: the read-only `/Docs/Apps` folder
 /// the Docs app shows. Every app must have a page here; see [`missing_app_docs`].
 const APP_DOCS_DIR: &str = "data/shared/Docs/Apps";
+
+/// Every guest app, as (crate name, served name). Crate names use underscores; the served
+/// names (`web/dist/<served>.wasm`) use hyphens, matching the registry.
+const GUESTS: [(&str, &str); 6] = [
+    ("file_browser", "file-browser"),
+    ("clock", "clock"),
+    ("server_dashboard", "server-dashboard"),
+    ("rust_compiler", "rust-compiler"),
+    ("account", "account"),
+    ("docs", "docs"),
+];
 
 fn main() -> Result<()> {
     match std::env::args()
@@ -49,6 +62,7 @@ fn main() -> Result<()> {
             new_app(&name)
         }
         "review" => review(&std::env::args().skip(2).collect::<Vec<_>>()),
+        "test-image" => image::test_image(&std::env::args().skip(2).collect::<Vec<_>>()),
         _ => {
             help();
             Ok(())
@@ -70,12 +84,14 @@ fn help() {
          \x20 cargo xtask review 10                  check PR #10 out in a fresh ../<repo>-review and serve it\n\
          \x20 cargo xtask review 10 --checkout-only  just check it out, to read it in your editor\n\n\
          Checks — what CI runs, one job each; `ci` runs them all and is the definition of done:\n\n\
-         \x20 cargo xtask ci         fmt, clippy, test, test-wasm, coverage, then build-web\n\
+         \x20 cargo xtask ci         fmt, clippy, test, test-wasm, coverage, build-web, then test-image\n\
          \x20 cargo xtask fmt        rustfmt --check on both workspaces\n\
          \x20 cargo xtask clippy     clippy -D warnings, native and wasm32\n\
          \x20 cargo xtask test       native tests, both workspaces\n\
          \x20 cargo xtask test-wasm  browser backend, in node (needs wasm-bindgen-cli)\n\
-         \x20 cargo xtask coverage   every app must reach the line-coverage bar (needs cargo-llvm-cov)\n\n\
+         \x20 cargo xtask coverage   every app must reach the line-coverage bar (needs cargo-llvm-cov)\n\
+         \x20 cargo xtask test-image build the Docker image, sign in to it and use it (needs docker, curl);\n\
+         \x20                        --no-build reuses the last image\n\n\
          Other useful commands:\n\n\
          \x20 cargo test                                                    native tests\n\
          \x20 cargo test -p ccosel-host-web --target wasm32-unknown-unknown browser backend, in node\n\
@@ -179,16 +195,7 @@ fn build_web() -> Result<()> {
         ],
     )?;
 
-    // Guest crate names use underscores; the served names use hyphens, matching the registry.
-    let guests = [
-        ("file_browser", "file-browser"),
-        ("clock", "clock"),
-        ("server_dashboard", "server-dashboard"),
-        ("rust_compiler", "rust-compiler"),
-        ("account", "account"),
-        ("docs", "docs"),
-    ];
-    for (crate_name, served) in guests {
+    for (crate_name, served) in GUESTS {
         std::fs::copy(
             root.join(format!(
                 "apps/target/wasm32-unknown-unknown/release/{crate_name}.wasm"
@@ -203,7 +210,7 @@ fn build_web() -> Result<()> {
     report("shell.js", &dist.join("ccosel-shell.js"))?;
 
     let mut over_budget = Vec::new();
-    for (_, served) in guests {
+    for (_, served) in GUESTS {
         let gz = report(
             &format!("{served}.wasm"),
             &dist.join(format!("{served}.wasm")),
@@ -515,6 +522,7 @@ fn ci() -> Result<()> {
     coverage()?;
     println!("\n==> build-web (wire-size budget)");
     build_web()?;
+    image::test_image(&[])?;
     println!("\nci: all checks passed");
     Ok(())
 }
