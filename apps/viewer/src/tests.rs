@@ -96,14 +96,11 @@ fn a_search_result_opens_and_back_returns_to_the_results() {
     h.click("holiday.jpg");
     h.frame();
     assert_eq!(h.app.file.as_deref(), Some("/Photos/holiday.jpg"));
-    assert!(h.app.from_search);
     h.frame();
-    assert!(h.has_button(&label(icons::ARROW_LEFT, "Back")));
-
-    h.click(&label(icons::ARROW_LEFT, "Back"));
-    h.frame();
-    assert_eq!(h.app.file, None);
-    assert_eq!(h.app.query.as_str(), "holiday", "the search is kept");
+    // From here the window is that file: no search, and no way back to one.
+    assert!(h.text_fields().is_empty());
+    assert!(!h.has_text("Find a file"));
+    assert!(h.buttons().is_empty(), "{:?}", h.buttons());
 }
 
 #[test]
@@ -221,14 +218,20 @@ fn download_and_share_point_at_the_file() {
 }
 
 #[test]
-fn opened_on_a_file_the_search_button_starts_afresh() {
-    let mut h = opened_on("/notes.txt", 3);
-    assert!(!h.app.from_search);
-    h.app.query.set("old");
-    h.click(&label(icons::MAGNIFYING_GLASS, "Search"));
-    h.frame();
-    assert_eq!(h.app.file, None);
-    assert_eq!(h.app.query.as_str(), "");
+fn a_window_opened_on_a_file_has_no_search() {
+    let h = opened_on("/notes.txt", 3);
+    assert!(h.text_fields().is_empty());
+    assert!(!h.has_text("Find a file"));
+    assert!(h.buttons().is_empty(), "{:?}", h.buttons());
+}
+
+/// Another file opens in another window: a window never changes what it shows.
+#[test]
+fn a_window_stays_on_the_file_it_was_opened_for() {
+    let mut v = Viewer::default();
+    v.open("/a.txt");
+    v.open("/b.txt");
+    assert_eq!(v.file.as_deref(), Some("/a.txt"));
 }
 
 #[test]

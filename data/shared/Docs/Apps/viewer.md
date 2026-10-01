@@ -11,10 +11,10 @@ There are three ways in:
 - **From a link someone shared.** It opens the Viewer on its own in a browser tab, already
   showing the file. If you aren't signed in, you sign in first and then land on the file.
 - **From the app menu.** The Viewer starts with a search box. Type at least two letters of a
-  file's name, or some words from inside it, and click a result to open it. **← Back** returns
-  to your results.
+  file's name, or some words from inside it, and click a result to open it.
 
-Opened on a file, **🔍 Search** at the top takes you to the search instead.
+Each Viewer window shows the one file it was opened on, and stays on it. To look at another
+file, open it in a new window: from Files, or from the app menu.
 
 You only ever find and open files you are allowed to read.
 

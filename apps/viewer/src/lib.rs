@@ -150,10 +150,9 @@ pub fn human_size(bytes: u64) -> String {
 }
 
 pub struct Viewer {
-    /// The file on screen, or `None` for the search.
+    /// The file on screen, or `None` for the search. Once set it never changes: a window is
+    /// the file it was opened for, and another file opens in another window.
     pub file: Option<String>,
-    /// Whether `file` was picked from the search, so "Back" goes there.
-    pub from_search: bool,
     pub query: Text,
     /// The text file's contents, set once when it arrives.
     text: Text,
@@ -169,7 +168,6 @@ impl Default for Viewer {
     fn default() -> Self {
         Self {
             file: None,
-            from_search: false,
             query: Text::new(""),
             text: Text::new(""),
             text_for: None,
@@ -179,17 +177,9 @@ impl Default for Viewer {
     }
 }
 
-/// What the user asked for this frame, acted on after drawing so the drawing can borrow `self`.
-#[derive(Default)]
-struct Actions {
-    open: Option<String>,
-    back: bool,
-    search: bool,
-}
-
 impl App for Viewer {
     fn open(&mut self, arg: &str) {
-        if arg.is_empty() {
+        if arg.is_empty() || self.file.is_some() {
             return;
         }
         let path = if arg.starts_with('/') {
@@ -198,30 +188,25 @@ impl App for Viewer {
             format!("/{arg}")
         };
         self.file = Some(path);
-        self.from_search = false;
     }
 
     fn update(&mut self, ui: &mut Ui<'_>) {
-        let mut act = Actions::default();
         match self.file.clone() {
-            Some(path) => self.file_view(ui, &path, &mut act),
-            None => self.search_view(ui, &mut act),
-        }
-        if let Some(path) = act.open {
-            self.file = Some(path);
-            self.from_search = true;
-        }
-        if act.back || act.search {
-            self.file = None;
-            if act.search {
-                self.query.set("");
+            Some(path) => self.file_view(ui, &path),
+            None => {
+                // Picked after drawing, so the drawing can borrow `self`.
+                if let Some(path) = self.search_view(ui) {
+                    self.file = Some(path);
+                }
             }
         }
     }
 }
 
 impl Viewer {
-    fn search_view(&mut self, ui: &mut Ui<'_>, act: &mut Actions) {
+    /// The search a window opened on no file shows. Returns the file picked from it, if any.
+    fn search_view(&mut self, ui: &mut Ui<'_>) -> Option<String> {
+        let mut picked = None;
         ui.styled("Find a file", TextStyle::heading(2));
         ui.horizontal(|ui| {
             ui.label(icons::MAGNIFYING_GLASS);
@@ -234,7 +219,7 @@ impl Viewer {
                 "Type a name, or some words from inside a file, to find it anywhere you can see.",
                 TextStyle::WEAK,
             );
-            return;
+            return None;
         }
         let req = SearchReq {
             path: "/",
@@ -258,7 +243,7 @@ impl Viewer {
                         ui.push_id(&hit.path, |ui| {
                             ui.group(|ui| {
                                 if ui.selectable(false, name).clicked() {
-                                    act.open = Some(hit.path.clone());
+                                    picked = Some(hit.path.clone());
                                 }
                                 ui.tooltip(&hit.path);
                                 ui.styled(dir, TextStyle::WEAK);
@@ -277,25 +262,12 @@ impl Viewer {
                 });
             }
         }
+        picked
     }
 
-    fn file_view(&mut self, ui: &mut Ui<'_>, path: &str, act: &mut Actions) {
+    fn file_view(&mut self, ui: &mut Ui<'_>, path: &str) {
         let (dir, name) = split(path);
         ui.horizontal(|ui| {
-            if self.from_search {
-                if ui.button(&format!("{}  Back", icons::ARROW_LEFT)).clicked() {
-                    act.back = true;
-                }
-                ui.tooltip("Back to the search results");
-            } else {
-                if ui
-                    .button(&format!("{}  Search", icons::MAGNIFYING_GLASS))
-                    .clicked()
-                {
-                    act.search = true;
-                }
-                ui.tooltip("Find another file to open");
-            }
             ui.styled(name, TextStyle::STRONG);
             ui.open_url(
                 &format!("{}  Download", icons::DOWNLOAD_SIMPLE),
