@@ -984,3 +984,25 @@ fn a_long_document_in_a_scroll_region_scrolls_there_not_the_window() {
         "but the region stops at the window"
     );
 }
+
+#[test]
+fn a_disabled_scope_ignores_clicks_on_what_is_in_it() {
+    let ctx = egui::Context::default();
+    let mut r = Replayer::new();
+    let buf = encode(&[
+        Cmd::BeginScope {
+            id: 96,
+            layout: Layout::new(ScopeKind::Disabled, Align::Min),
+        },
+        Cmd::Button {
+            id: 97,
+            text: "Run",
+        },
+        Cmd::EndScope { id: 96 },
+    ]);
+    let recs = frame(&ctx, &mut r, &buf, raw_input()).unwrap();
+    let run = find(&recs, 97);
+    assert_eq!(run.flags & ResponseFlags::ENABLED, 0, "drawn disabled");
+    let recs = frame(&ctx, &mut r, &buf, click_at(centre(&run))).unwrap();
+    assert!(!find(&recs, 97).clicked());
+}

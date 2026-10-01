@@ -212,6 +212,18 @@ impl<'a> Ui<'a> {
         })
     }
 
+    /// Children that can be used only when `enabled`: otherwise the shell greys them out and
+    /// they ignore clicks and typing, so a button that would do nothing says so. The layout
+    /// and the widgets' ids are the same either way.
+    pub fn enabled<R>(&mut self, enabled: bool, add: impl FnOnce(&mut Ui<'_>) -> R) -> R {
+        let kind = if enabled {
+            ScopeKind::Group
+        } else {
+            ScopeKind::Disabled
+        };
+        self.scope(kind, Align::Min, add)
+    }
+
     /// Children indented one step, for nested lists and trees.
     pub fn indent<R>(&mut self, add: impl FnOnce(&mut Ui<'_>) -> R) -> R {
         self.scope(ScopeKind::Indent, Align::Min, add)

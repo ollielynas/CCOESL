@@ -19,12 +19,12 @@
 //! Off by default: this is test scaffolding and the SDK's budget is measured in kilobytes. Apps
 //! enable it as a dev-dependency only, so it never reaches a shipped module.
 
-use alloc::collections::BTreeMap;
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 use ccosel_abi::event::{Event, TextDelta, encode_error, encode_text_delta, event_kind};
-use ccosel_abi::{Cmd, Decoder, RespRecord, ResponseFlags, TextStyle};
+use ccosel_abi::{Cmd, Decoder, RespRecord, ResponseFlags, ScopeKind, TextStyle};
 
 /// The codes [`Harness::fail`] takes, re-exported so an app's tests need no `ccosel-abi`
 /// dependency of their own.
@@ -232,7 +232,9 @@ impl<A: App> Harness<A> {
                     .collect();
                 panic!("no link reading {text:?} in the last frame; links were {links:?}")
             });
-        self.press(id);
+        if !self.disabled_ids().contains(&id) {
+            self.press(id);
+        }
     }
 
     fn commands(&self) -> impl Iterator<Item = Cmd<'_>> {
@@ -356,9 +358,44 @@ impl<A: App> Harness<A> {
         self.buttons().iter().any(|b| b == text)
     }
 
+    /// Ids of the widgets the last frame drew inside a disabled scope ([`Ui::enabled`]).
+    fn disabled_ids(&self) -> BTreeSet<u64> {
+        let mut out = BTreeSet::new();
+        // Per open scope, whether it disables what is in it.
+        let mut stack: Vec<bool> = Vec::new();
+        for c in self.commands() {
+            match c {
+                Cmd::BeginScope { layout, .. } => stack.push(layout.kind == ScopeKind::Disabled),
+                Cmd::EndScope { .. } => {
+                    stack.pop();
+                }
+                Cmd::Button { id, .. } | Cmd::Selectable { id, .. } if stack.contains(&true) => {
+                    out.insert(id);
+                }
+                _ => {}
+            }
+        }
+        out
+    }
+
+    /// Whether the first button, or selectable row, with this label in the last frame is
+    /// greyed out. Panics if there is no such widget.
+    pub fn is_disabled(&self, text: &str) -> bool {
+        let id = self
+            .commands()
+            .find_map(|c| match c {
+                Cmd::Button { id, text: t } | Cmd::Selectable { id, text: t, .. } if t == text => {
+                    Some(id)
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no button labelled {text:?} in the last frame"));
+        self.disabled_ids().contains(&id)
+    }
+
     /// Clicks the first button, or selectable row, with this label in the last frame. The app
     /// observes it on the next [`frame`](Self::frame). Panics, listing what was drawn, if there
-    /// is no such widget.
+    /// is no such widget. A greyed-out one ignores the click, as in the shell.
     pub fn click(&mut self, text: &str) {
         let id = self
             .commands()

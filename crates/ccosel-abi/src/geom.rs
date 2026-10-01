@@ -30,6 +30,9 @@ pub enum ScopeKind {
     /// filling the rest of the window's height. The first child scope is the region, which
     /// keeps its newest (bottom) line in view; everything after it is the pinned row.
     ScrollFooter = 8,
+    /// Children drawn greyed out, ignoring clicks and typing: controls that can't be used
+    /// right now. Laid out like `Group`.
+    Disabled = 9,
 }
 
 impl ScopeKind {
@@ -44,6 +47,7 @@ impl ScopeKind {
             6 => Some(Self::Indent),
             7 => Some(Self::Scroll),
             8 => Some(Self::ScrollFooter),
+            9 => Some(Self::Disabled),
             _ => None,
         }
     }

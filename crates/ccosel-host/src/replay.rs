@@ -515,6 +515,11 @@ impl Cx<'_> {
                                         self.render(ui, cmds, closes, inner.clone())
                                     });
                             }
+                            (ScopeKind::Disabled, _) => {
+                                ui.add_enabled_ui(false, |ui| {
+                                    self.render(ui, cmds, closes, inner.clone())
+                                });
+                            }
                             (ScopeKind::Group, _) => {
                                 ui.scope(|ui| self.render(ui, cmds, closes, inner.clone()));
                             }

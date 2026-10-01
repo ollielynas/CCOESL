@@ -39,6 +39,15 @@ pub const CHECK_SQUARE: &str = "\u{E186}";
 pub const SQUARE: &str = "\u{E45E}";
 pub const CODE_BLOCK: &str = "\u{EAFE}";
 pub const QUOTES: &str = "\u{E660}";
+pub const ARROW_UP: &str = "\u{E08E}";
+pub const FILE: &str = "\u{E230}";
+pub const FILE_CODE: &str = "\u{E914}";
+pub const HOURGLASS: &str = "\u{E2B2}";
+pub const NOTE_PENCIL: &str = "\u{E34C}";
+pub const PLAY: &str = "\u{E3D0}";
+pub const CARET_UP: &str = "\u{E13C}";
+pub const CARET_DOWN: &str = "\u{E136}";
+pub const BROOM: &str = "\u{EC54}";
 
 #[cfg(test)]
 mod tests {
@@ -76,5 +85,14 @@ mod tests {
         assert_eq!(super::SQUARE, p::SQUARE);
         assert_eq!(super::CODE_BLOCK, p::CODE_BLOCK);
         assert_eq!(super::QUOTES, p::QUOTES);
+        assert_eq!(super::ARROW_UP, p::ARROW_UP);
+        assert_eq!(super::FILE, p::FILE);
+        assert_eq!(super::FILE_CODE, p::FILE_CODE);
+        assert_eq!(super::HOURGLASS, p::HOURGLASS);
+        assert_eq!(super::NOTE_PENCIL, p::NOTE_PENCIL);
+        assert_eq!(super::PLAY, p::PLAY);
+        assert_eq!(super::CARET_UP, p::CARET_UP);
+        assert_eq!(super::CARET_DOWN, p::CARET_DOWN);
+        assert_eq!(super::BROOM, p::BROOM);
     }
 }
