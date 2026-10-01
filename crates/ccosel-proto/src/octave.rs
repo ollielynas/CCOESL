@@ -40,6 +40,9 @@ pub enum OctaveInput<'a> {
     File(#[serde(borrow)] &'a str),
     /// Stop the session and start a fresh one: every variable and figure is gone.
     Restart,
+    /// Draw every figure the way Octave prints it, to PNG, for [`figure_url`]. Costs Octave a
+    /// fraction of a second a figure, so an app asks only when the figures are on screen.
+    Render,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -120,6 +123,37 @@ pub struct Figure {
     pub number: u32,
     pub name: String,
     pub axes: Vec<Axes>,
+    /// After an [`OctaveInput::Render`] job: the PNG's width and height in pixels, at
+    /// [`figure_url`] for that job. `None` otherwise, or if Octave couldn't print it.
+    pub image: Option<(u32, u32)>,
+}
+
+/// Where the PNG of figure `number`, drawn by render job `(client, seq)`, is served. Only to
+/// the user whose job it was, and only while the server remembers the job.
+pub fn figure_url(client: u32, seq: u32, number: u32) -> String {
+    // By hand rather than `format!`, which would pull the formatting machinery into every app
+    // that links this.
+    fn push(s: &mut String, mut n: u32) {
+        let mut digits = [0u8; 10];
+        let mut i = digits.len();
+        loop {
+            i -= 1;
+            digits[i] = b'0' + (n % 10) as u8;
+            n /= 10;
+            if n == 0 {
+                break;
+            }
+        }
+        s.extend(digits[i..].iter().map(|&d| char::from(d)));
+    }
+    let mut url = String::from("/octave/figure/");
+    push(&mut url, client);
+    url.push('/');
+    push(&mut url, seq);
+    url.push('/');
+    push(&mut url, number);
+    url.push_str(".png");
+    url
 }
 
 /// The session's state after a job, so one poll brings the whole UI up to date.

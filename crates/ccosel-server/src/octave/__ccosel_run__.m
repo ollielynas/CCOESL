@@ -1,7 +1,8 @@
 ## Runs one job for the CCOSEL server, then reports the session's state.
 ##
-## KIND is "code" (FILE is a script holding what the user typed) or "file" (FILE is a script
-## in the jail, run with `run` so it sees its own folder). Everything runs in the base
+## KIND is "code" (FILE is a script holding what the user typed), "file" (FILE is a script
+## in the jail, run with `run` so it sees its own folder), or "render" (FILE is a folder to
+## print every figure into, as N.png for figure N). Everything runs in the base
 ## workspace, as at a real prompt. Output is whatever the code prints; the report after it is
 ## lines starting with TAG, which the server strips out. TAG is new for every job, so nothing
 ## the code prints can pass for the report.
@@ -12,6 +13,8 @@ function __ccosel_run__ (kind, file, tag)
   try
     if (strcmp (kind, "file"))
       evalin ("base", sprintf ("run ('%s');", strrep (file, "'", "''")));
+    elseif (strcmp (kind, "render"))
+      __ccosel_render__ (file);
     else
       evalin ("base", sprintf ("source ('%s');", strrep (file, "'", "''")));
     endif
@@ -26,6 +29,18 @@ function __ccosel_run__ (kind, file, tag)
   __ccosel_figs__ (tag);
   printf ("%s DONE\n", tag);
   fflush (stdout);
+endfunction
+
+function __ccosel_render__ (dir)
+  ## One figure that won't print shouldn't cost the others theirs: the server sends what it
+  ## finds, and the app draws the line data for the rest.
+  figs = sort (get (0, "children"));
+  for f = figs(:)'
+    try
+      print (f, fullfile (dir, sprintf ("%d.png", f)), "-dpng", "-r80");
+    catch
+    end_try_catch
+  endfor
 endfunction
 
 function s = __ccosel_clean__ (s)

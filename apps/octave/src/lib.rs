@@ -20,7 +20,7 @@ use ccosel_proto::fs::{
 };
 use ccosel_proto::octave::{
     Axes, DEFAULT_LIMIT_MS, Figure, OctaveAction, OctaveControl, OctaveControlReq, OctaveInput,
-    OctavePoll, OctavePollReq, OctaveResult, OctaveRun, OctaveRunReq, OctaveStatus,
+    OctavePoll, OctavePollReq, OctaveResult, OctaveRun, OctaveRunReq, OctaveStatus, figure_url,
 };
 use ccosel_sdk::{App, CallId, Poll, Text, TextStyle, Ui, Vec2, icons};
 
@@ -58,6 +58,8 @@ pub enum Target {
     Console,
     /// Displaying one variable for the variable view: its output is not the log's business.
     Inspect(String),
+    /// Drawing the figures as images for the Figures tab. Its output is gnuplot's chatter.
+    Render,
 }
 
 /// What to run, owned, until it is sent.
@@ -66,6 +68,7 @@ enum Run {
     Code(String),
     File(String),
     Restart,
+    Render,
 }
 
 pub struct Job {
@@ -120,6 +123,10 @@ pub struct Octave {
     refresh_tree: bool,
     /// Stop and extend requests not yet answered.
     controls: Vec<CallId>,
+    /// The render job whose images the session's figures have, if they have any.
+    pub rendered: Option<u32>,
+    /// The figures changed since they were last drawn as images.
+    pub figures_stale: bool,
 }
 
 impl Default for Octave {
@@ -146,6 +153,8 @@ impl Default for Octave {
             expanded: BTreeSet::new(),
             refresh_tree: false,
             controls: Vec::new(),
+            rendered: None,
+            figures_stale: false,
         }
     }
 }
@@ -278,6 +287,7 @@ impl Octave {
             Run::Code(code) => OctaveInput::Code(code),
             Run::File(path) => OctaveInput::File(path),
             Run::Restart => OctaveInput::Restart,
+            Run::Render => OctaveInput::Render,
         };
         let call = ui.rpc().send::<OctaveRun>(&OctaveRunReq {
             client: self.client.unwrap_or(1),
@@ -351,6 +361,7 @@ impl Octave {
                     self.push_log(kind, &line);
                 }
                 Target::Inspect(_) => self.inspect_output.push(line),
+                Target::Render => {}
             }
         }
     }
@@ -366,8 +377,22 @@ impl Octave {
         if let Some(result) = &status.result {
             self.session = result.clone();
         }
-        self.job = None;
+        // A render's report is the one whose figures carry images; any other job's replaces
+        // it with figures that may have changed, so the next look at them draws them again.
+        let render = self.job.take().filter(|j| j.target == Target::Render);
+        self.rendered = render.as_ref().map(|j| j.seq);
+        self.figures_stale = render.is_none() && !self.session.figures.is_empty();
         self.refresh_tree = true;
+    }
+
+    /// Draw the figures as Octave prints them, if they are on screen and have changed since.
+    fn render(&mut self, ui: &mut Ui<'_>) {
+        if self.tab == Tab::Figures && self.figures_stale && self.job.is_none() {
+            // Cleared first, so a render that fails isn't tried again and again: the line
+            // drawings stay until the figures next change.
+            self.figures_stale = false;
+            self.start(ui, Run::Render, Target::Render);
+        }
     }
 
     fn fail(&mut self, what: &str, err: &str) {
@@ -516,6 +541,10 @@ impl Octave {
     fn running(&self, ui: &mut Ui<'_>, job: &Job, act: &mut Vec<Action>) {
         if job.stopping {
             ui.label(&label(icons::HOURGLASS, "Stopping…"));
+            return;
+        }
+        if job.target == Target::Render {
+            ui.label(&label(icons::HOURGLASS, "Drawing figures…"));
             return;
         }
         ui.label(&label(icons::HOURGLASS, "Running…"));
@@ -842,10 +871,16 @@ impl Octave {
             return;
         }
         let idle = self.job.is_none();
+        let client = self.client.unwrap_or(1);
         ui.scroll(|ui| {
             for fig in &self.session.figures {
+                // Octave's own drawing, when there is one for this figure.
+                let image = self
+                    .rendered
+                    .zip(fig.image)
+                    .map(|(seq, size)| (figure_url(client, seq, fig.number), size));
                 ui.push_id(&itoa(u64::from(fig.number)), |ui| {
-                    figure(ui, fig, idle, act)
+                    figure(ui, fig, image, idle, act)
                 });
             }
         });
@@ -1098,8 +1133,18 @@ impl Octave {
     }
 }
 
-/// One figure. Its Save PNG is a job, so it is offered only when `idle`.
-fn figure(ui: &mut Ui<'_>, fig: &Figure, idle: bool, act: &mut Vec<Action>) {
+/// The widest a figure's image is shown. Octave's default figure prints narrower than this.
+const MAX_IMAGE_WIDTH: u32 = 640;
+
+/// One figure: Octave's `image` of it (its URL and pixel size) when there is one, else its
+/// lines drawn here. Its Save PNG is a job, so it is offered only when `idle`.
+fn figure(
+    ui: &mut Ui<'_>,
+    fig: &Figure,
+    image: Option<(String, (u32, u32))>,
+    idle: bool,
+    act: &mut Vec<Action>,
+) {
     ui.group(|ui| {
         ui.horizontal(|ui| {
             let mut title = String::from("Figure ");
@@ -1116,6 +1161,15 @@ fn figure(ui: &mut Ui<'_>, fig: &Figure, idle: bool, act: &mut Vec<Action>) {
                 ui.tooltip("Save it as an image in Octave's working folder");
             });
         });
+        if let Some((url, (w, h))) = image {
+            let (w, h) = if w > MAX_IMAGE_WIDTH {
+                (MAX_IMAGE_WIDTH, h * MAX_IMAGE_WIDTH / w)
+            } else {
+                (w, h)
+            };
+            ui.image(&url, Vec2::new(w as f32, h as f32));
+            return;
+        }
         if fig.axes.is_empty() {
             ui.styled("(nothing plotted)", TextStyle::WEAK);
         }
@@ -1169,6 +1223,7 @@ impl App for Octave {
         self.load(ui);
         self.saved(ui);
         self.invalidate_tree(ui);
+        self.render(ui);
 
         if self.unavailable {
             ui.styled("Octave isn't installed on this server.", TextStyle::STRONG);

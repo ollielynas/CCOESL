@@ -94,13 +94,16 @@ them, but not save over them.
 
 ## Figures
 
-Plots, such as `plot(x, sin(x))`, appear in the **Figures** tab after the command that draws
-them. Each line is drawn as its own graph, and the lines in one plot share the same scale, so
-they still compare. The range of each axis is written above and below.
+Plots appear in the **Figures** tab, drawn by Octave itself, exactly as `print` would save
+them: line plots, bar charts, histograms, surfaces, colour bars, legends and all.
 
-Only line plots are drawn in the window. For anything else, such as bar charts or surfaces,
-press **:floppy_disk: Save PNG**: it saves the figure as `figureN.png` in the working folder, and you
-can open it from the Files app.
+Octave draws them when you open the tab, so it can take a moment, with **:hourglass: Drawing
+figures…** at the top meanwhile. Until then, and if a figure can't be drawn, its lines are shown
+as simple graphs instead, with each axis's range written above and below. After another command,
+the figures are drawn again the next time you look at them, in case it changed them.
+
+**:floppy_disk: Save PNG** saves the figure as `figureN.png` in the working folder, to keep or
+open from the Files app.
 
 `close all` removes every figure.
 

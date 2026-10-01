@@ -69,6 +69,10 @@ const MAX_FIGURES: usize = 8;
 const MAX_AXES: usize = 8;
 const MAX_SERIES: usize = 16;
 
+/// The largest figure PNG kept for the app. Octave's are tens of KB; this only stops a figure
+/// sized to the moon from sitting in memory.
+const MAX_IMAGE_BYTES: u64 = 4 * 1024 * 1024;
+
 /// Runs Octave jobs for every user of this server.
 pub struct Octave {
     /// The Octave program and its arguments, or `None` when this server has no Octave.
@@ -148,6 +152,7 @@ impl Octave {
             OctaveInput::Code(code) => Input::Code(code.to_owned()),
             OctaveInput::File(path) => Input::File(jail.authorize(path, user, Need::Read)?),
             OctaveInput::Restart => Input::Restart,
+            OctaveInput::Render => Input::Render,
         };
 
         let key = (who.clone(), req.client, req.seq);
@@ -186,6 +191,20 @@ impl Octave {
             .cloned()
             .ok_or(server_error::NOT_FOUND)?;
         Ok(job.snapshot(req.from as usize))
+    }
+
+    /// The PNG of figure `number` that render job `(client, seq)` drew, if it is the caller's
+    /// and the server still remembers it.
+    pub fn figure(
+        &self,
+        user: Option<&str>,
+        client: u32,
+        seq: u32,
+        number: u32,
+    ) -> Option<Arc<Vec<u8>>> {
+        let key = (user.unwrap_or_default().to_owned(), client, seq);
+        let job = self.jobs.lock().unwrap().get(&key).cloned()?;
+        job.images.lock().unwrap().get(&number).cloned()
     }
 
     /// Move job `(client, seq)`'s time limit, or stop it. Replies with its limit afterwards.
@@ -249,6 +268,7 @@ enum Input {
     Code(String),
     File(PathBuf),
     Restart,
+    Render,
 }
 
 struct Job {
@@ -257,6 +277,8 @@ struct Job {
     limit: Mutex<Duration>,
     /// Its user asked for it to be interrupted.
     stop: AtomicBool,
+    /// A render job's PNGs, by figure number.
+    images: Mutex<HashMap<u32, Arc<Vec<u8>>>>,
     output: Mutex<Output>,
     result: Mutex<Option<OctaveResult>>,
     finished_at: Mutex<Option<Instant>>,
@@ -274,6 +296,7 @@ impl Job {
             started: Instant::now(),
             limit: Mutex::new(limit),
             stop: AtomicBool::new(false),
+            images: Mutex::new(HashMap::new()),
             output: Mutex::new(Output::default()),
             result: Mutex::new(None),
             finished_at: Mutex::new(None),
@@ -372,6 +395,7 @@ impl Session {
             }
             Input::Code(code) => ("code", self.write_script(&code)),
             Input::File(path) => ("file", Ok(path)),
+            Input::Render => ("render", self.figures_dir()),
         };
         let script = match script {
             Ok(s) => s,
@@ -473,11 +497,43 @@ impl Session {
         }
         *self.last_used.lock().unwrap() = Instant::now();
         let mut result = parse_report(&report, jail_root);
+        if kind == "render" {
+            self.collect_images(&mut result, job);
+        }
         if stopped.is_some() {
             job.push_line("error: Stopped. Variables it set before stopping are kept.");
             result.error = true;
         }
         result
+    }
+
+    /// An empty folder for a render job to print into. Emptied each time, so it holds only the
+    /// last render: the PNGs the app is sent are read into memory as soon as it ends.
+    fn figures_dir(&self) -> std::io::Result<PathBuf> {
+        let dir = self.dir.join("figures");
+        match std::fs::remove_dir_all(&dir) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
+            _ => {}
+        }
+        std::fs::create_dir_all(&dir)?;
+        Ok(dir)
+    }
+
+    /// Read what a render job printed into the job, and give each figure that has one its size.
+    fn collect_images(&self, result: &mut OctaveResult, job: &Job) {
+        let dir = self.dir.join("figures");
+        let mut images = job.images.lock().unwrap();
+        for fig in &mut result.figures {
+            let path = dir.join(format!("{}.png", fig.number));
+            let small = std::fs::metadata(&path).is_ok_and(|m| m.len() <= MAX_IMAGE_BYTES);
+            let Some(bytes) = small.then(|| std::fs::read(&path).ok()).flatten() else {
+                continue;
+            };
+            if let Some(size) = png_size(&bytes) {
+                fig.image = Some(size);
+                images.insert(fig.number, Arc::new(bytes));
+            }
+        }
     }
 
     fn write_script(&self, code: &str) -> std::io::Result<PathBuf> {
@@ -536,6 +592,16 @@ impl Session {
             lines,
         })
     }
+}
+
+/// A PNG's width and height, from its header, or `None` if it isn't one.
+pub fn png_size(bytes: &[u8]) -> Option<(u32, u32)> {
+    const SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
+    if bytes.len() < 24 || &bytes[..8] != SIGNATURE || &bytes[12..16] != b"IHDR" {
+        return None;
+    }
+    let word = |at: usize| u32::from_be_bytes(bytes[at..at + 4].try_into().unwrap());
+    Some((word(16), word(20)))
 }
 
 /// Interrupt what Octave is running, as Ctrl-C at its prompt would. It stays running, with its
@@ -626,6 +692,7 @@ pub fn parse_report(lines: &[String], jail_root: &Path) -> OctaveResult {
                     number: next().parse().unwrap_or(0),
                     name: next(),
                     axes: Vec::new(),
+                    image: None,
                 });
             }
             "AXES" if !result.figures.is_empty() => {

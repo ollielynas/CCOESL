@@ -8,6 +8,9 @@
 # transcript is the folder it was recorded in, replaced by the one this runs in. Record the
 # transcripts again with `CCOSEL_RECORD_OCTAVE=1 cargo test -p ccosel-server --test octave`.
 #
+# A render (`__ccosel_run__("render", "<folder>", ...)`) copies `figure.png` into the folder
+# as figure 1, and reports the plot transcript's figures.
+#
 # Two fixtures do instead what real Octave would: `exit` ends the process, `hang` never answers.
 # Like real Octave, an interrupt (SIGINT) abandons the command running and reads the next one.
 here=$(dirname "$0")
@@ -16,6 +19,13 @@ while IFS= read -r line; do
   case "$line" in
     printf*)
       echo "$line" | sed 's/.*"\(@ccosel-[0-9a-f]*\)").*/\1/'
+      ;;
+    __ccosel_run__\(\"render\"*)
+      # Print every figure: here, one, as `figure.png`, and the plot transcript's report.
+      dir=$(echo "$line" | sed 's/^__ccosel_run__("render", "\(.*\)", "@ccosel-[0-9a-f]*")$/\1/')
+      tag=$(echo "$line" | sed 's/.*"\(@ccosel-[0-9a-f]*\)")$/\1/')
+      cp "$here/figure.png" "$dir/1.png"
+      sed -e "s/@TAG/$tag/g" -e "s|@CWD|$PWD|g" "$here/plot.out" | grep "$tag"
       ;;
     __ccosel_run__*)
       script=$(echo "$line" | sed 's/^__ccosel_run__("[a-z]*", "\(.*\)", "@ccosel-[0-9a-f]*")$/\1/')

@@ -63,6 +63,23 @@ async fn post_rpc(addr: SocketAddr, body: Vec<u8>) -> Vec<u8> {
     raw[split + 4..].to_vec()
 }
 
+/// Minimal HTTP/1.1 GET: the status code and the body.
+async fn get(addr: SocketAddr, path: &str) -> (u16, Vec<u8>) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let head = format!("GET {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n");
+    stream.write_all(head.as_bytes()).await.unwrap();
+    let mut raw = Vec::new();
+    stream.read_to_end(&mut raw).await.unwrap();
+    let status = std::str::from_utf8(&raw[9..12]).unwrap().parse().unwrap();
+    let split = raw
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .expect("no header terminator");
+    (status, raw[split + 4..].to_vec())
+}
+
 fn encode(reqs: &[(u32, &str)]) -> Vec<u8> {
     let args: Vec<Vec<u8>> = reqs
         .iter()
@@ -221,4 +238,55 @@ async fn runs_octave_over_http_or_says_it_cannot() {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
     panic!("the Octave job never finished");
+}
+
+#[tokio::test]
+async fn serves_a_rendered_figure_over_http_and_nothing_else() {
+    use ccosel_proto::octave::{
+        OctaveInput, OctavePollReq, OctaveRunReq, OctaveStatus, figure_url,
+    };
+
+    let (addr, _root) = spawn().await;
+    // No such job: nothing to serve, Octave or not. Nor a name that isn't a figure.
+    assert_eq!(get(addr, &figure_url(9, 7, 1)).await.0, 404);
+    assert_eq!(get(addr, "/octave/figure/9/7/passwd").await.0, 404);
+
+    let job = |seq, input| OctaveRunReq {
+        client: 9,
+        seq,
+        input,
+    };
+    let finish = |seq| async move {
+        let poll = OctavePollReq {
+            client: 9,
+            seq,
+            from: 0,
+        };
+        for _ in 0..600 {
+            let status: OctaveStatus =
+                postcard::from_bytes(&call(addr, Method::OctavePoll, &poll).await.unwrap())
+                    .unwrap();
+            if let Some(result) = status.result {
+                return result;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        panic!("the Octave job never finished");
+    };
+    let plot = job(1, OctaveInput::Code("plot(1:10);"));
+    let started: bool =
+        postcard::from_bytes(&call(addr, Method::OctaveRun, &plot).await.unwrap()).unwrap();
+    if !started {
+        eprintln!("octave-cli is not installed; skipped the render");
+        return;
+    }
+    finish(1).await;
+    call(addr, Method::OctaveRun, &job(2, OctaveInput::Render))
+        .await
+        .unwrap();
+    let result = finish(2).await;
+    assert!(result.figures[0].image.is_some());
+    let (status, body) = get(addr, &figure_url(9, 2, 1)).await;
+    assert_eq!(status, 200);
+    assert_eq!(&body[..4], b"\x89PNG");
 }

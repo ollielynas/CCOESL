@@ -369,6 +369,7 @@ fn waves() -> Figure {
                 series: vec![],
             },
         ],
+        image: None,
     }
 }
 
@@ -383,6 +384,7 @@ fn figures_are_drawn_and_can_be_saved() {
                 number: 3,
                 name: String::new(),
                 axes: vec![],
+                image: None,
             },
         ],
     );
@@ -824,4 +826,105 @@ fn a_stop_that_fails_is_reported_and_can_be_tried_again() {
             .any(|(t, _)| t.starts_with("error: could not change the running job: "))
     );
     assert!(h.has_button(&label(icons::STOP, "Stop")));
+}
+
+/// A session with the `waves` figure, as a plot command leaves it, and the Figures tab open.
+fn plotted() -> Harness<Octave> {
+    let mut h = running("plot(sin(0:0.1:6))");
+    h.reply::<OctavePoll>(&done("", session(vec![], vec![waves()])));
+    h.frame();
+    assert!(h.app.figures_stale);
+    // Not drawn as an image until someone looks.
+    assert!(h.app.job.is_none());
+    h.click("Figures (1)");
+    // One frame for the app to see the click, one to notice the tab needs drawing.
+    h.frame();
+    h.frame();
+    h
+}
+
+fn rendered(size: (u32, u32)) -> OctaveResult {
+    let mut fig = waves();
+    fig.image = Some(size);
+    session(vec![], vec![fig])
+}
+
+#[test]
+fn figures_on_screen_are_drawn_by_octave() {
+    let mut h = plotted();
+    let job = h.app.job.as_ref().expect("a render started");
+    assert_eq!(job.target, Target::Render);
+    assert_eq!(job.seq, 2);
+    h.frame();
+    assert!(h.has_label(&label(icons::HOURGLASS, "Drawing figures…")));
+    // Until it arrives, the lines are drawn here.
+    assert_eq!(h.plots().len(), 1);
+
+    h.reply::<OctaveRun>(&true);
+    h.frame();
+    h.reply::<OctavePoll>(&done("gnuplot chatter\n", rendered((464, 349))));
+    h.frame();
+    h.frame();
+    assert_eq!(
+        h.images(),
+        [(
+            "/octave/figure/1/2/2.png".to_owned(),
+            Vec2::new(464.0, 349.0)
+        )]
+    );
+    assert!(h.plots().is_empty());
+    // What the render printed isn't the command window's business.
+    assert!(!h.app.log.iter().any(|(_, l)| l.contains("gnuplot")));
+    // And it isn't drawn again while nothing changes.
+    assert!(h.app.job.is_none());
+}
+
+#[test]
+fn a_wide_figure_is_shown_scaled_down() {
+    let mut h = plotted();
+    h.reply::<OctaveRun>(&true);
+    h.frame();
+    h.reply::<OctavePoll>(&done("", rendered((1280, 960))));
+    h.frame();
+    h.frame();
+    assert_eq!(h.images()[0].1, Vec2::new(640.0, 480.0));
+}
+
+#[test]
+fn a_render_that_fails_is_not_tried_again_until_the_figures_change() {
+    let mut h = plotted();
+    h.fail::<OctaveRun>(rpc_error::SERVER);
+    h.frame();
+    h.frame();
+    h.frame();
+    assert!(h.app.job.is_none());
+    assert_eq!(h.outstanding::<OctaveRun>(), 0);
+    assert_eq!(h.plots().len(), 1, "the lines are still drawn");
+}
+
+#[test]
+fn figures_are_drawn_again_after_another_command() {
+    let mut h = plotted();
+    h.reply::<OctaveRun>(&true);
+    h.frame();
+    h.reply::<OctavePoll>(&done("", rendered((464, 349))));
+    h.frame();
+    assert_eq!(h.app.rendered, Some(2));
+
+    // A command from the history may have changed them.
+    h.click(icons::PLAY);
+    h.frame();
+    h.reply::<OctaveRun>(&true);
+    h.frame();
+    h.reply::<OctavePoll>(&done("", session(vec![], vec![waves()])));
+    h.frame();
+    assert_eq!(h.app.rendered, None);
+    // Running it moved to the command window; nothing is drawn until the figures are back.
+    assert_eq!(h.app.tab, Tab::Command);
+    assert!(h.app.job.is_none());
+    h.click("Figures (1)");
+    h.frame();
+    h.frame();
+    let job = h.app.job.as_ref().expect("drawn again");
+    assert_eq!((job.target.clone(), job.seq), (Target::Render, 4));
 }

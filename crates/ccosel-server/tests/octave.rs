@@ -535,3 +535,74 @@ fn real_octave_stops_a_job_and_keeps_its_variables() {
     let status = wait(&octave, None, 2);
     assert!(status.output.contains("c = 6"), "{}", status.output);
 }
+
+#[test]
+fn a_render_job_draws_each_figure_for_its_own_user_only() {
+    let (jail, support) = setup("render");
+    let octave = mock(support, Duration::from_secs(20));
+    run(&octave, &jail, None, 1, OctaveInput::Code(&fixture("plot")));
+    let plotted = wait(&octave, None, 1).result.unwrap();
+    // An ordinary job draws nothing.
+    assert_eq!(plotted.figures[0].image, None);
+    assert!(octave.figure(None, 1, 1, 1).is_none());
+
+    run(&octave, &jail, None, 2, OctaveInput::Render);
+    let result = wait(&octave, None, 2).result.unwrap();
+    assert!(!result.error);
+    assert_eq!(result.figures[0].image, Some((4, 3)));
+    let png = octave.figure(None, 1, 2, 1).expect("figure 1 was drawn");
+    assert_eq!(*png, fs::read(fixtures().join("figure.png")).unwrap());
+
+    // Not another figure, not another job, not another user.
+    assert!(octave.figure(None, 1, 2, 2).is_none());
+    assert!(octave.figure(None, 2, 2, 1).is_none());
+    assert!(octave.figure(Some("mallory"), 1, 2, 1).is_none());
+}
+
+#[test]
+fn a_png_is_sized_from_its_header() {
+    use ccosel_server::octave_api::png_size;
+    let png = fs::read(fixtures().join("figure.png")).unwrap();
+    assert_eq!(png_size(&png), Some((4, 3)));
+    assert_eq!(png_size(b"GIF89a, not a PNG at all"), None);
+    assert_eq!(png_size(&png[..20]), None);
+}
+
+#[test]
+fn figure_urls_name_the_job_and_figure() {
+    use ccosel_proto::octave::figure_url;
+    assert_eq!(figure_url(9, 2, 1), "/octave/figure/9/2/1.png");
+    assert_eq!(
+        figure_url(u32::MAX, 0, 10),
+        "/octave/figure/4294967295/0/10.png"
+    );
+}
+
+/// Real Octave, when this machine has it: what the Figures tab shows is Octave's own print of
+/// the figure, including what line data can't carry, such as a surface and its colour bar.
+#[test]
+fn real_octave_renders_a_surface() {
+    let (jail, support) = setup("real-render");
+    let octave = Octave::detect(support);
+    if !octave.available() {
+        eprintln!("octave-cli is not installed; skipped");
+        return;
+    }
+    run(
+        &octave,
+        &jail,
+        None,
+        1,
+        OctaveInput::Code("[X, Y] = meshgrid(-3:0.25:3); surf(X, Y, peaks(X, Y)); colorbar;"),
+    );
+    let status = wait(&octave, None, 1);
+    assert!(!status.result.unwrap().error, "{}", status.output);
+    run(&octave, &jail, None, 2, OctaveInput::Render);
+    let status = wait(&octave, None, 2);
+    let result = status.result.unwrap();
+    assert!(!result.error, "{}", status.output);
+    let (w, h) = result.figures[0].image.expect("figure 1 was drawn");
+    assert!(w > 100 && h > 100, "{w}x{h}");
+    let png = octave.figure(None, 1, 2, 1).unwrap();
+    assert_eq!(ccosel_server::octave_api::png_size(&png), Some((w, h)));
+}

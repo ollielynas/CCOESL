@@ -104,6 +104,7 @@ pub fn app(jail: Jail, web_dir: PathBuf, auth: AuthState) -> Router {
             post(upload_api::upload).layer(DefaultBodyLimit::max(upload_api::MAX_UPLOAD_BYTES)),
         )
         .route("/files/{*path}", get(download))
+        .route("/octave/figure/{client}/{seq}/{file}", get(octave_figure))
         .route("/scratch", post(new_scratch))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
@@ -159,6 +160,33 @@ async fn download(
         bytes,
     )
         .into_response()
+}
+
+/// `GET /octave/figure/{client}/{seq}/{n}.png`: figure `n` as Octave's render job
+/// `(client, seq)` printed it (see `ccosel_proto::octave::figure_url`). Only the job's own user
+/// gets it: the job is looked up under the caller's name, as `OctavePoll` does.
+async fn octave_figure(
+    State(state): State<AppState>,
+    user: Option<Extension<User>>,
+    AxPath((client, seq, file)): AxPath<(u32, u32, String)>,
+) -> Response {
+    let user = caller(user.as_ref().map(|u| &u.0));
+    let number = file.strip_suffix(".png");
+    let Some(number) = number.and_then(|n| n.parse().ok()) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    match state.octave.figure(user, client, seq, number) {
+        Some(png) => (
+            [
+                (header::CONTENT_TYPE, "image/png"),
+                // A render job's URL never shows anything else, so the browser may keep it.
+                (header::CACHE_CONTROL, "private, max-age=3600, immutable"),
+            ],
+            png.as_ref().clone(),
+        )
+            .into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
 }
 
 /// `POST /scratch`: a new temporary project folder. Answers with its id as decimal text; the
