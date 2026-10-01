@@ -18,7 +18,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use axum::extract::{DefaultBodyLimit, Path as AxPath, State};
+use axum::extract::{DefaultBodyLimit, Path as AxPath, Query, State};
 use axum::http::{StatusCode, header};
 use axum::middleware;
 use axum::response::{IntoResponse, Response};
@@ -130,36 +130,97 @@ pub fn app(jail: Jail, web_dir: PathBuf, auth: AuthState) -> Router {
 /// describes for other assets, which needs `ccosel-cas` to exist first. It discloses no more
 /// than `ListDir` already does: anything under the jail is already fair game to enumerate, this
 /// just answers "and can I have the bytes." — under the same permissions (see `access`).
+///
+/// A download by default. With `?inline=1`, a picture, recording or PDF comes with its own type
+/// instead, for the page to show it (the Viewer app). Either way it supports `Range`, which a
+/// browser needs to seek in audio and video, and is streamed rather than read into memory.
 async fn download(
     State(state): State<AppState>,
     user: Option<Extension<User>>,
     AxPath(path): AxPath<String>,
+    Query(params): Query<DownloadParams>,
+    req: axum::extract::Request,
 ) -> Response {
     state.scratch.touch(&path);
     let user = caller(user.as_ref().map(|u| &u.0));
     let Ok(real) = state.jail.authorize(&path, user, Need::Read) else {
         return StatusCode::FORBIDDEN.into_response();
     };
-    let Ok(bytes) = tokio::fs::read(&real).await else {
+    if !real.is_file() {
         return StatusCode::NOT_FOUND.into_response();
-    };
+    }
     let filename = real
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("download")
-        .replace('"', "_");
+        .replace(['"', '\\', '\r', '\n'], "_");
+    let shown = params
+        .inline
+        .is_some()
+        .then(|| inline_type(&real))
+        .flatten();
 
-    (
-        [
-            (header::CONTENT_TYPE, "application/octet-stream".to_owned()),
-            (
-                header::CONTENT_DISPOSITION,
-                format!("attachment; filename=\"{filename}\""),
-            ),
-        ],
-        bytes,
-    )
-        .into_response()
+    let mut resp = match ServeFile::new(&real).try_call(req).await {
+        Ok(resp) => resp.map(axum::body::Body::new),
+        Err(_) => return StatusCode::NOT_FOUND.into_response(),
+    };
+    let (kind, disposition) = match shown {
+        Some(kind) => (kind, "inline"),
+        None => ("application/octet-stream", "attachment"),
+    };
+    let headers = resp.headers_mut();
+    // Only ever the type chosen here. A browser that sniffed an uploaded file into HTML would run
+    // its scripts as this site, with the signed-in person's session.
+    headers.insert(header::CONTENT_TYPE, header::HeaderValue::from_static(kind));
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        header::HeaderValue::from_static("nosniff"),
+    );
+    if let Ok(v) = format!("{disposition}; filename=\"{filename}\"").parse() {
+        headers.insert(header::CONTENT_DISPOSITION, v);
+    }
+    resp
+}
+
+#[derive(serde::Deserialize)]
+struct DownloadParams {
+    /// Present (any value) to show the file in the page rather than download it.
+    inline: Option<String>,
+}
+
+/// The type a file is shown in the page with, for the kinds a browser can show and that can't
+/// run script: pictures, audio, video and PDF. Anything else (HTML and SVG included, which can)
+/// is only ever a download.
+fn inline_type(path: &std::path::Path) -> Option<&'static str> {
+    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+    Some(match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "avif" => "image/avif",
+        "bmp" => "image/bmp",
+        "ico" => "image/x-icon",
+        "heic" => "image/heic",
+        "heif" => "image/heif",
+        "tif" | "tiff" => "image/tiff",
+        "mp4" | "m4v" => "video/mp4",
+        "webm" => "video/webm",
+        "mov" => "video/quicktime",
+        "ogv" => "video/ogg",
+        "mkv" => "video/x-matroska",
+        "mp3" => "audio/mpeg",
+        "m4a" => "audio/mp4",
+        "aac" => "audio/aac",
+        "wav" => "audio/wav",
+        "ogg" | "oga" => "audio/ogg",
+        "opus" => "audio/opus",
+        "flac" => "audio/flac",
+        "caf" => "audio/x-caf",
+        "aif" | "aiff" => "audio/aiff",
+        "pdf" => "application/pdf",
+        _ => return None,
+    })
 }
 
 /// `POST /scratch`: a new temporary project folder. Answers with its id as decimal text; the
