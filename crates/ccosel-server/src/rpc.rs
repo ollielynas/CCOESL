@@ -9,7 +9,7 @@ use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use ccosel_proto::account::Account;
+use ccosel_proto::account::{Account, CreateAppPasswordReq, RevokeAppPasswordReq};
 use ccosel_proto::build::CompileReq;
 use ccosel_proto::fs::{ListDirReq, PathReq, SearchReq, WriteFileReq};
 use ccosel_proto::info::ServerInfoReply;
@@ -144,6 +144,23 @@ async fn dispatch(
         Method::CreateDir => run::<PathReq, _>(req, |a| (jail.create_dir(a.path, user), a.path)),
         Method::Access => run::<PathReq, _>(req, |a| (jail.access(a.path, user), a.path)),
         Method::Search => run::<SearchReq, _>(req, |a| (jail.search(&a, user), a.path)),
+        // App passwords belong to whoever is signed in; anonymous callers have none to manage.
+        Method::ListAppPasswords => match user {
+            Some(name) => encode(&state.auth.app_passwords.list(name)),
+            None => Outcome::Err(server_error::DENIED, String::new()),
+        },
+        Method::CreateAppPassword => run::<CreateAppPasswordReq, _>(req, |a| {
+            let made = user
+                .ok_or(server_error::DENIED)
+                .and_then(|name| state.auth.app_passwords.create(name, a.name));
+            (made, "")
+        }),
+        Method::RevokeAppPassword => run::<RevokeAppPasswordReq, _>(req, |a| {
+            let revoked = user
+                .ok_or(server_error::DENIED)
+                .and_then(|name| state.auth.app_passwords.revoke(name, a.id));
+            (revoked, "")
+        }),
     }
 }
 

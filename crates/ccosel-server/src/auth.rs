@@ -31,6 +31,7 @@ use rand::distributions::Alphanumeric;
 use serde::{Deserialize, Serialize};
 
 use crate::AppState;
+use crate::app_passwords::{AppPasswords, Throttle};
 
 /// A login has this long to complete (land on `/auth/callback` with a valid `state`) before the
 /// `state` token is forgotten and the attempt has to restart.
@@ -142,6 +143,10 @@ pub struct AuthState {
     http: reqwest::Client,
     pending_logins: Arc<Mutex<HashMap<String, Instant>>>,
     sessions: Arc<Mutex<HashMap<String, Session>>>,
+    /// What WebDAV clients sign in with. See [`crate::app_passwords`].
+    pub(crate) app_passwords: Arc<AppPasswords>,
+    /// Failed WebDAV sign-ins, per login and per client address.
+    pub(crate) throttle: Arc<Throttle>,
 }
 
 impl Default for AuthState {
@@ -159,7 +164,20 @@ impl AuthState {
             http: reqwest::Client::new(),
             pending_logins: Arc::new(Mutex::new(HashMap::new())),
             sessions: Arc::new(Mutex::new(HashMap::new())),
+            app_passwords: Arc::new(AppPasswords::in_memory()),
+            throttle: Arc::new(Throttle::default()),
         }
+    }
+
+    /// Keep app passwords in `store` rather than in memory, where a restart forgets them.
+    pub fn with_app_passwords(mut self, store: AppPasswords) -> Self {
+        self.app_passwords = Arc::new(store);
+        self
+    }
+
+    /// The app password store, for making one outside an RPC (tests, embedding).
+    pub fn app_passwords(&self) -> &AppPasswords {
+        &self.app_passwords
     }
 
     /// Where browsers reach this server, when that isn't simply `http://{Host}`: behind an

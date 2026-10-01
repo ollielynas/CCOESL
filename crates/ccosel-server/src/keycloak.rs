@@ -171,23 +171,37 @@ pub async fn provision(public_url: Option<&str>, port: u16) -> anyhow::Result<()
 /// Where the admin password is kept: once per user, like the Docker volume it unlocks, so every
 /// checkout on this machine uses the same one.
 pub fn admin_password_file() -> PathBuf {
-    password_file_in(|name| {
-        std::env::var_os(name)
-            .filter(|v| !v.is_empty())
-            .map(PathBuf::from)
-    })
+    password_file_in(env_var)
 }
 
-/// [`admin_password_file`], with the environment passed in so it can be tested. Without any of
-/// the usual variables (a bare service account) it falls back to the working directory.
-fn password_file_in(var: impl Fn(&str) -> Option<PathBuf>) -> PathBuf {
+/// This server's own data folder (`~/.local/share/ccosel`, `%APPDATA%\ccosel`, or
+/// `$XDG_DATA_HOME/ccosel`), outside any checkout and outside the jail. `None` without any of
+/// the usual variables (a bare service account).
+pub fn data_dir() -> Option<PathBuf> {
+    data_dir_in(env_var)
+}
+
+fn env_var(name: &str) -> Option<PathBuf> {
+    std::env::var_os(name)
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+}
+
+/// [`data_dir`], with the environment passed in so it can be tested.
+fn data_dir_in(var: impl Fn(&str) -> Option<PathBuf>) -> Option<PathBuf> {
     let data = if cfg!(windows) {
         var("APPDATA")
     } else {
         var("XDG_DATA_HOME").or_else(|| var("HOME").map(|home| home.join(".local/share")))
     };
-    match data {
-        Some(dir) => dir.join("ccosel").join("keycloak-admin-password"),
+    data.map(|dir| dir.join("ccosel"))
+}
+
+/// [`admin_password_file`], with the environment passed in so it can be tested. Without a
+/// [`data_dir`] it falls back to the working directory.
+fn password_file_in(var: impl Fn(&str) -> Option<PathBuf>) -> PathBuf {
+    match data_dir_in(var) {
+        Some(dir) => dir.join("keycloak-admin-password"),
         None => PathBuf::from(LEGACY_PASSWORD_FILE),
     }
 }
