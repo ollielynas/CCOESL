@@ -123,11 +123,13 @@ impl Encoder {
                 self.u8(OpCode::EndWindow as u8);
                 self.u64(id);
             }
-            Cmd::TextEditSingle { id, version, set } | Cmd::TextEditMulti { id, version, set } => {
-                self.u8(if matches!(cmd, Cmd::TextEditMulti { .. }) {
-                    OpCode::TextEditMulti as u8
-                } else {
-                    OpCode::TextEditSingle as u8
+            Cmd::TextEditSingle { id, version, set }
+            | Cmd::TextEditMulti { id, version, set }
+            | Cmd::TextView { id, version, set } => {
+                self.u8(match cmd {
+                    Cmd::TextEditMulti { .. } => OpCode::TextEditMulti as u8,
+                    Cmd::TextView { .. } => OpCode::TextView as u8,
+                    _ => OpCode::TextEditSingle as u8,
                 });
                 self.u64(id);
                 self.u32(version);
@@ -186,6 +188,37 @@ impl Encoder {
                 self.u64(id);
                 self.str(text);
                 self.u8(u8::from(selected));
+            }
+            Cmd::OpenApp {
+                id,
+                label,
+                app,
+                arg,
+            } => {
+                self.u8(OpCode::OpenApp as u8);
+                self.u64(id);
+                self.str(label);
+                self.str(app);
+                self.str(arg);
+            }
+            Cmd::CopyLink { id, label, path } => {
+                self.u8(OpCode::CopyLink as u8);
+                self.u64(id);
+                self.str(label);
+                self.str(path);
+            }
+            Cmd::Media {
+                id,
+                src,
+                kind,
+                size,
+            } => {
+                self.u8(OpCode::Media as u8);
+                self.u64(id);
+                self.str(src);
+                self.u8(kind as u8);
+                self.f32(size.x);
+                self.f32(size.y);
             }
         }
     }

@@ -104,7 +104,9 @@ impl<A: App> Runtime<A> {
         // replies would leave slots in flight forever, and the app has no way to recover.
         if let Ok(events) = ccosel_abi::event::decode_batch(bytes) {
             for event in &events {
-                deliver(&self.rpc, &mut self.rec, event);
+                if let Some(arg) = deliver(&self.rpc, &mut self.rec, event) {
+                    self.app.open(arg);
+                }
             }
         }
     }
@@ -124,16 +126,26 @@ impl<A: App> Runtime<A> {
 }
 
 /// Route one event from the shell: RPC replies to the request cache, text edits to the
-/// recorder, which applies them when the app draws the field. Shared with the test harness,
-/// so tests exercise the same routing as a real module.
-pub(crate) fn deliver(rpc: &RpcCtx, rec: &mut Recorder, event: &ccosel_abi::Event<'_>) {
-    if event.kind == ccosel_abi::event::event_kind::TEXT_DELTA {
-        if let Some(delta) = ccosel_abi::event::decode_text_delta(event.payload) {
-            rec.queue_text_delta(&delta);
+/// recorder, which applies them when the app draws the field. A launch argument is returned,
+/// for the caller to hand to [`App::open`]. Shared with the test harness, so tests exercise the
+/// same routing as a real module.
+pub(crate) fn deliver<'e>(
+    rpc: &RpcCtx,
+    rec: &mut Recorder,
+    event: &ccosel_abi::Event<'e>,
+) -> Option<&'e str> {
+    use ccosel_abi::event::event_kind;
+    match event.kind {
+        event_kind::TEXT_DELTA => {
+            if let Some(delta) = ccosel_abi::event::decode_text_delta(event.payload) {
+                rec.queue_text_delta(&delta);
+            }
         }
-    } else {
-        rpc.deliver(event);
+        // Not UTF-8 is not a path anyone could have meant: open on nothing instead.
+        event_kind::LAUNCH => return core::str::from_utf8(event.payload).ok(),
+        _ => rpc.deliver(event),
     }
+    None
 }
 
 /// A single-threaded cell for the module's global app instance.

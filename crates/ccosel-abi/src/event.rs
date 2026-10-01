@@ -49,6 +49,10 @@ pub mod event_kind {
     pub const TEXT_DELTA: u32 = 3;
     /// Reserved: sent after `ccosel_restore_state`, before the first frame.
     pub const RESTORED: u32 = 4;
+    /// What the app was opened with: `call_id` is zero and the payload is UTF-8, such as a file
+    /// path for the Viewer. Sent at most once, before the first frame, and only when the app was
+    /// opened on something.
+    pub const LAUNCH: u32 = 5;
 }
 
 /// Why a call failed.
