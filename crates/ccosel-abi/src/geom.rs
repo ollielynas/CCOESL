@@ -26,6 +26,10 @@ pub enum ScopeKind {
     /// A region that scrolls on its own, filling the rest of the window's height. Two side by
     /// side (a sidebar and a page) scroll independently.
     Scroll = 7,
+    /// A terminal's layout: a scrolling region over a row pinned to the bottom, together
+    /// filling the rest of the window's height. The first child scope is the region, which
+    /// keeps its newest (bottom) line in view; everything after it is the pinned row.
+    ScrollFooter = 8,
 }
 
 impl ScopeKind {
@@ -39,6 +43,7 @@ impl ScopeKind {
             5 => Some(Self::Sidebar),
             6 => Some(Self::Indent),
             7 => Some(Self::Scroll),
+            8 => Some(Self::ScrollFooter),
             _ => None,
         }
     }

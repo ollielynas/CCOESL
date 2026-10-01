@@ -176,6 +176,26 @@ impl<A: App> Harness<A> {
         );
     }
 
+    /// Plays the user pressing Enter in the `index`th text field of the last frame, as
+    /// [`type_text`](Self::type_text) counts them. The app sees [`Response::submitted`] on the
+    /// next [`frame`](Self::frame).
+    ///
+    /// [`Response::submitted`]: crate::Response::submitted
+    pub fn press_enter(&mut self, index: usize) {
+        let ids = self.text_field_ids();
+        let id = *ids.get(index).unwrap_or_else(|| {
+            panic!(
+                "no text field {index} in the last frame; there were {}",
+                ids.len()
+            )
+        });
+        self.clicks.push(RespRecord {
+            local_id: id,
+            flags: ResponseFlags::SUBMITTED | ResponseFlags::LOST_FOCUS | ResponseFlags::ENABLED,
+            ..Default::default()
+        });
+    }
+
     /// Every styled run drawn in the last frame, in order.
     pub fn styled(&self) -> Vec<(String, TextStyle)> {
         self.commands()

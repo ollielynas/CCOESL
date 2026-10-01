@@ -117,6 +117,8 @@ impl ResponseFlags {
     pub const HAS_FOCUS: u32 = 1 << 12;
     pub const GAINED_FOCUS: u32 = 1 << 13;
     pub const LOST_FOCUS: u32 = 1 << 14;
+    /// Not egui's: a single-line text field was left by pressing Enter, as when submitting it.
+    pub const SUBMITTED: u32 = 1 << 15;
 }
 
 impl RespRecord {

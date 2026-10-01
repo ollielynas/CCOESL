@@ -43,6 +43,11 @@ impl Response {
         self.rec.dragged()
     }
 
+    /// A single-line text field was left by pressing Enter: the user means "run this".
+    pub fn submitted(&self) -> bool {
+        self.rec.flags & ccosel_abi::ResponseFlags::SUBMITTED != 0
+    }
+
     pub fn has_focus(&self) -> bool {
         self.rec.flags & ccosel_abi::ResponseFlags::HAS_FOCUS != 0
     }

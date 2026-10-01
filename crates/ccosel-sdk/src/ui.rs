@@ -194,6 +194,24 @@ impl<'a> Ui<'a> {
         self.scope(ScopeKind::Scroll, Align::Min, add)
     }
 
+    /// A terminal: `body` scrolls, and `footer` is a row pinned below it, such as a prompt.
+    /// Together they take the rest of the window's height, so the footer stays in view however
+    /// long the body grows. The body keeps its newest (bottom) line in view as lines arrive,
+    /// unless the user has scrolled up to read back.
+    ///
+    /// A single-line field in the footer keeps the keyboard focus when Enter is pressed in it,
+    /// so commands can be typed one after another. See [`Response::submitted`].
+    pub fn scroll_with_footer<R>(
+        &mut self,
+        body: impl FnOnce(&mut Ui<'_>),
+        footer: impl FnOnce(&mut Ui<'_>) -> R,
+    ) -> R {
+        self.scope(ScopeKind::ScrollFooter, Align::Min, |ui| {
+            ui.vertical(body);
+            ui.horizontal(footer)
+        })
+    }
+
     /// Children indented one step, for nested lists and trees.
     pub fn indent<R>(&mut self, add: impl FnOnce(&mut Ui<'_>) -> R) -> R {
         self.scope(ScopeKind::Indent, Align::Min, add)

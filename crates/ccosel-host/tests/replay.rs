@@ -840,3 +840,106 @@ fn a_selectable_at_rest_has_an_invisible_outline_and_a_visible_one_when_hovered(
     assert_eq!(rect_of(&find(&recs, 21)), rect, "same size when hovered");
     assert_eq!(outline(&shapes, rect).expect("framed").color, INK);
 }
+
+/// A `ScrollFooter` holding `lines` labels, ids from 1000, over a prompt field, id 95.
+fn console(lines: &[String]) -> Vec<u8> {
+    let mut cmds = vec![
+        Cmd::BeginScope {
+            id: 90,
+            layout: Layout::new(ScopeKind::ScrollFooter, Align::Min),
+        },
+        Cmd::BeginScope {
+            id: 91,
+            layout: Layout::new(ScopeKind::Vertical, Align::Min),
+        },
+    ];
+    for (i, text) in lines.iter().enumerate() {
+        cmds.push(Cmd::Label {
+            id: 1000 + i as u64,
+            text,
+        });
+    }
+    cmds.extend([
+        Cmd::EndScope { id: 91 },
+        Cmd::BeginScope {
+            id: 92,
+            layout: Layout::new(ScopeKind::Horizontal, Align::Center),
+        },
+        Cmd::TextEditSingle {
+            id: 95,
+            version: 1,
+            set: None,
+        },
+        Cmd::EndScope { id: 92 },
+        Cmd::EndScope { id: 90 },
+    ]);
+    encode(&cmds)
+}
+
+#[test]
+fn a_scroll_footer_pins_its_row_to_the_bottom_of_the_window() {
+    let ctx = egui::Context::default();
+    let mut r = Replayer::new();
+    let mut run = |lines: &[String]| {
+        let buf = console(lines);
+        let mut out = Vec::new();
+        // Inside a window-sized scroll area, as the shell draws every app.
+        let mut full = ctx.run_ui(raw_input(), |ui| {
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| out = r.replay(ui, APP, &buf).unwrap());
+        });
+        full.textures_delta.clear();
+        out
+    };
+
+    // Two lines: the prompt still sits at the bottom of the window, not under them.
+    let few: Vec<String> = (0..2).map(|i| format!("line {i}")).collect();
+    let out = run(&few);
+    let prompt = find(&out, 95);
+    assert!(prompt.rect[3] > 550.0, "at the bottom: {:?}", prompt.rect);
+    assert!(prompt.rect[3] <= 600.0, "on screen: {:?}", prompt.rect);
+
+    // Two hundred lines run far past the window, and the prompt stays on screen below them.
+    let many: Vec<String> = (0..200).map(|i| format!("line {i}")).collect();
+    let out = run(&many);
+    let prompt = find(&out, 95);
+    assert!(
+        prompt.rect[3] <= 600.0,
+        "still on screen: {:?}",
+        prompt.rect
+    );
+    assert!(
+        find(&out, 1000).rect[1] < prompt.rect[1],
+        "the lines are above it"
+    );
+}
+
+#[test]
+fn enter_in_a_footer_field_submits_it_and_keeps_the_focus() {
+    let ctx = egui::Context::default();
+    let mut r = Replayer::new();
+    let buf = console(&[]);
+    let recs = frame(&ctx, &mut r, &buf, raw_input()).unwrap();
+    let at = centre(&find(&recs, 95));
+    frame(&ctx, &mut r, &buf, click_at(at)).unwrap();
+    let recs = frame(&ctx, &mut r, &buf, typing("x = 1")).unwrap();
+    assert_eq!(find(&recs, 95).flags & ResponseFlags::SUBMITTED, 0);
+
+    let enter = egui::RawInput {
+        events: vec![egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }],
+        ..raw_input()
+    };
+    let recs = frame(&ctx, &mut r, &buf, enter).unwrap();
+    assert_ne!(find(&recs, 95).flags & ResponseFlags::SUBMITTED, 0);
+    // Still the place to type the next command.
+    let recs = frame(&ctx, &mut r, &buf, typing("y")).unwrap();
+    assert_ne!(find(&recs, 95).flags & ResponseFlags::HAS_FOCUS, 0);
+    assert_eq!(r.text(95).unwrap().0, "x = 1y");
+}

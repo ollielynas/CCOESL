@@ -188,6 +188,7 @@ impl Replayer {
             tooltips: &tooltips,
             out: &mut out,
             text: &mut self.text,
+            in_footer: false,
         };
         cx.render(ui, &cmds, &closes, 0..cmds.len());
 
@@ -273,6 +274,8 @@ struct Cx<'a> {
     tooltips: &'a HashMap<u64, &'a str>,
     out: &'a mut Vec<RespRecord>,
     text: &'a mut HashMap<u64, TextState>,
+    /// Inside a `ScrollFooter`'s pinned row, where a field keeps the focus after Enter.
+    in_footer: bool,
 }
 
 impl Cx<'_> {
@@ -321,10 +324,21 @@ impl Cx<'_> {
         if r.changed() {
             state.version = state.version.wrapping_add(1);
         }
+        // egui leaves a single-line field when Enter is pressed in it; that is the user
+        // submitting it, which a guest can't tell from clicking elsewhere without this.
+        let submitted =
+            !multiline && r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        if submitted && self.in_footer {
+            // A prompt: stay in it for the next command.
+            r.request_focus();
+        }
         // `aux` carries the committed version so the guest can tell whether the shell holds
         // newer text than it does.
         let mut rec = to_record(id, &r);
         rec.aux = state.version;
+        if submitted {
+            rec.flags |= ResponseFlags::SUBMITTED;
+        }
         if let Some(tip) = self.tooltips.get(&id) {
             r.on_hover_text(*tip);
         }
@@ -534,6 +548,57 @@ impl Cx<'_> {
                                             self.render(ui, cmds, closes, inner.clone())
                                         })
                                     });
+                            }
+                            (ScopeKind::ScrollFooter, _) => {
+                                // The first child scope scrolls; the rest is the pinned row.
+                                let body_end = match cmds.get(inner.start) {
+                                    Some(Cmd::BeginScope { .. }) if inner.start < end => {
+                                        closes[inner.start] + 1
+                                    }
+                                    _ => inner.start,
+                                };
+                                let body = inner.start..body_end;
+                                let footer = body_end..end;
+                                // Bounded like `Scroll`, so the row below stays on screen.
+                                let visible = ui.clip_rect().bottom() - ui.cursor().top();
+                                let height = (visible - ui.spacing().item_spacing.y).max(120.0);
+                                let size = egui::vec2(ui.available_width(), height);
+                                // Bottom up: lay the row out first, then give the region
+                                // whatever height is left above it.
+                                ui.allocate_ui_with_layout(
+                                    size,
+                                    egui::Layout::bottom_up(egui::Align::Min),
+                                    |ui| {
+                                        ui.set_min_size(size);
+                                        let outer = self.in_footer;
+                                        self.in_footer = true;
+                                        self.render(ui, cmds, closes, footer.clone());
+                                        self.in_footer = outer;
+                                        ui.separator();
+                                        let rest = ui.available_height();
+                                        ui.with_layout(
+                                            egui::Layout::top_down(egui::Align::Min),
+                                            |ui| {
+                                                egui::ScrollArea::vertical()
+                                                    .id_salt(self.egui_id(id))
+                                                    .auto_shrink([false, false])
+                                                    .stick_to_bottom(true)
+                                                    .max_height(rest)
+                                                    .min_scrolled_height(rest)
+                                                    .show(ui, |ui| {
+                                                        ui.vertical(|ui| {
+                                                            self.render(
+                                                                ui,
+                                                                cmds,
+                                                                closes,
+                                                                body.clone(),
+                                                            )
+                                                        })
+                                                    });
+                                            },
+                                        );
+                                    },
+                                );
                             }
                             (ScopeKind::Indent, _) => {
                                 ui.indent(self.egui_id(id), |ui| {
