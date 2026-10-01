@@ -496,8 +496,13 @@ impl Cx<'_> {
                             rest.bg_stroke.color = egui::Color32::TRANSPARENT;
                             rest.bg_fill = egui::Color32::TRANSPARENT;
                             rest.weak_bg_fill = egui::Color32::TRANSPARENT;
+                            // A row is never wider than its list: a long name or command
+                            // is cut short with "…", rather than stretching the sidebar it
+                            // is in. Text never wraps in a button anyway.
                             ui.add(
-                                egui::Button::selectable(selected, text).frame_when_inactive(true),
+                                egui::Button::selectable(selected, text)
+                                    .frame_when_inactive(true)
+                                    .truncate(),
                             )
                         })
                         .inner;

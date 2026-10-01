@@ -1128,3 +1128,45 @@ fn a_code_editor_colours_its_text_and_still_takes_typing() {
     frame(&ctx, &mut r, &field(None), typing("!")).unwrap();
     assert!(r.text(60).unwrap().0.contains('!'));
 }
+
+#[test]
+fn a_long_row_is_cut_short_rather_than_widening_its_sidebar() {
+    let ctx = egui::Context::default();
+    let mut r = Replayer::new();
+    let long = "x = ".to_owned() + &"1 + ".repeat(200) + "1";
+    let buf = encode(&[
+        Cmd::BeginScope {
+            id: 70,
+            layout: Layout::new(ScopeKind::Horizontal, Align::Min),
+        },
+        Cmd::BeginScope {
+            id: 71,
+            layout: Layout::new(ScopeKind::Sidebar, Align::Min),
+        },
+        Cmd::BeginScope {
+            id: 72,
+            layout: Layout::new(ScopeKind::Horizontal, Align::Center),
+        },
+        Cmd::Button {
+            id: 73, text: "▶"
+        },
+        Cmd::Selectable {
+            id: 74,
+            text: &long,
+            selected: false,
+        },
+        Cmd::EndScope { id: 72 },
+        Cmd::EndScope { id: 71 },
+        Cmd::Label {
+            id: 75,
+            text: "page",
+        },
+        Cmd::EndScope { id: 70 },
+    ]);
+    let recs = frame(&ctx, &mut r, &buf, raw_input()).unwrap();
+    // An 800px window: the sidebar is 240px.
+    let row = find(&recs, 74).rect;
+    assert!(row[2] <= 250.0, "the row ends inside the sidebar: {row:?}");
+    let page = find(&recs, 75).rect;
+    assert!(page[0] < 270.0, "the page still starts beside it: {page:?}");
+}
