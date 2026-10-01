@@ -27,13 +27,14 @@ const APP_DOCS_DIR: &str = "data/shared/Docs/Apps";
 
 /// Every guest app, as (crate name, served name). Crate names use underscores; the served
 /// names (`web/dist/<served>.wasm`) use hyphens, matching the registry.
-const GUESTS: [(&str, &str); 6] = [
+const GUESTS: [(&str, &str); 7] = [
     ("file_browser", "file-browser"),
     ("clock", "clock"),
     ("server_dashboard", "server-dashboard"),
     ("rust_compiler", "rust-compiler"),
     ("account", "account"),
     ("docs", "docs"),
+    ("viewer", "viewer"),
 ];
 
 fn main() -> Result<()> {

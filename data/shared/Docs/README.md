@@ -12,6 +12,7 @@ machine on the network.
 - [Server](Apps/server-dashboard.md): live graphs of how the server is doing
 - [Compiler](Apps/rust-compiler.md): build a Rust project on the server and download the result
 - [Account](Apps/account.md): see who you are signed in as, and sign out
+- [Viewer](Apps/viewer.md): look at pictures, music, videos, PDFs and text files, and share them
 
 Any app can also be opened on its own, in a tab with no desktop around it. The
 [links to each app's own page](app-links.md) are in one place.
