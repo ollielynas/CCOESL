@@ -22,7 +22,7 @@ use ccosel_proto::octave::{
     Axes, Figure, OctaveInput, OctavePoll, OctavePollReq, OctaveResult, OctaveRun, OctaveRunReq,
     OctaveStatus,
 };
-use ccosel_sdk::{App, CallId, Poll, Text, TextStyle, Ui, Vec2};
+use ccosel_sdk::{App, CallId, Poll, Text, TextStyle, Ui, Vec2, icons};
 
 /// 4 Hz while a job runs, the rate `ARCHITECTURE.md` sets for job progress.
 const POLL_MS: u32 = 250;
@@ -184,6 +184,18 @@ fn itoa(mut n: u64) -> String {
     }
     String::from_utf8_lossy(&buf[i..]).into_owned()
 }
+
+/// A Phosphor icon and a word, for a button or a row. The shell's fonts lack most emoji and
+/// draw them as empty boxes; these always render.
+pub fn label(icon: &str, text: &str) -> String {
+    let mut s = String::from(icon);
+    s.push(' ');
+    s.push_str(text);
+    s
+}
+
+/// What the command window shows for running the editor's text when it has no file.
+const UNSAVED_RUN: &str = "run (unsaved script)";
 
 /// `name` inside the folder `dir`, both jail paths.
 fn join(dir: &str, name: &str) -> String {
@@ -375,7 +387,7 @@ impl Octave {
 
     fn toolbar(&self, ui: &mut Ui<'_>, act: &mut Vec<Action>) {
         ui.horizontal(|ui| {
-            ui.label("📁");
+            ui.label(icons::FOLDER);
             let cwd = if self.session.cwd.is_empty() {
                 "(outside the shared files)"
             } else {
@@ -383,12 +395,18 @@ impl Octave {
             };
             ui.label(cwd);
             ui.tooltip("Octave's working folder. Change it with cd at the prompt.");
-            if ui.button("⟳ Restart").clicked() {
-                act.push(Action::Restart);
-            }
-            ui.tooltip("Start a fresh Octave session: every variable and figure is cleared");
-            if self.job.is_some() {
-                ui.label("⏳ Running…");
+            let idle = self.job.is_none();
+            ui.enabled(idle, |ui| {
+                if ui
+                    .button(&label(icons::ARROW_CLOCKWISE, "Restart"))
+                    .clicked()
+                {
+                    act.push(Action::Restart);
+                }
+                ui.tooltip("Start a fresh Octave session: every variable and figure is cleared");
+            });
+            if !idle {
+                ui.label(&label(icons::HOURGLASS, "Running…"));
             }
         });
         ui.horizontal(|ui| {
@@ -430,10 +448,14 @@ impl Octave {
             ui.horizontal(|ui| {
                 ui.styled("Current Folder", TextStyle::heading(3));
                 let cwd = self.session.cwd.as_str();
-                if !cwd.is_empty() && cwd != "/" && ui.button("⬆").clicked() {
-                    act.push(Action::Cd("..".to_owned()));
+                if !cwd.is_empty() && cwd != "/" {
+                    ui.enabled(self.job.is_none(), |ui| {
+                        if ui.button(icons::ARROW_UP).clicked() {
+                            act.push(Action::Cd("..".to_owned()));
+                        }
+                        ui.tooltip("Go up to the folder that holds this one");
+                    });
                 }
-                ui.tooltip("Go up to the folder that holds this one");
             });
             if self.session.cwd.is_empty() {
                 ui.styled(
@@ -479,32 +501,36 @@ impl Octave {
             ui.push_id(&entry.name, |ui| {
                 if entry.kind == EntryKind::Dir {
                     let open = self.expanded.contains(&path);
-                    let mut text = String::from(if open { "📂 " } else { "📁 " });
-                    text.push_str(&entry.name);
+                    let icon = if open {
+                        icons::FOLDER_OPEN
+                    } else {
+                        icons::FOLDER
+                    };
+                    let text = label(icon, &entry.name);
                     ui.horizontal(|ui| {
                         if ui.selectable(false, &text).clicked() {
                             act.push(Action::Toggle(path.clone()));
                         }
                         ui.tooltip("Open or close this folder");
-                        if ui.button("cd").clicked() {
-                            let rel = path.strip_prefix(&self.session.cwd).unwrap_or(&path);
-                            act.push(Action::Cd(rel.trim_start_matches('/').to_owned()));
-                        }
-                        ui.tooltip("Make this Octave's working folder");
+                        ui.enabled(self.job.is_none(), |ui| {
+                            if ui.button("cd").clicked() {
+                                let rel = path.strip_prefix(&self.session.cwd).unwrap_or(&path);
+                                act.push(Action::Cd(rel.trim_start_matches('/').to_owned()));
+                            }
+                            ui.tooltip("Make this Octave's working folder");
+                        });
                     });
                     if open && depth + 1 < TREE_DEPTH {
                         ui.indent(|ui| self.tree(ui, &path, depth + 1, act));
                     }
                 } else if is_script(&entry.name) {
-                    let mut text = String::from("📜 ");
-                    text.push_str(&entry.name);
+                    let text = label(icons::FILE_CODE, &entry.name);
                     if ui.selectable(editing == path, &text).clicked() {
                         act.push(Action::Edit(path.clone()));
                     }
                     ui.tooltip("Open it in the editor");
                 } else {
-                    let mut text = String::from("📄 ");
-                    text.push_str(&entry.name);
+                    let text = label(icons::FILE, &entry.name);
                     ui.styled(&text, TextStyle::WEAK);
                 }
             });
@@ -533,6 +559,8 @@ impl Octave {
         if self.session.variables.is_empty() {
             ui.styled("No variables yet", TextStyle::WEAK);
         }
+        // Showing a variable is a job, so it waits for the running one, like Run.
+        let idle = self.job.is_none();
         for var in &self.session.variables {
             ui.push_id(&var.name, |ui| {
                 let mut row = var.name.clone();
@@ -541,12 +569,14 @@ impl Octave {
                 row.push(' ');
                 row.push_str(&var.class);
                 let selected = self.inspected.as_deref() == Some(var.name.as_str());
-                if ui.selectable(selected, &row).clicked() {
-                    act.push(Action::Inspect(var.name.clone()));
-                }
-                if !var.attributes.is_empty() {
-                    ui.tooltip(&var.attributes);
-                }
+                ui.enabled(idle, |ui| {
+                    if ui.selectable(selected, &row).clicked() {
+                        act.push(Action::Inspect(var.name.clone()));
+                    }
+                    if !var.attributes.is_empty() {
+                        ui.tooltip(&var.attributes);
+                    }
+                });
                 if !var.value.is_empty() {
                     ui.indent(|ui| ui.styled(&var.value, TextStyle::CODE));
                 }
@@ -571,17 +601,22 @@ impl Octave {
             ui.styled("Nothing yet", TextStyle::WEAK);
             return;
         }
-        if ui.button("📝 Create script").clicked() {
+        if ui
+            .button(&label(icons::NOTE_PENCIL, "Create script"))
+            .clicked()
+        {
             act.push(Action::Script(matching.iter().rev().copied().collect()));
         }
         ui.tooltip("Open the commands listed here in the editor, oldest first");
         for &i in &matching {
             ui.push_id(&itoa(i as u64), |ui| {
                 ui.horizontal(|ui| {
-                    if ui.button("▶").clicked() {
-                        act.push(Action::Rerun(i));
-                    }
-                    ui.tooltip("Run it again");
+                    ui.enabled(self.job.is_none(), |ui| {
+                        if ui.button(icons::PLAY).clicked() {
+                            act.push(Action::Rerun(i));
+                        }
+                        ui.tooltip("Run it again");
+                    });
                     let first = self.history[i].lines().next().unwrap_or_default();
                     if ui.selectable(false, first).clicked() {
                         act.push(Action::Recall(i));
@@ -595,6 +630,7 @@ impl Octave {
     fn command_window(&mut self, ui: &mut Ui<'_>, act: &mut Vec<Action>) {
         let log = &self.log;
         let input = &mut self.input;
+        let idle = self.job.is_none();
         ui.scroll_with_footer(
             |ui| Self::console(ui, log),
             |ui| {
@@ -602,19 +638,22 @@ impl Octave {
                 if ui.text_edit(input).submitted() {
                     act.push(Action::Submit);
                 }
+                // Typing ahead is fine while a job runs; running it waits until that one ends.
                 ui.tooltip("Type Octave code here and press Enter to run it");
-                if ui.button("⏎ Run").clicked() {
-                    act.push(Action::Submit);
-                }
-                if ui.button("▲").clicked() {
+                ui.enabled(idle, |ui| {
+                    if ui.button(&label(icons::PLAY, "Run")).clicked() {
+                        act.push(Action::Submit);
+                    }
+                });
+                if ui.button(icons::CARET_UP).clicked() {
                     act.push(Action::Older);
                 }
                 ui.tooltip("The previous command");
-                if ui.button("▼").clicked() {
+                if ui.button(icons::CARET_DOWN).clicked() {
                     act.push(Action::Newer);
                 }
                 ui.tooltip("The next command");
-                if ui.button("Clear").clicked() {
+                if ui.button(&label(icons::BROOM, "Clear")).clicked() {
                     act.push(Action::ClearLog);
                 }
                 ui.tooltip("Clear the command window. Variables are kept.");
@@ -653,16 +692,21 @@ impl Octave {
             ui.label("File:");
             ui.text_edit(&mut self.editor_path);
             ui.tooltip("A path in the shared files, such as /home/you/script.m");
-            if ui.button("📂 Open").clicked() {
+            if ui.button(&label(icons::FOLDER_OPEN, "Open")).clicked() {
                 act.push(Action::Open);
             }
-            if ui.button("💾 Save").clicked() {
+            if ui.button(&label(icons::FLOPPY_DISK, "Save")).clicked() {
                 act.push(Action::Save { run_after: false });
             }
-            if ui.button("▶ Run").clicked() {
-                act.push(Action::RunEditor);
-            }
-            ui.tooltip("Save the file and run it, or just run the code if it has no file");
+            ui.enabled(self.job.is_none(), |ui| {
+                if ui.button(&label(icons::PLAY, "Run")).clicked() {
+                    act.push(Action::RunEditor);
+                }
+                ui.tooltip(
+                    "Save the file and run it. Without a file, run the text as a script, \
+                     from a temporary copy.",
+                );
+            });
             if ui.button("New").clicked() {
                 act.push(Action::NewFile);
             }
@@ -682,9 +726,12 @@ impl Octave {
             );
             return;
         }
+        let idle = self.job.is_none();
         ui.scroll(|ui| {
             for fig in &self.session.figures {
-                ui.push_id(&itoa(u64::from(fig.number)), |ui| figure(ui, fig, act));
+                ui.push_id(&itoa(u64::from(fig.number)), |ui| {
+                    figure(ui, fig, idle, act)
+                });
             }
         });
     }
@@ -883,9 +930,17 @@ impl Octave {
             }
             Action::RunEditor => {
                 if self.editor_path.as_str().trim().is_empty() {
+                    // One job for the whole script: the server saves it to a temporary file
+                    // and runs that, as it would a saved one. It is not a command typed at the
+                    // prompt, so it doesn't go in the history line by line.
                     let code = self.editor.as_str().to_owned();
-                    self.submit(ui, &code);
-                    self.tab = Tab::Command;
+                    if code.trim().is_empty() {
+                        return;
+                    }
+                    if self.start(ui, Run::Code(code), Target::Console) {
+                        self.push_log(LineKind::Input, UNSAVED_RUN);
+                        self.tab = Tab::Command;
+                    }
                 } else {
                     self.act(ui, Action::Save { run_after: true });
                 }
@@ -926,7 +981,8 @@ impl Octave {
     }
 }
 
-fn figure(ui: &mut Ui<'_>, fig: &Figure, act: &mut Vec<Action>) {
+/// One figure. Its Save PNG is a job, so it is offered only when `idle`.
+fn figure(ui: &mut Ui<'_>, fig: &Figure, idle: bool, act: &mut Vec<Action>) {
     ui.group(|ui| {
         ui.horizontal(|ui| {
             let mut title = String::from("Figure ");
@@ -936,10 +992,12 @@ fn figure(ui: &mut Ui<'_>, fig: &Figure, act: &mut Vec<Action>) {
                 title.push_str(&fig.name);
             }
             ui.styled(&title, TextStyle::heading(3));
-            if ui.button("💾 Save PNG").clicked() {
-                act.push(Action::SaveFigure(fig.number));
-            }
-            ui.tooltip("Save it as an image in Octave's working folder");
+            ui.enabled(idle, |ui| {
+                if ui.button(&label(icons::FLOPPY_DISK, "Save PNG")).clicked() {
+                    act.push(Action::SaveFigure(fig.number));
+                }
+                ui.tooltip("Save it as an image in Octave's working folder");
+            });
         });
         if fig.axes.is_empty() {
             ui.styled("(nothing plotted)", TextStyle::WEAK);

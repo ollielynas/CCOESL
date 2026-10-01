@@ -2,6 +2,8 @@ use ccosel_proto::fs::{DirEntry, DirListing, FileText};
 use ccosel_proto::octave::{Series, Variable};
 use ccosel_sdk::testing::{Harness, rpc_error};
 
+use ccosel_sdk::icons;
+
 use super::*;
 
 fn var(name: &str, value: &str) -> Variable {
@@ -39,7 +41,7 @@ fn running(code: &str) -> Harness<Octave> {
     h.frame();
     h.type_text(1, code);
     h.frame();
-    h.click("⏎ Run");
+    h.click(&label(icons::PLAY, "Run"));
     h.frame();
     assert_eq!(h.outstanding::<OctaveRun>(), 1);
     h.reply::<OctaveRun>(&true);
@@ -53,7 +55,7 @@ fn starts_with_an_empty_session() {
     h.frame();
     assert!(h.has_text("Workspace"));
     assert!(h.has_text("No variables yet"));
-    assert!(h.has_button("⏎ Run"));
+    assert!(h.has_button(&label(icons::PLAY, "Run")));
     assert_eq!(
         h.app.wants_repaint_after_ms(),
         ccosel_sdk::REPAINT_ON_INPUT_ONLY
@@ -65,7 +67,7 @@ fn a_command_runs_and_its_output_and_workspace_arrive() {
     let mut h = running("x = 3");
     assert_eq!(h.app.history, ["x = 3"]);
     assert!(h.has_text(">> x = 3"));
-    assert!(h.has_label("⏳ Running…"));
+    assert!(h.has_label(&label(icons::HOURGLASS, "Running…")));
     assert_eq!(h.app.wants_repaint_after_ms(), POLL_MS);
     assert_eq!(h.outstanding::<OctavePoll>(), 1);
 
@@ -110,7 +112,7 @@ fn errors_are_marked_as_errors() {
 fn a_blank_prompt_runs_nothing() {
     let mut h = Harness::new(Octave::default());
     h.frame();
-    h.click("⏎ Run");
+    h.click(&label(icons::PLAY, "Run"));
     h.frame();
     assert_eq!(h.outstanding::<OctaveRun>(), 0);
 }
@@ -120,7 +122,7 @@ fn one_job_at_a_time() {
     let mut h = running("pause(5)");
     h.type_text(1, "y = 1");
     h.frame();
-    h.click("⏎ Run");
+    h.click(&label(icons::PLAY, "Run"));
     h.frame();
     assert_eq!(h.outstanding::<OctaveRun>(), 0);
     assert_eq!(h.app.history, ["pause(5)"]);
@@ -132,7 +134,7 @@ fn without_octave_the_app_says_so() {
     h.frame();
     h.type_text(1, "1");
     h.frame();
-    h.click("⏎ Run");
+    h.click(&label(icons::PLAY, "Run"));
     h.frame();
     h.reply::<OctaveRun>(&false);
     h.frame();
@@ -146,7 +148,7 @@ fn a_run_that_fails_is_reported() {
     h.frame();
     h.type_text(1, "1");
     h.frame();
-    h.click("⏎ Run");
+    h.click(&label(icons::PLAY, "Run"));
     h.frame();
     h.fail::<OctaveRun>(rpc_error::TRANSPORT);
     h.frame();
@@ -185,18 +187,18 @@ fn history_recalls_older_and_newer_commands() {
     let mut h = Harness::new(Octave::default());
     h.app.history = vec!["a = 1".to_owned(), "b = 2".to_owned()];
     h.frame();
-    h.click("▲");
+    h.click(icons::CARET_UP);
     h.frame();
     assert_eq!(h.app.input.as_str(), "b = 2");
-    h.click("▲");
+    h.click(icons::CARET_UP);
     h.frame();
-    h.click("▲");
+    h.click(icons::CARET_UP);
     h.frame();
     assert_eq!(h.app.input.as_str(), "a = 1", "stops at the oldest");
-    h.click("▼");
+    h.click(icons::CARET_DOWN);
     h.frame();
     assert_eq!(h.app.input.as_str(), "b = 2");
-    h.click("▼");
+    h.click(icons::CARET_DOWN);
     h.frame();
     assert_eq!(
         h.app.input.as_str(),
@@ -220,7 +222,7 @@ fn history_can_be_searched_recalled_and_rerun() {
     h.frame();
     assert_eq!(h.app.input.as_str(), "beta = 2");
 
-    h.click("▶");
+    h.click(icons::PLAY);
     h.frame();
     assert_eq!(h.outstanding::<OctaveRun>(), 1);
     assert_eq!(
@@ -242,7 +244,7 @@ fn create_script_puts_the_history_in_the_editor() {
     let mut h = Harness::new(Octave::default());
     h.app.history = vec!["a = 1".to_owned(), "b = a + 1".to_owned()];
     h.frame();
-    h.click("📝 Create script");
+    h.click(&label(icons::NOTE_PENCIL, "Create script"));
     h.frame();
     assert_eq!(h.app.tab, Tab::Editor);
     assert_eq!(h.app.editor.as_str(), "a = 1\nb = a + 1\n");
@@ -255,7 +257,7 @@ fn clear_empties_the_command_window() {
     let mut h = Harness::new(Octave::default());
     h.app.log.push((LineKind::Output, "old".to_owned()));
     h.frame();
-    h.click("Clear");
+    h.click(&label(icons::BROOM, "Clear"));
     h.frame();
     assert!(h.app.log.is_empty());
 }
@@ -266,7 +268,7 @@ fn restart_clears_the_session() {
     h.app.session = session(vec![var("x", "1")], vec![]);
     h.app.inspected = Some("x".to_owned());
     h.frame();
-    h.click("⟳ Restart");
+    h.click(&label(icons::ARROW_CLOCKWISE, "Restart"));
     h.frame();
     assert_eq!(h.outstanding::<OctaveRun>(), 1);
     assert!(h.app.inspected.is_none());
@@ -396,7 +398,7 @@ fn figures_are_drawn_and_can_be_saved() {
     assert!(h.has_text("(nothing plotted)"));
     assert_eq!(h.plots(), [vec![128, 255, 128, 0]]);
 
-    h.click("💾 Save PNG");
+    h.click(&label(icons::FLOPPY_DISK, "Save PNG"));
     h.frame();
     assert_eq!(h.outstanding::<OctaveRun>(), 1);
     assert!(h.app.history[0].starts_with("print(2, \"figure2.png\")"));
@@ -428,7 +430,7 @@ fn the_editor_opens_a_file() {
     // Fields: the history search, then the editor's path and its text.
     h.type_text(1, "/home/alice/fit.m");
     h.frame();
-    h.click("📂 Open");
+    h.click(&label(icons::FOLDER_OPEN, "Open"));
     h.frame();
     h.frame();
     assert_eq!(h.outstanding::<ReadFile>(), 1);
@@ -444,13 +446,13 @@ fn the_editor_opens_a_file() {
 #[test]
 fn the_editor_reports_a_file_it_cannot_open() {
     let mut h = editor();
-    h.click("📂 Open");
+    h.click(&label(icons::FOLDER_OPEN, "Open"));
     h.frame();
     h.frame();
     assert!(h.has_text("Type the file's path first."));
     h.type_text(1, "/nope.m");
     h.frame();
-    h.click("📂 Open");
+    h.click(&label(icons::FOLDER_OPEN, "Open"));
     h.frame();
     h.frame();
     h.fail::<ReadFile>(rpc_error::SERVER);
@@ -464,7 +466,7 @@ fn the_editor_saves_and_runs_its_file() {
     h.type_text(1, "/home/alice/fit.m");
     h.type_text(2, "a = 1");
     h.frame();
-    h.click("▶ Run");
+    h.click(&label(icons::PLAY, "Run"));
     h.frame();
     assert_eq!(h.outstanding::<WriteFile>(), 1);
     h.reply::<WriteFile>(&());
@@ -475,26 +477,85 @@ fn the_editor_saves_and_runs_its_file() {
 }
 
 #[test]
-fn the_editor_without_a_file_runs_its_text() {
+fn the_editor_without_a_file_runs_its_text_as_one_script() {
     let mut h = editor();
-    h.type_text(2, "b = 2");
+    h.type_text(2, "a = 1\nb = a + 1");
     h.frame();
-    h.click("▶ Run");
+    h.click(&label(icons::PLAY, "Run"));
     h.frame();
     assert_eq!(h.outstanding::<WriteFile>(), 0);
     assert_eq!(h.outstanding::<OctaveRun>(), 1);
-    assert_eq!(h.app.history, ["b = 2"]);
+    assert_eq!(h.app.tab, Tab::Command);
+    // One line in the command window for the whole script, and nothing in the history.
+    assert_eq!(h.app.log, [(LineKind::Input, UNSAVED_RUN.to_owned())]);
+    assert!(h.app.history.is_empty());
+}
+
+#[test]
+fn an_empty_editor_runs_nothing() {
+    let mut h = editor();
+    h.click(&label(icons::PLAY, "Run"));
+    h.frame();
+    assert_eq!(h.outstanding::<OctaveRun>(), 0);
+    assert_eq!(h.app.tab, Tab::Editor);
+}
+
+#[test]
+fn what_would_start_a_job_is_greyed_out_while_one_runs() {
+    let mut h = running("pause(5)");
+    h.app.history.push("x = 1".to_owned());
+    h.app.session = session(vec![var("x", "1")], vec![waves()]);
+    h.frame();
+    h.reply::<ListDir>(&listing(vec![entry("data", EntryKind::Dir)]));
+    h.frame();
+    let run = label(icons::PLAY, "Run");
+    for button in [
+        run.as_str(),
+        icons::PLAY,
+        icons::ARROW_UP,
+        "cd",
+        &label(icons::ARROW_CLOCKWISE, "Restart"),
+        "x  1x1 double",
+    ] {
+        assert!(h.is_disabled(button), "{button} is greyed out");
+    }
+    // Browsing and recalling still work, and the prompt still takes typing.
+    assert!(!h.is_disabled(icons::CARET_UP));
+    assert!(!h.is_disabled(&label(icons::FOLDER, "data")));
+    h.type_text(1, "y = 2");
+    h.frame();
+
+    // Clicking Run does nothing, and Enter keeps what was typed for later.
+    h.click(&run);
+    h.press_enter(1);
+    h.frame();
+    assert_eq!(h.app.history, ["pause(5)", "x = 1"]);
+    assert_eq!(h.app.input.as_str(), "y = 2");
+
+    // The figure's Save PNG waits too.
+    h.click("Figures (1)");
+    h.frame();
+    h.frame();
+    assert!(h.is_disabled(&label(icons::FLOPPY_DISK, "Save PNG")));
+
+    // Once the job ends, everything is back.
+    h.reply::<OctavePoll>(&done("", session(vec![], vec![])));
+    h.frame();
+    h.click("Command Window");
+    h.frame();
+    h.frame();
+    assert!(!h.is_disabled(&run));
 }
 
 #[test]
 fn the_editor_needs_a_path_to_save_and_reports_failures() {
     let mut h = editor();
-    h.click("💾 Save");
+    h.click(&label(icons::FLOPPY_DISK, "Save"));
     h.frame();
     assert_eq!(h.app.editor_status, "Type a path to save to first.");
     h.type_text(1, "/Docs/x.m");
     h.frame();
-    h.click("💾 Save");
+    h.click(&label(icons::FLOPPY_DISK, "Save"));
     h.frame();
     h.fail::<WriteFile>(rpc_error::DENIED);
     h.frame();
@@ -584,18 +645,24 @@ fn in_folder() -> Harness<Octave> {
 fn the_current_folder_lists_folders_then_files() {
     let h = in_folder();
     let rows: Vec<String> = h.selectables().into_iter().map(|(t, _)| t).collect();
-    let data = rows.iter().position(|r| r == "📁 data").unwrap();
-    let fit = rows.iter().position(|r| r == "📜 fit.m").unwrap();
+    let data = rows
+        .iter()
+        .position(|r| *r == label(icons::FOLDER, "data"))
+        .unwrap();
+    let fit = rows
+        .iter()
+        .position(|r| *r == label(icons::FILE_CODE, "fit.m"))
+        .unwrap();
     assert!(data < fit, "folders first: {rows:?}");
     // Other files are shown but do nothing; hidden ones are left out.
-    assert!(h.has_text("📄 notes.txt"));
+    assert!(h.has_text(&label(icons::FILE, "notes.txt")));
     assert!(!rows.iter().any(|r| r.contains(".hidden")));
 }
 
 #[test]
 fn a_script_in_the_tree_opens_in_the_editor() {
     let mut h = in_folder();
-    h.click("📜 fit.m");
+    h.click(&label(icons::FILE_CODE, "fit.m"));
     h.frame();
     assert_eq!(h.app.tab, Tab::Editor);
     assert_eq!(h.app.editor_path.as_str(), "/home/alice/fit.m");
@@ -607,13 +674,16 @@ fn a_script_in_the_tree_opens_in_the_editor() {
     });
     h.frame();
     assert_eq!(h.app.editor.as_str(), "p = polyfit(x, y, 1)");
-    assert!(h.selectables().contains(&("📜 fit.m".to_owned(), true)));
+    assert!(
+        h.selectables()
+            .contains(&(label(icons::FILE_CODE, "fit.m"), true))
+    );
 }
 
 #[test]
 fn a_folder_in_the_tree_opens_and_closes() {
     let mut h = in_folder();
-    h.click("📁 data");
+    h.click(&label(icons::FOLDER, "data"));
     h.frame();
     h.frame();
     assert!(h.app.expanded.contains("/home/alice/data"));
@@ -621,7 +691,7 @@ fn a_folder_in_the_tree_opens_and_closes() {
     h.reply::<ListDir>(&listing(vec![]));
     h.frame();
     assert!(h.has_text("Empty"));
-    h.click("📂 data");
+    h.click(&label(icons::FOLDER_OPEN, "data"));
     h.frame();
     assert!(h.app.expanded.is_empty());
 }
@@ -644,7 +714,7 @@ fn the_tree_changes_octaves_folder() {
     h.reply::<ListDir>(&listing(vec![]));
     h.frame();
 
-    h.click("⬆");
+    h.click(icons::ARROW_UP);
     h.frame();
     assert_eq!(h.app.history, ["cd 'data'", "cd '..'"]);
 }
