@@ -264,12 +264,6 @@ fn match_scopes(cmds: &[Cmd<'_>]) -> Vec<usize> {
     closes
 }
 
-/// Borrowed working set for one replay pass.
-///
-/// Bundling these lets the renderer recurse through `egui`'s closure-based containers
-/// (`ui.horizontal(|ui| ..)`) rather than hand-managing a `Vec<Ui>` stack. Indexing the tree
-/// up front is what buys that: because the scopes are known to be balanced before rendering
-/// starts, the natural egui API is available and there is no stack to corrupt.
 /// Which kind of text field a command draws.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Field {
@@ -278,6 +272,12 @@ enum Field {
     Code(CodeLang),
 }
 
+/// Borrowed working set for one replay pass.
+///
+/// Bundling these lets the renderer recurse through `egui`'s closure-based containers
+/// (`ui.horizontal(|ui| ..)`) rather than hand-managing a `Vec<Ui>` stack. Indexing the tree
+/// up front is what buys that: because the scopes are known to be balanced before rendering
+/// starts, the natural egui API is available and there is no stack to corrupt.
 struct Cx<'a> {
     app_instance: u64,
     tooltips: &'a HashMap<u64, &'a str>,

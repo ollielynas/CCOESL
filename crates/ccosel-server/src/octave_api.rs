@@ -14,18 +14,19 @@
 //! network, exactly like building a project in the Compiler (see `ARCHITECTURE.md`). Octave
 //! is optional for that reason as much as for its size: without it, `run` answers `false`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use ccosel_proto::octave::{
-    Axes, DEFAULT_LIMIT_MS, Figure, MAX_LIMIT_MS, MAX_OUTPUT_BYTES, OctaveAction, OctaveControlReq,
-    OctaveInput, OctavePollReq, OctaveResult, OctaveRunReq, OctaveStatus, Series, Variable,
+    Axes, DEFAULT_LIMIT_MS, Figure, MAX_LIMIT_MS, MAX_OUTPUT_BYTES, MAX_PROMPTS, MessageIcon,
+    OctaveAction, OctaveAnswerReq, OctaveControlReq, OctaveInput, OctavePollReq, OctavePrompt,
+    OctaveResult, OctaveRunReq, OctaveStatus, PromptKind, Series, Variable,
 };
 use ccosel_proto::server_error;
 
@@ -42,7 +43,18 @@ const RUNNER: &str = include_str!("octave/__ccosel_run__.m");
 /// command channel. `waitfor` and `uiwait`, which wait for a window to close, carry on at
 /// once with a warning instead: there is no window, but nothing is lost by not waiting. And
 /// `have_window_system` says true, since figures are shown, so scripts don't skip their plots.
-const SHADOWS: [(&str, &str); 7] = [
+/// `msgbox`, `errordlg`, `warndlg`, `helpdlg` and `uigetfile` become dialogs in the app, through
+/// `__ccosel_prompt__`, which asks for one and, for `uigetfile`, waits for the answer.
+const SHADOWS: [(&str, &str); 13] = [
+    (
+        "__ccosel_prompt__.m",
+        include_str!("octave/__ccosel_prompt__.m"),
+    ),
+    ("msgbox.m", include_str!("octave/msgbox.m")),
+    ("errordlg.m", include_str!("octave/errordlg.m")),
+    ("warndlg.m", include_str!("octave/warndlg.m")),
+    ("helpdlg.m", include_str!("octave/helpdlg.m")),
+    ("uigetfile.m", include_str!("octave/uigetfile.m")),
     ("exit.m", include_str!("octave/exit.m")),
     ("quit.m", include_str!("octave/quit.m")),
     ("input.m", include_str!("octave/input.m")),
@@ -260,6 +272,54 @@ impl Octave {
         job.images.lock().unwrap().get(&number).cloned()
     }
 
+    /// Answer a `uigetfile` that job `(client, seq)` is waiting on, with a file the caller may
+    /// read, or with Cancel. Octave is given the file's real path.
+    pub fn answer(
+        &self,
+        jail: &Jail,
+        user: Option<&str>,
+        req: &OctaveAnswerReq<'_>,
+    ) -> Result<(), u32> {
+        let key = (user.unwrap_or_default().to_owned(), req.client, req.seq);
+        let job = self
+            .jobs
+            .lock()
+            .unwrap()
+            .get(&key)
+            .cloned()
+            .ok_or(server_error::NOT_FOUND)?;
+        let waiting = job
+            .prompts
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|p| p.id == req.prompt && matches!(p.kind, PromptKind::OpenFile { .. }));
+        let dir = job.dir.get().ok_or(server_error::NOT_FOUND)?;
+        if !waiting || job.result.lock().unwrap().is_some() {
+            return Err(server_error::NOT_FOUND);
+        }
+        let text = match req.path {
+            None => String::new(),
+            Some(path) => {
+                let real = jail.authorize(path, user, Need::Read)?;
+                if !real.is_file() {
+                    return Err(server_error::NOT_FOUND);
+                }
+                real.display().to_string()
+            }
+        };
+        if !job.answered.lock().unwrap().insert(req.prompt) {
+            // Answered already: the first answer stands.
+            return Ok(());
+        }
+        // Written aside and renamed into place, so Octave never reads half an answer.
+        let path = dir.join(format!("answer-{}", req.prompt));
+        let aside = dir.join(format!("answer-{}.part", req.prompt));
+        std::fs::write(&aside, text)
+            .and_then(|()| std::fs::rename(&aside, &path))
+            .map_err(|_| server_error::IO)
+    }
+
     /// Move job `(client, seq)`'s time limit, or stop it. Replies with its limit afterwards.
     pub fn control(&self, user: Option<&str>, req: &OctaveControlReq) -> Result<u64, u32> {
         let key = (user.unwrap_or_default().to_owned(), req.client, req.seq);
@@ -332,6 +392,11 @@ struct Job {
     stop: AtomicBool,
     /// A render job's PNGs, by figure number.
     images: Mutex<HashMap<u32, Arc<Vec<u8>>>>,
+    /// Dialogs it asked for, and which of them have been answered.
+    prompts: Mutex<Vec<OctavePrompt>>,
+    answered: Mutex<HashSet<u32>>,
+    /// Its session's folder, where answers to its prompts are written. Set once it runs.
+    dir: OnceLock<PathBuf>,
     output: Mutex<Output>,
     result: Mutex<Option<OctaveResult>>,
     finished_at: Mutex<Option<Instant>>,
@@ -350,6 +415,9 @@ impl Job {
             limit: Mutex::new(limit),
             stop: AtomicBool::new(false),
             images: Mutex::new(HashMap::new()),
+            prompts: Mutex::new(Vec::new()),
+            answered: Mutex::new(HashSet::new()),
+            dir: OnceLock::new(),
             output: Mutex::new(Output::default()),
             result: Mutex::new(None),
             finished_at: Mutex::new(None),
@@ -390,6 +458,14 @@ impl Job {
             next: out.text.len() as u32,
             output_truncated: out.truncated,
             result,
+            prompts: self.prompts.lock().unwrap().clone(),
+        }
+    }
+
+    fn push_prompt(&self, prompt: OctavePrompt) {
+        let mut prompts = self.prompts.lock().unwrap();
+        if prompts.len() < MAX_PROMPTS {
+            prompts.push(prompt);
         }
     }
 }
@@ -443,6 +519,7 @@ impl Session {
     ) -> OctaveResult {
         let mut process = self.process.lock().unwrap();
         *self.last_used.lock().unwrap() = Instant::now();
+        let _ = job.dir.set(self.dir.clone());
 
         let (kind, script) = match input {
             Input::Restart => {
@@ -536,7 +613,14 @@ impl Session {
             match p.lines.recv_timeout(wait) {
                 Ok(line) => match line.strip_prefix(&tag) {
                     Some(" DONE") => break,
-                    Some(rest) => report.push(rest.trim_start().to_owned()),
+                    Some(rest) => match rest.strip_prefix(" PROMPT\t") {
+                        Some(fields) => {
+                            if let Some(prompt) = parse_prompt(fields, jail_root) {
+                                job.push_prompt(prompt);
+                            }
+                        }
+                        None => report.push(rest.trim_start().to_owned()),
+                    },
                     None => match &stopped {
                         Some((_, old)) if line.starts_with(old.as_str()) => {}
                         _ if GNUPLOT_NOISE.contains(&line.as_str()) => {}
@@ -630,9 +714,11 @@ impl Session {
             "more off\n\
              warning(\"off\", \"Octave:shadowed-function\")\n\
              addpath(\"{}\")\n\
+             setappdata(0, \"__ccosel_dir__\", \"{}\")\n\
              try, close(figure()), end\n\
              printf(\"%s\\n\", \"{tag}\")\n",
-            octave_string(&support)
+            octave_string(&support),
+            octave_string(&self.dir.display().to_string()),
         );
         stdin.write_all(init.as_bytes())?;
         stdin.flush()?;
@@ -655,6 +741,57 @@ impl Session {
             lines,
         })
     }
+}
+
+/// One prompt line from `__ccosel_prompt__`, after its tag and `PROMPT`: its number, its kind,
+/// and that kind's fields, each escaped (`\\`, `\t`, `\n`). A start folder is turned from a
+/// real path into a jail path, or left empty if it is outside the jail.
+pub fn parse_prompt(line: &str, jail_root: &Path) -> Option<OctavePrompt> {
+    let mut fields = line.split('\t');
+    let id = fields.next()?.parse().ok()?;
+    let kind = fields.next()?;
+    let mut next = || unescape(fields.next().unwrap_or_default());
+    let kind = match kind {
+        "MESSAGE" => PromptKind::Message {
+            icon: match next().as_str() {
+                "error" => MessageIcon::Error,
+                "warn" => MessageIcon::Warning,
+                "help" => MessageIcon::Help,
+                _ => MessageIcon::None,
+            },
+            title: next(),
+            text: next(),
+        },
+        "OPENFILE" => PromptKind::OpenFile {
+            title: next(),
+            filter: next(),
+            start: match next() {
+                s if s.is_empty() => s,
+                s => jail_path(Path::new(&s), jail_root),
+            },
+        },
+        _ => return None,
+    };
+    Some(OctavePrompt { id, kind })
+}
+
+/// Undo `__ccosel_prompt__`'s escaping.
+fn unescape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('n') => out.push('\n'),
+            Some('t') => out.push('\t'),
+            Some(other) => out.push(other),
+            None => {}
+        }
+    }
+    out
 }
 
 /// A PNG's width and height, from its header, or `None` if it isn't one.

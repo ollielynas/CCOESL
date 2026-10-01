@@ -10,6 +10,18 @@
 ## Loaded from the server's support folder: edit this file, not a copy of it.
 function __ccosel_run__ (kind, file, tag)
   failed = false;
+  ## For dialogs the job asks the app for (`__ccosel_prompt__`): they report under its tag,
+  ## numbered from 1 within it. An answer left over from a job stopped while it was being
+  ## written must not answer one of this job's.
+  setappdata (0, "__ccosel_tag__", tag);
+  setappdata (0, "__ccosel_prompts__", 0);
+  dir = getappdata (0, "__ccosel_dir__");
+  if (ischar (dir))
+    old = glob (fullfile (dir, "answer-*"));
+    for i = 1:numel (old)
+      delete (old{i});
+    endfor
+  endif
   ## Every graphics object there is before the job, so the report can say which figures it
   ## created or drew into: those would have popped up a window on a desktop.
   before = findall (0);

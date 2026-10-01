@@ -44,6 +44,7 @@ pub enum Method {
     OctaveRun = 12,
     OctavePoll = 13,
     OctaveControl = 14,
+    OctaveAnswer = 15,
 }
 
 impl Method {
@@ -63,6 +64,7 @@ impl Method {
             12 => Some(Self::OctaveRun),
             13 => Some(Self::OctavePoll),
             14 => Some(Self::OctaveControl),
+            15 => Some(Self::OctaveAnswer),
             _ => None,
         }
     }

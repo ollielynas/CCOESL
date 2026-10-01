@@ -445,6 +445,15 @@ impl<A: App> Harness<A> {
             .count()
     }
 
+    /// Whether the app has an outstanding call to `M` with exactly these arguments, for a test
+    /// that cares what was asked, not only that something was.
+    pub fn has_call<M: Rpc>(&self, req: &M::Req<'_>) -> bool {
+        let args = postcard::to_allocvec(req).expect("the request serializes");
+        self.calls
+            .iter()
+            .any(|c| c.method == M::METHOD as u32 && c.args == args)
+    }
+
     /// Answers the oldest outstanding call to `M` with `reply`. Panics if there is none.
     pub fn reply<M: Rpc>(&mut self, reply: &M::Reply)
     where

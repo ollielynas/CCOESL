@@ -1044,3 +1044,202 @@ fn a_figure_that_fails_to_draw_is_left_out_of_the_command_window() {
     );
     assert!(h.app.job.is_none(), "and not tried again");
 }
+
+#[test]
+fn globs_match_like_a_file_dialog() {
+    let pats = |p: &[&str]| p.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+    assert!(matches(&pats(&["*.m"]), "fit.m"));
+    assert!(matches(&pats(&["*.M"]), "fit.m"), "ignoring case");
+    assert!(!matches(&pats(&["*.m"]), "fit.mat"));
+    assert!(matches(&pats(&["*.csv", "*.txt"]), "data.txt"));
+    assert!(matches(&pats(&["data_??.csv"]), "data_01.csv"));
+    assert!(!matches(&pats(&["data_??.csv"]), "data_1.csv"));
+    assert!(matches(&pats(&["*"]), "anything"));
+    assert!(
+        matches(&pats(&["*.*"]), "README"),
+        "*.* means any file, as on Windows"
+    );
+    assert!(matches(&[], "anything"));
+}
+
+/// A job that has been taken by the server, then a poll whose status carries `prompts`.
+fn prompting(prompts: Vec<OctavePrompt>) -> Harness<Octave> {
+    let mut h = running("script");
+    h.reply::<OctavePoll>(&OctaveStatus {
+        prompts,
+        ..OctaveStatus::default()
+    });
+    h.frame();
+    h.frame();
+    h
+}
+
+fn message_prompt(id: u32, icon: MessageIcon, title: &str, text: &str) -> OctavePrompt {
+    OctavePrompt {
+        id,
+        kind: PromptKind::Message {
+            icon,
+            title: title.to_owned(),
+            text: text.to_owned(),
+        },
+    }
+}
+
+#[test]
+fn a_message_box_is_shown_until_ok() {
+    let mut h = prompting(vec![
+        message_prompt(1, MessageIcon::None, "Done", "Saved\nall of it"),
+        message_prompt(2, MessageIcon::Error, "", "Bad input"),
+    ]);
+    assert_eq!(h.app.messages.len(), 2);
+    assert!(h.has_label("Saved") && h.has_label("all of it"));
+    assert!(h.has_label("Bad input"));
+    assert!(h.has_text(icons::X_CIRCLE));
+    // Shown once: the next poll repeats them, and they aren't shown twice.
+    h.reply::<OctavePoll>(&OctaveStatus {
+        prompts: vec![
+            message_prompt(1, MessageIcon::None, "Done", "Saved\nall of it"),
+            message_prompt(2, MessageIcon::Error, "", "Bad input"),
+        ],
+        ..OctaveStatus::default()
+    });
+    h.frame();
+    assert_eq!(h.app.messages.len(), 2);
+
+    h.click("OK");
+    h.frame();
+    assert_eq!(h.app.messages.len(), 1);
+    // They outlast the job that showed them.
+    h.reply::<OctavePoll>(&done("", session(vec![], vec![])));
+    h.frame();
+    assert_eq!(h.app.messages.len(), 1);
+}
+
+fn open_prompt(filter: &str, start: &str) -> OctavePrompt {
+    OctavePrompt {
+        id: 1,
+        kind: PromptKind::OpenFile {
+            title: "Pick data".to_owned(),
+            filter: filter.to_owned(),
+            start: start.to_owned(),
+        },
+    }
+}
+
+#[test]
+fn uigetfile_starts_in_octaves_folder() {
+    let mut h = Harness::new(known());
+    h.app.session = session(vec![], vec![]);
+    h.frame();
+    h.type_text(1, "uigetfile");
+    h.press_enter(1);
+    h.frame();
+    h.reply::<OctaveRun>(&true);
+    h.frame();
+    h.reply::<OctavePoll>(&OctaveStatus {
+        prompts: vec![open_prompt("*.csv;*.txt", "")],
+        ..OctaveStatus::default()
+    });
+    h.frame();
+    let picker = h.app.picker.as_ref().expect("a picker");
+    assert_eq!(picker.dir, "/home/alice");
+    assert_eq!(picker.patterns, ["*.csv", "*.txt"]);
+}
+
+#[test]
+fn uigetfile_picks_a_file_from_the_shared_files() {
+    let mut h = prompting(vec![open_prompt("*.csv;*.txt", "/home/alice")]);
+    h.reply::<ListDir>(&listing(vec![
+        entry("plot.m", EntryKind::File),
+        entry("data.csv", EntryKind::File),
+        entry("runs", EntryKind::Dir),
+    ]));
+    h.frame();
+    assert!(h.has_label(&label(icons::FOLDER, "/home/alice")));
+    let rows: Vec<String> = h.selectables().into_iter().map(|(t, _)| t).collect();
+    assert!(rows.contains(&label(icons::FOLDER, "runs")));
+    assert!(rows.contains(&label(icons::FILE, "data.csv")));
+    assert!(
+        !rows.contains(&label(icons::FILE, "plot.m")),
+        "filtered out"
+    );
+    assert!(
+        h.is_disabled(&label(icons::FOLDER_OPEN, "Open")),
+        "nothing picked yet"
+    );
+
+    // Into a folder and back up.
+    h.click(&label(icons::FOLDER, "runs"));
+    h.frame();
+    assert_eq!(h.app.picker.as_ref().unwrap().dir, "/home/alice/runs");
+    h.frame();
+    h.reply::<ListDir>(&listing(vec![]));
+    h.frame();
+    assert!(h.has_text("Nothing here matches"));
+    h.click(icons::ARROW_UP);
+    h.frame();
+    assert_eq!(h.app.picker.as_ref().unwrap().dir, "/home/alice");
+    h.frame();
+
+    h.click(&label(icons::FILE, "data.csv"));
+    h.frame();
+    h.frame();
+    h.click(&label(icons::FOLDER_OPEN, "Open"));
+    h.frame();
+    assert!(h.has_call::<OctaveAnswer>(&OctaveAnswerReq {
+        client: 1,
+        seq: 1,
+        prompt: 1,
+        path: Some("/home/alice/data.csv"),
+    }));
+    h.reply::<OctaveAnswer>(&());
+    h.frame();
+    assert!(h.app.picker.is_none());
+}
+
+#[test]
+fn uigetfile_can_be_cancelled() {
+    let mut h = prompting(vec![open_prompt("", "/Docs")]);
+    assert_eq!(h.app.picker.as_ref().unwrap().dir, "/Docs");
+    assert_eq!(h.app.picker.as_ref().unwrap().title, "Pick data");
+    h.click("Cancel");
+    h.frame();
+    assert!(h.has_call::<OctaveAnswer>(&OctaveAnswerReq {
+        client: 1,
+        seq: 1,
+        prompt: 1,
+        path: None,
+    }));
+}
+
+#[test]
+fn a_refused_pick_says_why_and_the_picker_stays() {
+    let mut h = prompting(vec![open_prompt("*", "/")]);
+    h.reply::<ListDir>(&listing(vec![entry("secret.txt", EntryKind::File)]));
+    h.frame();
+    h.click(&label(icons::FILE, "secret.txt"));
+    h.frame();
+    h.frame();
+    h.click(&label(icons::FOLDER_OPEN, "Open"));
+    h.frame();
+    h.fail::<OctaveAnswer>(rpc_error::SERVER);
+    h.frame();
+    let picker = h.app.picker.as_ref().expect("still open");
+    assert!(picker.status.starts_with("Couldn't open that: "));
+    h.frame();
+    assert!(
+        !h.is_disabled(&label(icons::FOLDER_OPEN, "Open")),
+        "try again"
+    );
+}
+
+#[test]
+fn the_picker_closes_when_its_job_ends() {
+    let mut h = prompting(vec![open_prompt("*", "/")]);
+    assert!(h.app.picker.is_some());
+    h.click(&label(icons::STOP, "Stop"));
+    h.frame();
+    h.reply::<OctavePoll>(&done("error: Stopped.\n", session(vec![], vec![])));
+    h.frame();
+    assert!(h.app.picker.is_none());
+}

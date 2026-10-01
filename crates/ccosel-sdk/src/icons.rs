@@ -50,6 +50,10 @@ pub const CARET_DOWN: &str = "\u{E136}";
 pub const BROOM: &str = "\u{EC54}";
 pub const STOP: &str = "\u{E46C}";
 pub const TIMER: &str = "\u{E492}";
+pub const X_CIRCLE: &str = "\u{E4F8}";
+pub const WARNING: &str = "\u{E4E0}";
+pub const INFO: &str = "\u{E2CE}";
+pub const CHAT_TEXT: &str = "\u{E17A}";
 
 #[cfg(test)]
 mod tests {
@@ -98,5 +102,9 @@ mod tests {
         assert_eq!(super::BROOM, p::BROOM);
         assert_eq!(super::STOP, p::STOP);
         assert_eq!(super::TIMER, p::TIMER);
+        assert_eq!(super::X_CIRCLE, p::X_CIRCLE);
+        assert_eq!(super::WARNING, p::WARNING);
+        assert_eq!(super::INFO, p::INFO);
+        assert_eq!(super::CHAT_TEXT, p::CHAT_TEXT);
     }
 }

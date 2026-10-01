@@ -50,8 +50,22 @@ A few commands work differently here, because there is no terminal behind the wi
   counts as an error only if it gave a status other than 0, such as `exit(1)`. Use
   **:arrow_clockwise: Restart** to start again from empty.
 - `have_window_system()` says true, and new figures are visible, since figures are shown here
-  even without windows of their own. Other window functions, such as `uigetfile` or
-  `msgbox`, still can't work.
+  even without windows of their own.
+
+## Dialogs
+
+Scripts can still talk to you through dialogs:
+
+- `msgbox`, `errordlg`, `warndlg` and `helpdlg` show their message in a window over the app.
+  The script carries on meanwhile, as in MATLAB; press **OK** to close it.
+- `uigetfile` opens a file picker over the shared files, starting in Octave's working folder
+  (or the folder the script names). It lists folders, and the files that match the script's
+  filter, such as `*.csv`. Open folders to look inside, **:arrow_up:** to go up, pick a file
+  and press **:folder_open: Open**. The script waits meanwhile, and gets the file's name and
+  folder, ready for `load` or `fopen`. **Cancel** gives it `0` for both, as in MATLAB.
+
+You can only pick a file you're allowed to read. Other dialogs, such as `uiputfile`,
+`inputdlg` or `questdlg`, don't work here yet.
 
 ## The working folder
 

@@ -11,6 +11,7 @@
 //!   since `from`.
 //!
 //! - [`OctaveControl`] changes a running job: moves its time limit, or stops it.
+//! - [`OctaveAnswer`] answers a job's [`OctavePrompt`]: the file a `uigetfile` asked for.
 //!
 //! `(client, seq)` names a job. `client` is a number a window picks for itself so two windows
 //! of the same user, sharing one session, do not collide; `seq` goes up by one per run. Running
@@ -30,6 +31,10 @@ pub const DEFAULT_LIMIT_MS: u64 = 10 * 60 * 1000;
 
 /// The furthest a job's limit can be extended to, from its start.
 pub const MAX_LIMIT_MS: u64 = 8 * 60 * 60 * 1000;
+
+/// The most prompts one job keeps. Later ones are dropped, and one waiting for an answer
+/// waits until Stop or the time limit.
+pub const MAX_PROMPTS: usize = 32;
 
 /// What to run.
 #[derive(Debug, Serialize, Deserialize)]
@@ -190,6 +195,47 @@ pub struct OctaveStatus {
     pub output_truncated: bool,
     /// Present exactly when `finished`.
     pub result: Option<OctaveResult>,
+    /// Every dialog the job has asked the app for so far, oldest first.
+    pub prompts: Vec<OctavePrompt>,
+}
+
+/// A dialog a running job wants shown, from `msgbox`, `uigetfile` and the like, which have no
+/// window of their own in a session.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct OctavePrompt {
+    /// Its number within the job, for [`OctaveAnswer`].
+    pub id: u32,
+    pub kind: PromptKind,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum PromptKind {
+    /// `msgbox` and kin: show it. The job carries on meanwhile, and wants no answer.
+    Message {
+        icon: MessageIcon,
+        title: String,
+        text: String,
+    },
+    /// `uigetfile`: pick a file. The job waits for an [`OctaveAnswer`].
+    OpenFile {
+        title: String,
+        /// Patterns such as `*.m`, joined by `;`. `*` for any file.
+        filter: String,
+        /// The folder to start in, as a jail path, or empty for Octave's working folder.
+        start: String,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MessageIcon {
+    /// `msgbox`.
+    None,
+    /// `errordlg`.
+    Error,
+    /// `warndlg`.
+    Warning,
+    /// `helpdlg`.
+    Help,
 }
 
 /// How a job is going. Idempotent: a job is only read, never started, by this.
@@ -237,3 +283,29 @@ impl Rpc for OctaveControl {
 }
 
 impl Command for OctaveControl {}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct OctaveAnswerReq<'a> {
+    pub client: u32,
+    pub seq: u32,
+    /// [`OctavePrompt::id`].
+    pub prompt: u32,
+    /// The file picked, as a jail path, or `None` for Cancel.
+    #[serde(borrow)]
+    pub path: Option<&'a str>,
+}
+
+/// Answer prompt `prompt` of job `(client, seq)`, which is waiting for it. The server checks
+/// the caller may read the file, and hands Octave its real path.
+pub struct OctaveAnswer;
+
+impl Rpc for OctaveAnswer {
+    const METHOD: Method = Method::OctaveAnswer;
+    const COALESCE: Coalesce = Coalesce::None;
+    const EFFECT: Effect = Effect::Effectful;
+    const DEADLINE_MS: u32 = 8_000;
+    type Req<'a> = OctaveAnswerReq<'a>;
+    type Reply = ();
+}
+
+impl Command for OctaveAnswer {}

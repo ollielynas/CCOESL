@@ -751,3 +751,166 @@ fn only_so_many_renders_are_kept_per_user() {
         .count();
     assert_eq!(kept, 64);
 }
+
+#[test]
+fn a_prompt_line_becomes_a_dialog_for_the_app() {
+    use ccosel_proto::octave::{MessageIcon, PromptKind};
+    use ccosel_server::octave_api::parse_prompt;
+    let root = Path::new("/srv/jail");
+    let p = parse_prompt(
+        "1\tMESSAGE\terror\tOops\tline one\\nsaid \\\\n\\tthere",
+        root,
+    )
+    .unwrap();
+    assert_eq!(p.id, 1);
+    assert_eq!(
+        p.kind,
+        PromptKind::Message {
+            icon: MessageIcon::Error,
+            title: "Oops".to_owned(),
+            text: "line one\nsaid \\n\tthere".to_owned(),
+        }
+    );
+    // A start folder is a jail path for the app, or nothing if it is outside the jail.
+    let open = |start| match parse_prompt(&format!("2\tOPENFILE\tPick\t*.m\t{start}"), root)
+        .unwrap()
+        .kind
+    {
+        PromptKind::OpenFile { start, .. } => start,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(open("/srv/jail/home/alice"), "/home/alice");
+    assert_eq!(open("/etc"), "");
+    assert_eq!(open(""), "");
+    assert!(parse_prompt("3\tSOMETHING\tELSE", root).is_none());
+    assert!(parse_prompt("x\tMESSAGE", root).is_none());
+}
+
+/// Real Octave, when this machine has it: `msgbox` and kin are shown by the app without the
+/// job waiting, and `uigetfile` waits for the file the app picks, which Octave gets as a real
+/// path, or for Cancel.
+#[test]
+fn real_octave_asks_the_app_for_dialogs() {
+    use ccosel_proto::octave::{MessageIcon, OctaveAnswerReq, PromptKind};
+    let (jail, support) = setup("real-dialogs");
+    let octave = Octave::detect(support);
+    if !octave.available() {
+        eprintln!("octave-cli is not installed; skipped");
+        return;
+    }
+    fs::write(jail.root().join("data.txt"), "42").unwrap();
+
+    run(
+        &octave,
+        &jail,
+        None,
+        1,
+        OctaveInput::Code(
+            "h = msgbox({\"Saved\", \"all of it\"}, \"Done\"); warndlg(\"careful\"); disp(isempty(h))",
+        ),
+    );
+    let shown = wait(&octave, None, 1);
+    assert!(!shown.result.unwrap().error, "{}", shown.output);
+    assert_eq!(shown.output.trim(), "1");
+    let messages: Vec<_> = shown.prompts.iter().map(|p| p.kind.clone()).collect();
+    assert_eq!(
+        messages,
+        [
+            PromptKind::Message {
+                icon: MessageIcon::None,
+                title: "Done".to_owned(),
+                text: "Saved\nall of it".to_owned(),
+            },
+            PromptKind::Message {
+                icon: MessageIcon::Warning,
+                title: String::new(),
+                text: "careful".to_owned(),
+            },
+        ]
+    );
+
+    // Waits for an answer: poll until the picker is asked for.
+    let pick = |seq: u32, path: Option<&str>| {
+        run(
+            &octave,
+            &jail,
+            None,
+            seq,
+            OctaveInput::Code(
+                "[f, p] = uigetfile(\"*.txt\", \"Pick data\"); if ischar(f), disp(fileread([p f])), else, disp(\"cancelled\"), end",
+            ),
+        );
+        let start = Instant::now();
+        let prompt = loop {
+            if let Some(p) = status(&octave, seq).prompts.first().cloned() {
+                break p;
+            }
+            assert!(start.elapsed() < Duration::from_secs(30), "never asked");
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        assert_eq!(
+            prompt.kind,
+            PromptKind::OpenFile {
+                title: "Pick data".to_owned(),
+                filter: "*.txt".to_owned(),
+                start: String::new(),
+            }
+        );
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(!status(&octave, seq).finished, "it waits");
+        let answer = OctaveAnswerReq {
+            client: 1,
+            seq,
+            prompt: prompt.id,
+            path,
+        };
+        octave.answer(&jail, None, &answer).unwrap();
+        wait(&octave, None, seq)
+    };
+    let picked = pick(2, Some("/data.txt"));
+    assert_eq!(picked.output.trim(), "42", "{}", picked.output);
+    let cancelled = pick(3, None);
+    assert_eq!(cancelled.output.trim(), "cancelled", "{}", cancelled.output);
+
+    // Only a file the caller may read, and only for a prompt that waits.
+    run(&octave, &jail, None, 4, OctaveInput::Code("uigetfile()"));
+    while status(&octave, 4).prompts.is_empty() {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let answer = |prompt, path| OctaveAnswerReq {
+        client: 1,
+        seq: 4,
+        prompt,
+        path,
+    };
+    assert!(
+        octave
+            .answer(&jail, None, &answer(1, Some("/../../etc/passwd")))
+            .is_err()
+    );
+    assert!(
+        octave
+            .answer(&jail, None, &answer(1, Some("/nope.txt")))
+            .is_err()
+    );
+    assert_eq!(
+        octave.answer(&jail, None, &answer(9, None)),
+        Err(server_error::NOT_FOUND)
+    );
+    octave.answer(&jail, None, &answer(1, None)).unwrap();
+    wait(&octave, None, 4);
+    // Answering a message, or a finished job, is nothing to answer.
+    assert_eq!(
+        octave.answer(
+            &jail,
+            None,
+            &OctaveAnswerReq {
+                client: 1,
+                seq: 1,
+                prompt: 1,
+                path: None,
+            }
+        ),
+        Err(server_error::NOT_FOUND)
+    );
+}

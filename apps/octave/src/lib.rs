@@ -19,8 +19,9 @@ use ccosel_proto::fs::{
     EntryKind, ListDir, ListDirReq, PathReq, ReadFile, WriteFile, WriteFileReq,
 };
 use ccosel_proto::octave::{
-    Axes, DEFAULT_LIMIT_MS, Figure, OctaveAction, OctaveControl, OctaveControlReq, OctaveInput,
-    OctavePoll, OctavePollReq, OctaveResult, OctaveRun, OctaveRunReq, OctaveStatus, figure_url,
+    Axes, DEFAULT_LIMIT_MS, Figure, MessageIcon, OctaveAction, OctaveAnswer, OctaveAnswerReq,
+    OctaveControl, OctaveControlReq, OctaveInput, OctavePoll, OctavePollReq, OctavePrompt,
+    OctaveResult, OctaveRun, OctaveRunReq, OctaveStatus, PromptKind, figure_url,
 };
 use ccosel_sdk::{App, CallId, CodeLang, Poll, Text, TextStyle, Ui, Vec2, icons};
 
@@ -94,6 +95,33 @@ pub struct Job {
     pub limit_ms: u64,
     /// Stop was pressed: the server is interrupting it.
     pub stopping: bool,
+    /// How many of its prompts (dialogs) the app has already shown.
+    prompts_seen: usize,
+}
+
+/// A message a job showed with `msgbox` and kin, until OK is pressed.
+pub struct Message {
+    /// Unique among the messages shown, so two with the same title are two windows.
+    pub id: u32,
+    pub icon: MessageIcon,
+    pub title: String,
+    pub text: String,
+}
+
+/// The file picker a job's `uigetfile` is waiting on.
+pub struct Picker {
+    pub seq: u32,
+    pub prompt: u32,
+    pub title: String,
+    /// Glob patterns a file must match one of to be listed, such as `*.m`.
+    pub patterns: Vec<String>,
+    /// The folder shown, a jail path.
+    pub dir: String,
+    pub selected: Option<String>,
+    /// The answer on its way to the server.
+    sending: Option<CallId>,
+    /// Why the last answer was refused, if it was.
+    pub status: String,
 }
 
 /// An editor save in flight, and whether to run the file once it is saved.
@@ -138,6 +166,11 @@ pub struct Octave {
     pub figures_stale: bool,
     /// Figures the last command drew, to show in the command window once they are rendered.
     pub inline: Vec<u32>,
+    /// Messages from `msgbox` and kin, shown until OK.
+    pub messages: Vec<Message>,
+    messages_shown: u32,
+    /// The file picker a running `uigetfile` waits on.
+    pub picker: Option<Picker>,
     /// A job has reported the session's state at least once. Until then the app doesn't know
     /// the working folder or the variables, which isn't the same as there being none.
     pub synced: bool,
@@ -170,6 +203,9 @@ impl Default for Octave {
             rendered: None,
             figures_stale: false,
             inline: Vec::new(),
+            messages: Vec::new(),
+            messages_shown: 0,
+            picker: None,
             synced: false,
         }
     }
@@ -202,6 +238,13 @@ enum Action {
     Extend(u32),
     /// Interrupt the running job.
     Stop,
+    /// OK on message `id`.
+    Dismiss(u32),
+    /// In the file picker: show this folder; select this file; answer with the file, or
+    /// with Cancel.
+    PickerDir(String),
+    PickerSelect(String),
+    PickerAnswer(Option<String>),
     /// Change Octave's working folder, to a path relative to the current one: the session's
     /// `cwd` is a jail path, which means nothing to Octave itself.
     Cd(String),
@@ -319,6 +362,7 @@ impl Octave {
             elapsed_ms: 0,
             limit_ms: DEFAULT_LIMIT_MS,
             stopping: false,
+            prompts_seen: 0,
         });
         true
     }
@@ -399,6 +443,8 @@ impl Octave {
         let Some(job) = self.job.take() else {
             return;
         };
+        // Nothing waits on the picker any more.
+        self.picker = None;
         self.refresh_tree = true;
         if job.target == Target::Render {
             self.rendered = Some(job.seq);
@@ -414,6 +460,88 @@ impl Octave {
                 .filter(|f| f.changed)
                 .map(|f| f.number)
                 .collect();
+        }
+    }
+
+    /// Show the dialogs the running job has asked for since the last poll.
+    fn take_prompts(&mut self, prompts: &[OctavePrompt]) {
+        let Some(job) = &mut self.job else {
+            return;
+        };
+        let new = prompts.get(job.prompts_seen..).unwrap_or_default();
+        job.prompts_seen = job.prompts_seen.max(prompts.len());
+        let seq = job.seq;
+        for prompt in new {
+            match &prompt.kind {
+                PromptKind::Message { icon, title, text } => {
+                    self.messages_shown += 1;
+                    self.messages.push(Message {
+                        id: self.messages_shown,
+                        icon: *icon,
+                        title: title.clone(),
+                        text: text.clone(),
+                    });
+                }
+                PromptKind::OpenFile {
+                    title,
+                    filter,
+                    start,
+                } => {
+                    let dir = match (start.as_str(), self.session.cwd.as_str()) {
+                        ("", "") => "/",
+                        ("", cwd) => cwd,
+                        (start, _) => start,
+                    };
+                    self.picker = Some(Picker {
+                        seq,
+                        prompt: prompt.id,
+                        title: if title.is_empty() {
+                            String::from("Select a file")
+                        } else {
+                            title.clone()
+                        },
+                        patterns: filter
+                            .split(';')
+                            .map(str::trim)
+                            .filter(|p| !p.is_empty())
+                            .map(str::to_owned)
+                            .collect(),
+                        dir: dir.to_owned(),
+                        selected: None,
+                        sending: None,
+                        status: String::new(),
+                    });
+                }
+            }
+        }
+    }
+
+    /// See whether the picker's answer was taken: it closes, or says why not and stays open.
+    fn answered(&mut self, ui: &mut Ui<'_>) {
+        let Some(picker) = &mut self.picker else {
+            return;
+        };
+        let Some(call) = picker.sending else {
+            return;
+        };
+        match ui.rpc().outcome::<OctaveAnswer>(call) {
+            Poll::Pending => {}
+            Poll::Ready(_) => self.picker = None,
+            Poll::Failed(err) => {
+                picker.sending = None;
+                picker.status = String::from("Couldn't open that: ");
+                picker.status.push_str(err.message());
+            }
+        }
+    }
+
+    /// Messages, and the file picker, as windows over the app.
+    fn dialogs(&self, ui: &mut Ui<'_>, act: &mut Vec<Action>) {
+        for m in &self.messages {
+            ui.push_id(&itoa(u64::from(m.id)), |ui| message(ui, m, act));
+        }
+        if let Some(picker) = &self.picker {
+            ui.push_id("picker", |ui| picker_window(ui, picker, act));
         }
     }
 
@@ -534,6 +662,7 @@ impl Octave {
                     job.elapsed_ms = status.elapsed_ms;
                     job.limit_ms = status.limit_ms;
                 }
+                self.take_prompts(&status.prompts);
                 if status.finished {
                     self.finish(&status);
                 } else {
@@ -1186,6 +1315,32 @@ impl Octave {
                 self.editor_path.set("");
                 self.editor_status.clear();
             }
+            Action::Dismiss(id) => self.messages.retain(|m| m.id != id),
+            Action::PickerDir(dir) => {
+                if let Some(picker) = &mut self.picker {
+                    picker.dir = dir;
+                    picker.selected = None;
+                }
+            }
+            Action::PickerSelect(path) => {
+                if let Some(picker) = &mut self.picker {
+                    picker.selected = Some(path);
+                }
+            }
+            Action::PickerAnswer(path) => {
+                let client = self.client.unwrap_or(1);
+                if let Some(picker) = &mut self.picker
+                    && picker.sending.is_none()
+                {
+                    picker.status.clear();
+                    picker.sending = Some(ui.rpc().send::<OctaveAnswer>(&OctaveAnswerReq {
+                        client,
+                        seq: picker.seq,
+                        prompt: picker.prompt,
+                        path: path.as_deref(),
+                    }));
+                }
+            }
             Action::Extend(minutes) => self.control(ui, OctaveAction::Extend { minutes }),
             Action::Stop => self.control(ui, OctaveAction::Stop),
             Action::Toggle(path) => {
@@ -1217,6 +1372,130 @@ impl Octave {
             }
         }
     }
+}
+
+/// Whether `name` matches one of `patterns`: globs with `*` and `?`, ignoring case. No patterns,
+/// or `*`, is any file.
+pub fn matches(patterns: &[String], name: &str) -> bool {
+    fn glob(p: &[u8], s: &[u8]) -> bool {
+        match (p.first(), s.first()) {
+            (None, None) => true,
+            (Some(b'*'), _) => glob(&p[1..], s) || (!s.is_empty() && glob(p, &s[1..])),
+            (Some(b'?'), Some(_)) => glob(&p[1..], &s[1..]),
+            (Some(a), Some(b)) => a.eq_ignore_ascii_case(b) && glob(&p[1..], &s[1..]),
+            _ => false,
+        }
+    }
+    patterns.is_empty()
+        || patterns
+            .iter()
+            .any(|p| p == "*.*" || glob(p.as_bytes(), name.as_bytes()))
+}
+
+fn message(ui: &mut Ui<'_>, m: &Message, act: &mut Vec<Action>) {
+    let (icon, title) = match m.icon {
+        MessageIcon::None => (icons::CHAT_TEXT, "Message"),
+        MessageIcon::Error => (icons::X_CIRCLE, "Error"),
+        MessageIcon::Warning => (icons::WARNING, "Warning"),
+        MessageIcon::Help => (icons::INFO, "Help"),
+    };
+    let title = if m.title.is_empty() { title } else { &m.title };
+    ui.window(title, |ui| {
+        ui.horizontal_top(|ui| {
+            ui.styled(icon, TextStyle::heading(2));
+            ui.vertical(|ui| {
+                for line in m.text.lines() {
+                    ui.label(line);
+                }
+            });
+        });
+        if ui.button("OK").clicked() {
+            act.push(Action::Dismiss(m.id));
+        }
+    });
+}
+
+fn picker_window(ui: &mut Ui<'_>, picker: &Picker, act: &mut Vec<Action>) {
+    ui.window(&picker.title, |ui| {
+        ui.horizontal(|ui| {
+            if picker.dir != "/" {
+                if ui.button(icons::ARROW_UP).clicked() {
+                    let up = match picker.dir.trim_end_matches('/').rfind('/') {
+                        Some(0) | None => "/",
+                        Some(i) => &picker.dir[..i],
+                    };
+                    act.push(Action::PickerDir(up.to_owned()));
+                }
+                ui.tooltip("The folder that holds this one");
+            }
+            ui.label(&label(icons::FOLDER, &picker.dir));
+        });
+        ui.separator();
+        ui.scroll(
+            |ui| match ui.rpc().get::<ListDir>(&ListDirReq { path: &picker.dir }) {
+                Poll::Pending => {
+                    ui.styled("Loading…", TextStyle::WEAK);
+                }
+                Poll::Failed(err) => {
+                    ui.styled(err.message(), TextStyle::WEAK | TextStyle::ITALIC);
+                }
+                Poll::Ready(listing) => {
+                    let mut entries: Vec<_> = (listing.entries.iter())
+                        .filter(|e| !e.name.starts_with('.'))
+                        .filter(|e| e.kind == EntryKind::Dir || matches(&picker.patterns, &e.name))
+                        .collect();
+                    entries.sort_by(|a, b| {
+                        (a.kind != EntryKind::Dir)
+                            .cmp(&(b.kind != EntryKind::Dir))
+                            .then_with(|| a.name.cmp(&b.name))
+                    });
+                    if entries.is_empty() {
+                        ui.styled("Nothing here matches", TextStyle::WEAK | TextStyle::ITALIC);
+                    }
+                    for e in entries {
+                        let path = join(&picker.dir, &e.name);
+                        ui.push_id(&e.name, |ui| {
+                            if e.kind == EntryKind::Dir {
+                                if ui
+                                    .selectable(false, &label(icons::FOLDER, &e.name))
+                                    .clicked()
+                                {
+                                    act.push(Action::PickerDir(path));
+                                }
+                            } else {
+                                let here = picker.selected.as_deref() == Some(path.as_str());
+                                if ui.selectable(here, &label(icons::FILE, &e.name)).clicked() {
+                                    act.push(Action::PickerSelect(path));
+                                }
+                            }
+                        });
+                    }
+                }
+            },
+        );
+        if !picker.status.is_empty() {
+            ui.styled(&picker.status, TextStyle::WEAK);
+        }
+        ui.separator();
+        ui.horizontal(|ui| {
+            if !picker.patterns.is_empty() {
+                let mut patterns = String::from("Showing ");
+                patterns.push_str(&picker.patterns.join(", "));
+                ui.styled(&patterns, TextStyle::WEAK);
+            }
+            let idle = picker.sending.is_none();
+            ui.enabled(idle && picker.selected.is_some(), |ui| {
+                if ui.button(&label(icons::FOLDER_OPEN, "Open")).clicked() {
+                    act.push(Action::PickerAnswer(picker.selected.clone()));
+                }
+            });
+            ui.enabled(idle, |ui| {
+                if ui.button("Cancel").clicked() {
+                    act.push(Action::PickerAnswer(None));
+                }
+            });
+        });
+    });
 }
 
 /// The widest a figure's image is shown. Octave's default figure prints narrower than this.
@@ -1315,6 +1594,7 @@ impl App for Octave {
             }
         }
         self.controlled(ui);
+        self.answered(ui);
         self.follow(ui);
         self.load(ui);
         self.saved(ui);
@@ -1340,6 +1620,7 @@ impl App for Octave {
                 Tab::Variable => self.variable_tab(ui),
             });
         });
+        self.dialogs(ui, &mut act);
         for a in act {
             self.act(ui, a);
         }
