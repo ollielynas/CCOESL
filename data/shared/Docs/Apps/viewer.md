@@ -20,7 +20,11 @@ You only ever find and open files you are allowed to read.
 
 ## What you see
 
-- **Pictures** fit the width of the window.
+- **Pictures** fit the width of the window. **ⓘ Details** shows what the picture says about
+  itself: its size in pixels and the file's size, and, for a photo, what the camera recorded,
+  such as the camera and lens, when it was taken, the exposure, aperture and ISO, and where it was
+  taken (as latitude and longitude) if the camera saved that. **Hide details** puts them away. A
+  screenshot or a downloaded picture usually has no camera details, and says so.
 - **Music and videos** play in your browser's own player, with its usual controls: play, pause,
   seek, volume and full screen. Music keeps playing if another window covers the player.
 - **PDFs** open in your browser's own PDF viewer, where you can scroll, zoom and search.

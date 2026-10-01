@@ -9,7 +9,7 @@
 //! for a file to open.
 
 use ccosel_proto::fs::{
-    EntryKind, ListDir, ListDirReq, MAX_TEXT_BYTES, PathReq, ReadFile, Search, SearchReq,
+    EntryKind, ImageInfo, ListDir, ListDirReq, MAX_TEXT_BYTES, PathReq, ReadFile, Search, SearchReq,
 };
 use ccosel_sdk::{App, MediaKind, Poll, Text, TextStyle, Ui, Vec2, icons, url};
 
@@ -162,6 +162,8 @@ pub struct Viewer {
     rows: Vec<Vec<String>>,
     /// Whether a table file is shown as its text instead.
     pub as_text: bool,
+    /// Whether a picture's details (size, camera, when and where it was taken) are shown.
+    pub details: bool,
 }
 
 impl Default for Viewer {
@@ -173,6 +175,7 @@ impl Default for Viewer {
             text_for: None,
             rows: Vec::new(),
             as_text: false,
+            details: false,
         }
     }
 }
@@ -269,6 +272,17 @@ impl Viewer {
         let (dir, name) = split(path);
         ui.horizontal(|ui| {
             ui.styled(name, TextStyle::STRONG);
+            if kind_of(path) == Kind::Image {
+                let label = if self.details {
+                    format!("{}  Hide details", icons::INFO)
+                } else {
+                    format!("{}  Details", icons::INFO)
+                };
+                if ui.button(&label).clicked() {
+                    self.details = !self.details;
+                }
+                ui.tooltip("Its size, and what the camera recorded: when, where and how");
+            }
             ui.open_url(
                 &format!("{}  Download", icons::DOWNLOAD_SIMPLE),
                 &url::file_url(path),
@@ -316,6 +330,10 @@ impl Viewer {
 
         match kind_of(path) {
             Kind::Image => {
+                if self.details {
+                    image_details(ui, path, size);
+                    ui.separator();
+                }
                 ui.image(&url::inline_file_url(path), Vec2::new(0.0, 0.0));
             }
             Kind::Video => {
@@ -389,6 +407,43 @@ impl Viewer {
                         ui.text_view(&mut self.text);
                     });
                 }
+            }
+        }
+    }
+}
+
+/// A picture's size and what its camera recorded, read by the server (the app never holds the
+/// picture itself), as a two-column table. Asked for only once someone opens it.
+fn image_details(ui: &mut Ui<'_>, path: &str, size: Option<u64>) {
+    match ui.rpc().get::<ImageInfo>(&PathReq { path }) {
+        Poll::Pending => {
+            ui.label("Reading the details…");
+        }
+        Poll::Failed(e) => {
+            ui.label(e.message());
+        }
+        Poll::Ready(info) => {
+            let mut rows: Vec<(String, String)> = Vec::new();
+            if let (Some(w), Some(h)) = (info.width, info.height) {
+                rows.push(("Dimensions".to_owned(), format!("{w} × {h} pixels")));
+            }
+            if let Some(size) = size {
+                rows.push(("File size".to_owned(), human_size(size)));
+            }
+            rows.extend(info.fields.iter().cloned());
+            ui.table(|ui| {
+                for (label, value) in &rows {
+                    ui.row(|ui| {
+                        ui.styled(label, TextStyle::STRONG);
+                        ui.label(value);
+                    });
+                }
+            });
+            if info.fields.is_empty() {
+                ui.styled(
+                    "No camera details in this picture.",
+                    TextStyle::WEAK | TextStyle::ITALIC,
+                );
             }
         }
     }

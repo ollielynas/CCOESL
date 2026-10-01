@@ -1,6 +1,6 @@
 use ccosel_proto::fs::{
-    DirEntry, DirListing, EntryKind, FileText, ListDir, MAX_TEXT_BYTES, ReadFile, Search,
-    SearchHit, SearchReply,
+    DirEntry, DirListing, EntryKind, FileText, ImageInfo, ImageInfoReply, ListDir, MAX_TEXT_BYTES,
+    ReadFile, Search, SearchHit, SearchReply,
 };
 use ccosel_sdk::testing::{Harness, rpc_error};
 use ccosel_sdk::{MediaKind, TextStyle, icons};
@@ -62,7 +62,7 @@ fn opened_from_the_menu_it_is_a_search() {
 }
 
 #[test]
-fn a_search_result_opens_and_back_returns_to_the_results() {
+fn a_search_result_opens_and_the_window_stays_on_it() {
     let mut h = Harness::new(Viewer::default());
     h.frame();
     h.type_text(0, "holiday");
@@ -100,7 +100,7 @@ fn a_search_result_opens_and_back_returns_to_the_results() {
     // From here the window is that file: no search, and no way back to one.
     assert!(h.text_fields().is_empty());
     assert!(!h.has_text("Find a file"));
-    assert!(h.buttons().is_empty(), "{:?}", h.buttons());
+    assert_eq!(h.buttons(), [details(false)], "nothing to go back with");
 }
 
 #[test]
@@ -400,4 +400,78 @@ fn a_big_table_shows_its_first_rows_and_says_so() {
         !h.has_label(&format!("{MAX_ROWS}")),
         "no further than the cap"
     );
+}
+
+fn details(show: bool) -> String {
+    if show {
+        label(icons::INFO, "Hide details")
+    } else {
+        label(icons::INFO, "Details")
+    }
+}
+
+#[test]
+fn a_pictures_details_are_asked_for_only_when_opened() {
+    let mut h = opened_on("/Photos/beach.jpg", 3 << 20);
+    assert!(h.has_button(&details(false)));
+    assert_eq!(h.outstanding::<ImageInfo>(), 0, "not until asked");
+
+    h.click(&details(false));
+    h.frame();
+    h.frame();
+    assert!(h.app.details);
+    assert!(h.has_label("Reading the details…"));
+    h.reply::<ImageInfo>(&ImageInfoReply {
+        width: Some(4032),
+        height: Some(3024),
+        fields: vec![
+            ("Camera".to_owned(), "Apple iPhone 15 Pro".to_owned()),
+            ("Location".to_owned(), "51.50000, -0.12500".to_owned()),
+        ],
+    });
+    h.frame();
+    assert!(h.has_label("4032 × 3024 pixels"));
+    assert!(h.has_label("3 MB"));
+    assert!(h.has_label("Apple iPhone 15 Pro"));
+    assert!(
+        h.styled()
+            .contains(&("Location".to_owned(), TextStyle::STRONG))
+    );
+    assert!(!h.has_text("No camera details in this picture."));
+    assert_eq!(h.images().len(), 1, "the picture is still there");
+
+    h.click(&details(true));
+    h.frame();
+    h.frame();
+    assert!(!h.app.details);
+    assert!(!h.has_label("Apple iPhone 15 Pro"));
+}
+
+#[test]
+fn a_picture_with_no_camera_details_says_so() {
+    let mut h = opened_on("/shot.png", 10);
+    h.app.details = true;
+    h.frame();
+    h.reply::<ImageInfo>(&ImageInfoReply {
+        width: None,
+        height: None,
+        fields: vec![],
+    });
+    h.frame();
+    assert!(h.has_text("No camera details in this picture."));
+    assert!(h.has_label("10 bytes"));
+    assert!(!h.has_label("Dimensions"));
+
+    let mut h = opened_on("/shot.png", 10);
+    h.app.details = true;
+    h.frame();
+    h.fail::<ImageInfo>(rpc_error::DENIED);
+    h.frame();
+    assert!(h.has_label("permission denied"));
+}
+
+#[test]
+fn only_pictures_have_details() {
+    let h = opened_on("/v/clip.mp4", 10);
+    assert!(!h.has_button(&details(false)));
 }
