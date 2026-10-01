@@ -291,6 +291,16 @@ impl<A: App> Harness<A> {
             .collect()
     }
 
+    /// The URL and requested size of every image drawn in the last frame, in order.
+    pub fn images(&self) -> Vec<(String, ccosel_abi::Vec2)> {
+        self.commands()
+            .filter_map(|c| match c {
+                Cmd::Image { src, size, .. } => Some((src.to_string(), size)),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// Destination folder of every `upload_folder` button drawn in the last frame, in order.
     pub fn upload_buttons(&self) -> Vec<String> {
         self.commands()

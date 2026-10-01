@@ -60,8 +60,13 @@ pub async fn fetch_wallpaper(url: &str, max_side: usize) -> Result<egui::ColorIm
 /// `max_side`, the GPU's texture limit. Without the shrink, a photo straight off a camera is
 /// larger than many GPUs accept, and egui refuses the texture.
 pub fn decode_wallpaper(bytes: &[u8], max_side: usize) -> Result<egui::ColorImage, String> {
-    let mut decoded =
-        image::load_from_memory(bytes).map_err(|e| format!("decode wallpaper: {e}"))?;
+    decode_image(bytes, max_side).map_err(|e| format!("decode wallpaper: {e}"))
+}
+
+/// Decodes a JPEG or PNG, shrunk to fit `max_side`. The wallpaper's decoder, shared with the
+/// images apps show (`crate::images`).
+pub fn decode_image(bytes: &[u8], max_side: usize) -> Result<egui::ColorImage, String> {
+    let mut decoded = image::load_from_memory(bytes).map_err(|e| e.to_string())?;
     let max_side = u32::try_from(max_side).unwrap_or(u32::MAX);
     if decoded.width() > max_side || decoded.height() > max_side {
         decoded = decoded.thumbnail(max_side, max_side);

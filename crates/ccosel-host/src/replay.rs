@@ -395,11 +395,19 @@ impl Cx<'_> {
 
                 Cmd::Image { id, src, size } => {
                     // Images are fetched by the *shell*, by URL, so they hit the browser's HTTP
-                    // cache and never occupy guest memory. Until the shell's loader lands, draw
-                    // a placeholder of the right size so layout is already correct.
+                    // cache and never occupy guest memory: egui asks the image loaders the
+                    // shell installed. Only this server's own paths, so an app can't have the
+                    // shell fetch from somewhere else on its behalf. Anything else, and any
+                    // host with no loader, gets a placeholder of the same size.
+                    // Exactly the size asked for, whatever the image's own shape, so the app's
+                    // layout never moves when the image arrives.
                     let (rect, r) =
                         ui.allocate_exact_size(convert::vec2(size), egui::Sense::click());
-                    if ui.is_rect_visible(rect) {
+                    if same_origin(src) && !ui.ctx().loaders().image.lock().is_empty() {
+                        if ui.is_rect_visible(rect) {
+                            egui::Image::new(src).paint_at(ui, rect);
+                        }
+                    } else if ui.is_rect_visible(rect) {
                         let visuals = ui.visuals();
                         ui.painter()
                             .rect_filled(rect, 4.0, visuals.extreme_bg_color);
@@ -725,6 +733,12 @@ pub(crate) fn strong_color(visuals: &egui::Visuals) -> egui::Color32 {
         egui::Color32::BLACK
     };
     body.lerp_to_gamma(extreme, 0.5)
+}
+
+/// A path on the server that served the shell, such as `/octave/figure/1/2/1.png`: no scheme,
+/// no host, and nothing a browser would read as one (`//host`, `/\\host`).
+pub fn same_origin(src: &str) -> bool {
+    src.starts_with('/') && !src.starts_with("//") && !src.contains('\\')
 }
 
 fn to_record(local_id: u64, r: &egui::Response) -> RespRecord {

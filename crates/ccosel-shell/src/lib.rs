@@ -17,6 +17,7 @@ mod desktop;
 mod fetch;
 mod fullscreen;
 mod http_wire;
+mod images;
 mod registry;
 mod theme;
 mod upload;
@@ -45,6 +46,7 @@ pub async fn start(canvas: web_sys::HtmlCanvasElement) -> Result<(), JsValue> {
             canvas,
             eframe::WebOptions::default(),
             Box::new(|cc| {
+                images::install(&cc.egui_ctx);
                 Ok(Box::new(Shell {
                     desktop: Desktop::new(cc.egui_ctx.clone()),
                 }))

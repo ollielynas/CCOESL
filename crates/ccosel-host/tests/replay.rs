@@ -1006,3 +1006,82 @@ fn a_disabled_scope_ignores_clicks_on_what_is_in_it() {
     let recs = frame(&ctx, &mut r, &buf, click_at(centre(&run))).unwrap();
     assert!(!find(&recs, 97).clicked());
 }
+
+#[test]
+fn only_paths_on_this_server_are_same_origin() {
+    use ccosel_host::same_origin;
+    assert!(same_origin("/octave/figure/1/2/1.png"));
+    assert!(same_origin("/files/home/alice/plot.png"));
+    for off_site in [
+        "https://example.com/x.png",
+        "//example.com/x.png",
+        "/\\example.com/x.png",
+        "data:image/png;base64,AAAA",
+        "x.png",
+        "",
+    ] {
+        assert!(!same_origin(off_site), "{off_site}");
+    }
+}
+
+/// An image loader that answers every URI with a 2x2 image, and remembers what it was asked.
+#[derive(Default)]
+struct FakeImages {
+    asked: std::sync::Mutex<Vec<String>>,
+}
+
+impl egui::load::ImageLoader for FakeImages {
+    fn id(&self) -> &str {
+        "fake"
+    }
+    fn load(
+        &self,
+        _ctx: &egui::Context,
+        uri: &str,
+        _hint: egui::load::SizeHint,
+    ) -> egui::load::ImageLoadResult {
+        self.asked.lock().unwrap().push(uri.to_owned());
+        Ok(egui::load::ImagePoll::Ready {
+            image: std::sync::Arc::new(egui::ColorImage::filled([2, 2], egui::Color32::RED)),
+        })
+    }
+    fn forget(&self, _uri: &str) {}
+    fn forget_all(&self) {}
+    fn byte_size(&self) -> usize {
+        0
+    }
+}
+
+#[test]
+fn an_image_is_drawn_by_the_shells_loader_at_the_size_the_app_asked() {
+    let ctx = egui::Context::default();
+    let images = std::sync::Arc::new(FakeImages::default());
+    ctx.add_image_loader(images.clone());
+    let mut r = Replayer::new();
+    let size = ccosel_abi::Vec2::new(120.0, 90.0);
+    let buf = encode(&[
+        Cmd::Image {
+            id: 50,
+            src: "/octave/figure/1/2/1.png",
+            size,
+        },
+        Cmd::Image {
+            id: 51,
+            src: "https://example.com/tracker.png",
+            size,
+        },
+    ]);
+    let recs = frame(&ctx, &mut r, &buf, raw_input()).unwrap();
+    for id in [50, 51] {
+        let rect = find(&recs, id).rect;
+        assert_eq!(
+            (rect[2] - rect[0], rect[3] - rect[1]),
+            (120.0, 90.0),
+            "{id}"
+        );
+    }
+    // The off-site one never reached the loader: it is a placeholder.
+    assert_eq!(*images.asked.lock().unwrap(), ["/octave/figure/1/2/1.png"]);
+    let recs = frame(&ctx, &mut r, &buf, click_at(centre(&find(&recs, 50)))).unwrap();
+    assert!(find(&recs, 50).clicked());
+}
