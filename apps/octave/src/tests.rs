@@ -6,6 +6,15 @@ use ccosel_sdk::icons;
 
 use super::*;
 
+/// A window that has already learned its session's state, so tests start from a session they
+/// set up themselves rather than waiting on the one a new window asks for.
+fn known() -> Octave {
+    Octave {
+        synced: true,
+        ..Octave::default()
+    }
+}
+
 fn var(name: &str, value: &str) -> Variable {
     Variable {
         name: name.to_owned(),
@@ -37,7 +46,7 @@ fn done(output: &str, result: OctaveResult) -> OctaveStatus {
 
 /// An app with the prompt holding `code`, Run pressed, and the server having taken the job.
 fn running(code: &str) -> Harness<Octave> {
-    let mut h = Harness::new(Octave::default());
+    let mut h = Harness::new(known());
     h.frame();
     h.type_text(1, code);
     h.frame();
@@ -51,7 +60,7 @@ fn running(code: &str) -> Harness<Octave> {
 
 #[test]
 fn starts_with_an_empty_session() {
-    let mut h = Harness::new(Octave::default());
+    let mut h = Harness::new(known());
     h.frame();
     assert!(h.has_text("Workspace"));
     assert!(h.has_text("No variables yet"));
@@ -110,7 +119,7 @@ fn errors_are_marked_as_errors() {
 
 #[test]
 fn a_blank_prompt_runs_nothing() {
-    let mut h = Harness::new(Octave::default());
+    let mut h = Harness::new(known());
     h.frame();
     h.click(&label(icons::PLAY, "Run"));
     h.frame();
@@ -130,7 +139,7 @@ fn one_job_at_a_time() {
 
 #[test]
 fn without_octave_the_app_says_so() {
-    let mut h = Harness::new(Octave::default());
+    let mut h = Harness::new(known());
     h.frame();
     h.type_text(1, "1");
     h.frame();
@@ -144,7 +153,7 @@ fn without_octave_the_app_says_so() {
 
 #[test]
 fn a_run_that_fails_is_reported() {
-    let mut h = Harness::new(Octave::default());
+    let mut h = Harness::new(known());
     h.frame();
     h.type_text(1, "1");
     h.frame();
@@ -184,7 +193,7 @@ fn truncated_output_is_flagged() {
 
 #[test]
 fn history_recalls_older_and_newer_commands() {
-    let mut h = Harness::new(Octave::default());
+    let mut h = Harness::new(known());
     h.app.history = vec!["a = 1".to_owned(), "b = 2".to_owned()];
     h.frame();
     h.click(icons::CARET_UP);
@@ -209,7 +218,7 @@ fn history_recalls_older_and_newer_commands() {
 
 #[test]
 fn history_can_be_searched_recalled_and_rerun() {
-    let mut h = Harness::new(Octave::default());
+    let mut h = Harness::new(known());
     h.app.history = vec!["alpha = 1".to_owned(), "beta = 2".to_owned()];
     h.frame();
     h.type_text(0, "BET");
@@ -234,14 +243,14 @@ fn history_can_be_searched_recalled_and_rerun() {
 
 #[test]
 fn an_empty_history_says_so() {
-    let mut h = Harness::new(Octave::default());
+    let mut h = Harness::new(known());
     h.frame();
     assert!(h.has_text("Nothing yet"));
 }
 
 #[test]
 fn create_script_puts_the_history_in_the_editor() {
-    let mut h = Harness::new(Octave::default());
+    let mut h = Harness::new(known());
     h.app.history = vec!["a = 1".to_owned(), "b = a + 1".to_owned()];
     h.frame();
     h.click(&label(icons::NOTE_PENCIL, "Create script"));
@@ -254,7 +263,7 @@ fn create_script_puts_the_history_in_the_editor() {
 
 #[test]
 fn clear_empties_the_command_window() {
-    let mut h = Harness::new(Octave::default());
+    let mut h = Harness::new(known());
     h.app.log.push((LineKind::Output, "old".to_owned()));
     h.frame();
     h.click(&label(icons::BROOM, "Clear"));
@@ -264,7 +273,7 @@ fn clear_empties_the_command_window() {
 
 #[test]
 fn restart_clears_the_session() {
-    let mut h = Harness::new(Octave::default());
+    let mut h = Harness::new(known());
     h.app.session = session(vec![var("x", "1")], vec![]);
     h.app.inspected = Some("x".to_owned());
     h.frame();
@@ -282,7 +291,7 @@ fn restart_clears_the_session() {
 
 #[test]
 fn picking_a_variable_shows_all_of_it() {
-    let mut h = Harness::new(Octave::default());
+    let mut h = Harness::new(known());
     let mut m = var("m", "");
     m.size = "3x3".to_owned();
     m.attributes = "global".to_owned();
@@ -309,7 +318,7 @@ fn picking_a_variable_shows_all_of_it() {
 
 #[test]
 fn a_strange_name_is_never_sent_as_code() {
-    let mut h = Harness::new(Octave::default());
+    let mut h = Harness::new(known());
     h.app.session = session(vec![var("x); system(\"rm", "")], vec![]);
     h.frame();
     h.click("x); system(\"rm  1x1 double");
@@ -322,7 +331,7 @@ fn a_strange_name_is_never_sent_as_code() {
 
 #[test]
 fn the_variable_view_explains_itself() {
-    let mut h = Harness::new(Octave::default());
+    let mut h = Harness::new(known());
     h.frame();
     h.click("Variable");
     h.frame();
@@ -335,7 +344,7 @@ fn the_variable_view_explains_itself() {
 
 #[test]
 fn values_and_caps_show_in_the_workspace() {
-    let mut h = Harness::new(Octave::default());
+    let mut h = Harness::new(known());
     let mut r = session(vec![var("v", "[1 2 3]")], vec![]);
     r.variables_truncated = true;
     h.app.session = r;
@@ -375,7 +384,7 @@ fn waves() -> Figure {
 
 #[test]
 fn figures_are_drawn_and_can_be_saved() {
-    let mut h = Harness::new(Octave::default());
+    let mut h = Harness::new(known());
     h.app.session = session(
         vec![],
         vec![
@@ -408,7 +417,7 @@ fn figures_are_drawn_and_can_be_saved() {
 
 #[test]
 fn no_figures_says_how_to_make_one() {
-    let mut h = Harness::new(Octave::default());
+    let mut h = Harness::new(known());
     h.frame();
     h.click("Figures");
     h.frame();
@@ -417,7 +426,7 @@ fn no_figures_says_how_to_make_one() {
 }
 
 fn editor() -> Harness<Octave> {
-    let mut h = Harness::new(Octave::default());
+    let mut h = Harness::new(known());
     h.frame();
     h.click("Editor");
     // One frame for the app to see the click, one to draw the tab it chose.
@@ -576,7 +585,7 @@ fn new_clears_the_editor() {
 
 #[test]
 fn the_log_keeps_only_recent_lines() {
-    let mut h = Harness::new(Octave::default());
+    let mut h = Harness::new(known());
     for i in 0..MAX_LOG + 10 {
         h.app.push_log(LineKind::Output, &itoa(i as u64));
     }
@@ -587,14 +596,14 @@ fn the_log_keeps_only_recent_lines() {
 
 #[test]
 fn outside_the_jail_the_folder_says_so() {
-    let mut h = Harness::new(Octave::default());
+    let mut h = Harness::new(known());
     h.frame();
     assert!(h.has_label("(outside the shared files)"));
 }
 
 #[test]
 fn enter_at_the_prompt_runs_the_command() {
-    let mut h = Harness::new(Octave::default());
+    let mut h = Harness::new(known());
     h.frame();
     assert!(h.has_text(
         "Type Octave code at the >> prompt below and press Enter to run it. \
@@ -628,7 +637,7 @@ fn listing(entries: Vec<DirEntry>) -> DirListing {
 
 /// An app whose session is in `/home/alice`, with that folder listed.
 fn in_folder() -> Harness<Octave> {
-    let mut h = Harness::new(Octave::default());
+    let mut h = Harness::new(known());
     h.app.session = session(vec![], vec![]);
     h.frame();
     assert!(h.has_text("Current Folder"));
@@ -745,7 +754,7 @@ fn clocks_read_as_minutes_or_hours() {
 
 #[test]
 fn a_running_job_shows_its_time_against_the_limit() {
-    let mut h = Harness::new(Octave::default());
+    let mut h = Harness::new(known());
     h.frame();
     h.type_text(1, "pause(100)");
     h.press_enter(1);
@@ -927,4 +936,39 @@ fn figures_are_drawn_again_after_another_command() {
     h.frame();
     let job = h.app.job.as_ref().expect("drawn again");
     assert_eq!((job.target.clone(), job.seq), (Target::Render, 4));
+}
+
+#[test]
+fn a_new_window_asks_for_its_session_at_once() {
+    let mut h = Harness::new(Octave::default());
+    h.frame();
+    let job = h.app.job.as_ref().expect("asked straight away");
+    assert_eq!(job.target, Target::Sync);
+    assert!(h.has_label("…"), "the folder isn't known yet, not outside");
+    assert!(h.has_text("Loading…"));
+    h.frame();
+    assert!(h.has_label(&label(icons::HOURGLASS, "Starting Octave…")));
+    h.reply::<OctaveRun>(&true);
+    h.frame();
+
+    // A session from another window: its variables are already there.
+    h.reply::<OctavePoll>(&done("", session(vec![var("x", "3")], vec![])));
+    h.frame();
+    h.frame();
+    assert!(h.app.synced);
+    assert!(h.has_label("/home/alice"));
+    assert!(h.has_text("Current Folder"));
+    assert!(h.selectables().iter().any(|(t, _)| t == "x  1x1 double"));
+    // Asking isn't a command: nothing in the log or the history.
+    assert!(h.app.log.is_empty());
+    assert!(h.app.history.is_empty());
+}
+
+#[test]
+fn a_new_window_learns_at_once_that_there_is_no_octave() {
+    let mut h = Harness::new(Octave::default());
+    h.frame();
+    h.reply::<OctaveRun>(&false);
+    h.frame();
+    assert!(h.has_text("Octave isn't installed on this server."));
 }

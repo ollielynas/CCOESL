@@ -60,6 +60,8 @@ pub enum Target {
     Inspect(String),
     /// Drawing the figures as images for the Figures tab. Its output is gnuplot's chatter.
     Render,
+    /// Running nothing, to learn the session's state when the window opens.
+    Sync,
 }
 
 /// What to run, owned, until it is sent.
@@ -127,6 +129,9 @@ pub struct Octave {
     pub rendered: Option<u32>,
     /// The figures changed since they were last drawn as images.
     pub figures_stale: bool,
+    /// A job has reported the session's state at least once. Until then the app doesn't know
+    /// the working folder or the variables, which isn't the same as there being none.
+    pub synced: bool,
 }
 
 impl Default for Octave {
@@ -155,6 +160,7 @@ impl Default for Octave {
             controls: Vec::new(),
             rendered: None,
             figures_stale: false,
+            synced: false,
         }
     }
 }
@@ -361,7 +367,7 @@ impl Octave {
                     self.push_log(kind, &line);
                 }
                 Target::Inspect(_) => self.inspect_output.push(line),
-                Target::Render => {}
+                Target::Render | Target::Sync => {}
             }
         }
     }
@@ -376,6 +382,7 @@ impl Octave {
         }
         if let Some(result) = &status.result {
             self.session = result.clone();
+            self.synced = true;
         }
         // A render's report is the one whose figures carry images; any other job's replaces
         // it with figures that may have changed, so the next look at them draws them again.
@@ -495,10 +502,10 @@ impl Octave {
     fn toolbar(&self, ui: &mut Ui<'_>, act: &mut Vec<Action>) {
         ui.horizontal(|ui| {
             ui.label(icons::FOLDER);
-            let cwd = if self.session.cwd.is_empty() {
-                "(outside the shared files)"
-            } else {
-                self.session.cwd.as_str()
+            let cwd = match (self.session.cwd.as_str(), self.synced) {
+                ("", false) => "…",
+                ("", true) => "(outside the shared files)",
+                (cwd, _) => cwd,
             };
             ui.label(cwd);
             ui.tooltip("Octave's working folder. Change it with cd at the prompt.");
@@ -545,6 +552,10 @@ impl Octave {
         }
         if job.target == Target::Render {
             ui.label(&label(icons::HOURGLASS, "Drawing figures…"));
+            return;
+        }
+        if job.target == Target::Sync {
+            ui.label(&label(icons::HOURGLASS, "Starting Octave…"));
             return;
         }
         ui.label(&label(icons::HOURGLASS, "Running…"));
@@ -600,6 +611,10 @@ impl Octave {
                     });
                 }
             });
+            if !self.synced {
+                ui.styled("Loading…", TextStyle::WEAK);
+                return;
+            }
             if self.session.cwd.is_empty() {
                 ui.styled(
                     "Octave's working folder is outside the shared files.",
@@ -1217,6 +1232,12 @@ impl App for Octave {
         if self.client.is_none() {
             // Any number another window is unlikely to have picked. The clock will do.
             self.client = Some((ui.ctx().time_ms as u64 as u32) | 1);
+            // The session may well exist already (another window, a reload), and even a new
+            // one has a folder: ask, rather than show nothing until the first command. It
+            // also finds out at once whether the server has Octave at all.
+            if !self.synced {
+                self.start(ui, Run::Code(String::new()), Target::Sync);
+            }
         }
         self.controlled(ui);
         self.follow(ui);
