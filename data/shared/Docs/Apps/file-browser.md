@@ -23,9 +23,15 @@ above it.
 
 Clicking a file selects it, and its name is shown at the bottom.
 
-## Downloading
+## Opening, sharing and downloading a file
 
-Every file has a **Download** button. Your browser downloads it in a new tab.
+Right-click a file's name for what you can do with it:
+
+- **Open with Viewer** shows it in the [Viewer](viewer.md): pictures, music, videos, PDFs and
+  text files.
+- **Share with Viewer** copies a link that opens the file in the Viewer. Whoever follows it signs
+  in first, and sees the file only if they are allowed to read it.
+- **Download** saves it to your computer.
 
 ## Uploading
 
