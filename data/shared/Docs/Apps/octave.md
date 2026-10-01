@@ -34,13 +34,16 @@ again, which clears your variables.
 - **:stop: Stop** interrupts it, like Ctrl-C at Octave's own prompt. Your variables are kept,
   including any the command had set before it stopped.
 
-Commands that wait for something nobody here can do never finish on their own, so stop them, or
-avoid them:
+A script that waits for figure windows to be closed, such as
+`while ! isempty(get(0, "children")), pause(0.2); end`, never finishes on its own: figures here
+have no windows to close. Stop it, or look at the figures in the **Figures** tab instead.
 
-- waiting for you to type, such as `input` or `keyboard`;
-- waiting for figure windows to be closed, such as
-  `while ! isempty(get(0, "children")), pause(0.2); end`. Figures here have no windows to close.
-  Look at them in the **Figures** tab instead.
+A few commands work differently here, because there is no terminal behind the window:
+
+- `input` and `keyboard` can't be answered. A script that calls one stops there with an error
+  saying so. Set the value in the script instead.
+- `exit` and `quit` don't end Octave. The script stops there, as on an error, and your
+  variables are kept. Use **:arrow_clockwise: Restart** to start again from empty.
 
 ## The working folder
 
@@ -111,7 +114,7 @@ open from the Files app.
 
 **:arrow_clockwise: Restart** starts a fresh Octave: every variable and figure is cleared. Use it if Octave
 seems stuck, or to start from a clean slate. Octave also restarts by itself if it stops, for
-example after `exit`, or after a command runs too long.
+example if it crashes, or after a command runs past its time limit.
 
 If the window says **Octave isn't installed on this server**, the server doesn't have Octave;
 ask whoever runs it.

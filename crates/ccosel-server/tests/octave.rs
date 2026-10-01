@@ -606,3 +606,43 @@ fn real_octave_renders_a_surface() {
     let png = octave.figure(None, 1, 2, 1).unwrap();
     assert_eq!(ccosel_server::octave_api::png_size(&png), Some((w, h)));
 }
+
+/// Real Octave, when this machine has it: `exit` and `input` would end the session or wait
+/// forever. Each stops the script with an error instead, and the session and its variables stay.
+#[test]
+fn real_octave_survives_exit_and_input() {
+    let (jail, support) = setup("real-exit");
+    let octave = Octave::detect(support);
+    if !octave.available() {
+        eprintln!("octave-cli is not installed; skipped");
+        return;
+    }
+    for (seq, code, says) in [
+        (
+            1,
+            "a = 1;\nexit(0);\nb = 2;",
+            "exit doesn't end Octave here",
+        ),
+        (2, "quit", "quit doesn't end Octave here"),
+        (
+            3,
+            "c = input(\"? \", \"s\");",
+            "input can't be answered here",
+        ),
+        (4, "keyboard", "keyboard can't be answered here"),
+    ] {
+        run(&octave, &jail, None, seq, OctaveInput::Code(code));
+        let status = wait(&octave, None, seq);
+        assert!(status.elapsed_ms < 30_000, "{code}: answered at once");
+        assert!(status.output.contains(says), "{code}: {}", status.output);
+        assert!(
+            !status.output.contains("shadows"),
+            "no warning: {}",
+            status.output
+        );
+        let result = status.result.unwrap();
+        assert!(result.error && !result.ended, "{code}: {}", status.output);
+        let names: Vec<&str> = result.variables.iter().map(|v| v.name.as_str()).collect();
+        assert_eq!(names, ["a"], "{code}: the session and `a` survive");
+    }
+}

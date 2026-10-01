@@ -36,6 +36,17 @@ use crate::fs_api::{Jail, Need};
 /// the server binary is all that needs deploying.
 const RUNNER: &str = include_str!("octave/__ccosel_run__.m");
 
+/// Stand-ins for built-ins that can't work in a session, so a script that calls one stops with
+/// an error at once: `exit` and `quit` would end the session and lose its variables (Restart is
+/// how to get a fresh one), and `input` and `keyboard` would wait forever on the server's own
+/// command channel.
+const SHADOWS: [(&str, &str); 4] = [
+    ("exit.m", include_str!("octave/exit.m")),
+    ("quit.m", include_str!("octave/quit.m")),
+    ("input.m", include_str!("octave/input.m")),
+    ("keyboard.m", include_str!("octave/keyboard.m")),
+];
+
 /// A job still running after this is not coming back, unless its user said it would take
 /// longer (`OctaveControl`). The session is killed to stop it, which loses its variables; the
 /// app says so.
@@ -115,8 +126,13 @@ impl Octave {
     /// stand in a recording for Octave and shorten the time limit.
     pub fn with_program(program: Option<Vec<String>>, support: PathBuf, timeout: Duration) -> Self {
         if program.is_some() {
-            let written = std::fs::create_dir_all(&support)
-                .and_then(|()| std::fs::write(support.join("__ccosel_run__.m"), RUNNER));
+            let written = std::fs::create_dir_all(&support).and_then(|()| {
+                std::fs::write(support.join("__ccosel_run__.m"), RUNNER)?;
+                for (name, text) in SHADOWS {
+                    std::fs::write(support.join(name), text)?;
+                }
+                Ok(())
+            });
             if let Err(e) = written {
                 eprintln!("octave: writing {}: {e}", support.display());
             }
@@ -565,6 +581,7 @@ impl Session {
         let tag = job_tag();
         let init = format!(
             "more off\n\
+             warning(\"off\", \"Octave:shadowed-function\")\n\
              addpath(\"{}\")\n\
              set(0, \"defaultfigurevisible\", \"off\")\n\
              try, close(figure()), end\n\
