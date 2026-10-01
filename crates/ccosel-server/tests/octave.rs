@@ -123,6 +123,7 @@ fn a_plot_becomes_a_figure() {
     assert_eq!(result.figures.len(), 1);
     let fig = &result.figures[0];
     assert_eq!(fig.number, 1);
+    assert!(fig.changed, "the job drew it");
     assert_eq!(fig.axes.len(), 1, "the legend is not a second set of axes");
     let axes = &fig.axes[0];
     assert_eq!(axes.title, "waves");
@@ -645,4 +646,88 @@ fn real_octave_survives_exit_and_input() {
         let names: Vec<&str> = result.variables.iter().map(|v| v.name.as_str()).collect();
         assert_eq!(names, ["a"], "{code}: the session and `a` survive");
     }
+}
+
+/// Real Octave, when this machine has it: which figures a job created or drew into, where a
+/// desktop would have popped up a window; and a figure made visible draws nothing into the
+/// output, nor does waiting for its window to close hang.
+#[test]
+fn real_octave_says_which_figures_a_job_drew() {
+    let (jail, support) = setup("real-changed");
+    let octave = Octave::detect(support);
+    if !octave.available() {
+        eprintln!("octave-cli is not installed; skipped");
+        return;
+    }
+    let changed = |octave: &Octave, seq, code| {
+        run(octave, &jail, None, seq, OctaveInput::Code(code));
+        let status = wait(octave, None, seq);
+        let result = status.result.unwrap();
+        assert!(!result.error, "{code}: {}", status.output);
+        let drawn: Vec<u32> = result
+            .figures
+            .iter()
+            .filter(|f| f.changed)
+            .map(|f| f.number)
+            .collect();
+        (drawn, status.output)
+    };
+    assert_eq!(
+        changed(&octave, 1, "plot(1:3); figure(); plot(3:-1:1);").0,
+        [1, 2]
+    );
+    assert_eq!(
+        changed(&octave, 2, "x = 1;").0,
+        [] as [u32; 0],
+        "nothing drawn"
+    );
+    assert_eq!(changed(&octave, 3, "figure(1); hold on; plot(2:4);").0, [1]);
+    assert_eq!(
+        changed(&octave, 4, "print(2, \"two.png\");").0,
+        [] as [u32; 0],
+        "saving isn't drawing"
+    );
+
+    let (drawn, output) = changed(
+        &octave,
+        5,
+        "f = figure(\"visible\", \"on\"); plot(1:10); drawnow; waitfor(f); uiwait(f); disp(\"done\")",
+    );
+    assert_eq!(drawn, [3]);
+    assert!(output.contains("done"), "{output}");
+    assert!(output.contains("waitfor doesn't wait here"), "{output}");
+    assert!(output.contains("uiwait doesn't wait here"), "{output}");
+    // No text-art plot, and none of gnuplot's notes about drawing nothing.
+    assert!(
+        !output.contains("#####") && !output.contains("|---"),
+        "{output}"
+    );
+    assert!(!output.contains("unknown' terminal"), "{output}");
+}
+
+#[test]
+fn only_so_many_renders_are_kept_per_user() {
+    let (jail, support) = setup("renders-kept");
+    let octave = mock(support, Duration::from_secs(20));
+    run(&octave, &jail, None, 1, OctaveInput::Code(&fixture("plot")));
+    wait(&octave, None, 1);
+    for seq in 2..=70 {
+        run(&octave, &jail, None, seq, OctaveInput::Render);
+        wait(&octave, None, seq);
+    }
+    // Starting another job is when old ones are swept.
+    run(
+        &octave,
+        &jail,
+        None,
+        71,
+        OctaveInput::Code(&fixture("assign")),
+    );
+    wait(&octave, None, 71);
+    assert!(octave.figure(None, 1, 2, 1).is_none(), "the oldest went");
+    assert!(octave.figure(None, 1, 70, 1).is_some(), "the newest stay");
+    let kept = (2..=70)
+        .filter(|&seq| octave.figure(None, 1, seq, 1).is_some())
+        .count();
+    assert_eq!(kept, 64);
 }

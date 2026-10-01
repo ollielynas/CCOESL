@@ -14,6 +14,10 @@ The prompt, **>>**, is always at the bottom of the command window. Type code the
 prompt: `x = 3` shows `x = 3`, and ending a line with `;` keeps it quiet. Errors are shown in
 *italics*. The prompt stays ready for the next command, so you can type one after another.
 
+A command that draws a figure, such as `plot(x, sin(x))` or `surf(peaks)`, shows it right under
+the command, where Octave on a desktop would pop up a window. Click **Figure N · open in the
+Figures tab** below it to see it larger, with every other figure.
+
 The output scrolls on its own and keeps the newest line in view. Scroll up to read back; it stops
 following new output until you scroll to the bottom again.
 
@@ -34,9 +38,9 @@ again, which clears your variables.
 - **:stop: Stop** interrupts it, like Ctrl-C at Octave's own prompt. Your variables are kept,
   including any the command had set before it stopped.
 
-A script that waits for figure windows to be closed, such as
-`while ! isempty(get(0, "children")), pause(0.2); end`, never finishes on its own: figures here
-have no windows to close. Stop it, or look at the figures in the **Figures** tab instead.
+Figures here have no windows of their own. `waitfor` and `uiwait`, which wait for a window to
+be closed, carry on at once with a warning. A loop that waits for every window to close, such as
+`while ! isempty(get(0, "children")), pause(0.2); end`, never finishes on its own: stop it.
 
 A few commands work differently here, because there is no terminal behind the window:
 

@@ -123,6 +123,9 @@ pub struct Figure {
     pub number: u32,
     pub name: String,
     pub axes: Vec<Axes>,
+    /// The job created this figure or drew into it, where desktop Octave would have popped up
+    /// its window.
+    pub changed: bool,
     /// After an [`OctaveInput::Render`] job: the PNG's width and height in pixels, at
     /// [`figure_url`] for that job. `None` otherwise, or if Octave couldn't print it.
     pub image: Option<(u32, u32)>,

@@ -39,12 +39,15 @@ const RUNNER: &str = include_str!("octave/__ccosel_run__.m");
 /// Stand-ins for built-ins that can't work in a session, so a script that calls one stops with
 /// an error at once: `exit` and `quit` would end the session and lose its variables (Restart is
 /// how to get a fresh one), and `input` and `keyboard` would wait forever on the server's own
-/// command channel.
-const SHADOWS: [(&str, &str); 4] = [
+/// command channel. `waitfor` and `uiwait`, which wait for a window to close, carry on at
+/// once with a warning instead: there is no window, but nothing is lost by not waiting.
+const SHADOWS: [(&str, &str); 6] = [
     ("exit.m", include_str!("octave/exit.m")),
     ("quit.m", include_str!("octave/quit.m")),
     ("input.m", include_str!("octave/input.m")),
     ("keyboard.m", include_str!("octave/keyboard.m")),
+    ("waitfor.m", include_str!("octave/waitfor.m")),
+    ("uiwait.m", include_str!("octave/uiwait.m")),
 ];
 
 /// A job still running after this is not coming back, unless its user said it would take
@@ -71,6 +74,20 @@ const START_TIMEOUT: Duration = Duration::from_secs(60);
 /// Finished jobs older than this are forgotten. Long enough for an app that stopped polling
 /// (occluded window, dropped link) to come back for its result.
 const JOB_RETENTION: Duration = Duration::from_secs(10 * 60);
+
+/// How long a render job's images are kept after it, for the command window's scrollback.
+const IMAGE_RETENTION: Duration = Duration::from_secs(2 * 60 * 60);
+
+/// The most render jobs a user's images are kept from at once.
+const MAX_RENDERS_KEPT: usize = 64;
+
+/// What gnuplot prints each time it draws a visible figure to the silent `unknown` terminal,
+/// which the server picks so a visible figure isn't drawn as text into the job's output. Not the
+/// user's business: dropped from what a job reports.
+const GNUPLOT_NOISE: [&str; 2] = [
+    "WARNING: Plotting with 'unknown' terminal.",
+    "No output will be generated. Please select a terminal with 'set terminal'.",
+];
 
 /// Points per plotted line. `Ui::plot` draws one byte a point, so this is the cost of a line.
 const SAMPLES: usize = 120;
@@ -173,10 +190,25 @@ impl Octave {
 
         let key = (who.clone(), req.client, req.seq);
         let mut jobs = self.jobs.lock().unwrap();
+        // A render's images stay longer: the command window shows them in its scrollback.
         jobs.retain(|_, job| match *job.finished_at.lock().unwrap() {
+            Some(at) if job.has_images() => at.elapsed() < IMAGE_RETENTION,
             Some(at) => at.elapsed() < JOB_RETENTION,
             None => true,
         });
+        // And at most so many of them per user, oldest dropped first, so a loop of plots can't
+        // fill the server's memory.
+        let mut renders: Vec<(Instant, JobKey)> = jobs
+            .iter()
+            .filter(|(k, job)| k.0 == who && job.has_images())
+            .filter_map(|(k, job)| Some((*job.finished_at.lock().unwrap().as_ref()?, k.clone())))
+            .collect();
+        if renders.len() > MAX_RENDERS_KEPT {
+            renders.sort();
+            for (_, k) in &renders[..renders.len() - MAX_RENDERS_KEPT] {
+                jobs.remove(k);
+            }
+        }
         if jobs.contains_key(&key) {
             return Ok(true);
         }
@@ -317,6 +349,10 @@ impl Job {
             result: Mutex::new(None),
             finished_at: Mutex::new(None),
         }
+    }
+
+    fn has_images(&self) -> bool {
+        !self.images.lock().unwrap().is_empty()
     }
 
     fn push_line(&self, line: &str) {
@@ -498,6 +534,7 @@ impl Session {
                     Some(rest) => report.push(rest.trim_start().to_owned()),
                     None => match &stopped {
                         Some((_, old)) if line.starts_with(old.as_str()) => {}
+                        _ if GNUPLOT_NOISE.contains(&line.as_str()) => {}
                         _ => job.push_line(&line),
                     },
                 },
@@ -567,6 +604,9 @@ impl Session {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
+            // With no display, gnuplot draws a visible figure as text art into Octave's output.
+            // `unknown` draws nothing; `print`, which the Figures tab uses, names its own.
+            .env("GNUTERM", "unknown")
             .spawn()?;
         let (tx, lines) = channel();
         forward_lines(child.stdout.take().expect("piped"), tx.clone());
@@ -708,6 +748,7 @@ pub fn parse_report(lines: &[String], jail_root: &Path) -> OctaveResult {
                 result.figures.push(Figure {
                     number: next().parse().unwrap_or(0),
                     name: next(),
+                    changed: next() == "1",
                     axes: Vec::new(),
                     image: None,
                 });

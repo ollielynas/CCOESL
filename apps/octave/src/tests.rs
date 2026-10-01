@@ -379,6 +379,7 @@ fn waves() -> Figure {
             },
         ],
         image: None,
+        changed: false,
     }
 }
 
@@ -394,6 +395,7 @@ fn figures_are_drawn_and_can_be_saved() {
                 name: String::new(),
                 axes: vec![],
                 image: None,
+                changed: false,
             },
         ],
     );
@@ -971,4 +973,74 @@ fn a_new_window_learns_at_once_that_there_is_no_octave() {
     h.reply::<OctaveRun>(&false);
     h.frame();
     assert!(h.has_text("Octave isn't installed on this server."));
+}
+
+/// A figure the server says the last command drew.
+fn drawn(mut fig: Figure) -> Figure {
+    fig.changed = true;
+    fig
+}
+
+#[test]
+fn a_figure_a_command_draws_is_shown_under_it() {
+    let mut h = running("plot(sin(0:0.1:6))");
+    h.reply::<OctavePoll>(&done("", session(vec![], vec![drawn(waves())])));
+    h.frame();
+    assert_eq!(h.app.inline, [2]);
+    // Drawn at once, though the Figures tab isn't open.
+    let job = h.app.job.as_ref().expect("a render started");
+    assert_eq!((job.target.clone(), job.seq), (Target::Render, 2));
+    h.reply::<OctaveRun>(&true);
+    h.frame();
+    let mut result = rendered((640, 480));
+    result.figures[0].changed = false;
+    h.reply::<OctavePoll>(&done("", result));
+    h.frame();
+    h.frame();
+
+    let url = "/octave/figure/1/2/2.png".to_owned();
+    let kind = LineKind::Figure {
+        number: 2,
+        width: 640,
+        height: 480,
+    };
+    assert_eq!(h.app.log.last(), Some(&(kind, url.clone())));
+    // Narrower than in the Figures tab: it sits among lines of text.
+    assert_eq!(h.images(), [(url, Vec2::new(480.0, 360.0))]);
+    assert!(h.app.inline.is_empty());
+
+    // Its caption opens the Figures tab, which already has the image.
+    h.click_link("Figure 2 · open in the Figures tab");
+    h.frame();
+    assert_eq!(h.app.tab, Tab::Figures);
+    h.frame();
+    assert!(h.app.job.is_none(), "nothing to draw again");
+    assert_eq!(h.images()[0].1, Vec2::new(640.0, 480.0));
+}
+
+#[test]
+fn a_command_that_draws_nothing_shows_no_figure() {
+    let mut h = running("x = 1");
+    h.reply::<OctavePoll>(&done("", session(vec![], vec![waves()])));
+    h.frame();
+    assert!(h.app.inline.is_empty());
+    assert!(h.app.job.is_none(), "no render");
+}
+
+#[test]
+fn a_figure_that_fails_to_draw_is_left_out_of_the_command_window() {
+    let mut h = running("plot(1:3)");
+    h.reply::<OctavePoll>(&done("", session(vec![], vec![drawn(waves())])));
+    h.frame();
+    h.fail::<OctaveRun>(rpc_error::SERVER);
+    h.frame();
+    h.frame();
+    assert!(h.app.inline.is_empty());
+    assert!(
+        !h.app
+            .log
+            .iter()
+            .any(|(k, _)| matches!(k, LineKind::Figure { .. }))
+    );
+    assert!(h.app.job.is_none(), "and not tried again");
 }

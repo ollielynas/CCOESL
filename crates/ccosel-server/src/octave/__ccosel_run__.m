@@ -10,6 +10,9 @@
 ## Loaded from the server's support folder: edit this file, not a copy of it.
 function __ccosel_run__ (kind, file, tag)
   failed = false;
+  ## Every graphics object there is before the job, so the report can say which figures it
+  ## created or drew into: those would have popped up a window on a desktop.
+  before = findall (0);
   try
     if (strcmp (kind, "file"))
       evalin ("base", sprintf ("run ('%s');", strrep (file, "'", "''")));
@@ -26,7 +29,7 @@ function __ccosel_run__ (kind, file, tag)
   fflush (stderr);
   printf ("%s STATUS\t%d\t%s\n", tag, failed, __ccosel_clean__ (pwd ()));
   __ccosel_vars__ (tag);
-  __ccosel_figs__ (tag);
+  __ccosel_figs__ (tag, before);
   printf ("%s DONE\n", tag);
   fflush (stdout);
 endfunction
@@ -102,10 +105,11 @@ function t = __ccosel_text__ (h)
   end_try_catch
 endfunction
 
-function __ccosel_figs__ (tag)
+function __ccosel_figs__ (tag, before)
   figs = sort (get (0, "children"));
   for f = figs(:)'
-    printf ("%s FIG\t%d\t%s\n", tag, f, __ccosel_clean__ (get (f, "name")));
+    changed = any (! ismember (findall (f), before));
+    printf ("%s FIG\t%d\t%s\t%d\n", tag, f, __ccosel_clean__ (get (f, "name")), changed);
     axs = flipud (findobj (f, "type", "axes"));
     for a = axs(:)'
       ## A legend is an axes too, in Octave; it has no lines of its own worth drawing.

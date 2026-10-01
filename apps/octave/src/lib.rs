@@ -50,6 +50,13 @@ pub enum LineKind {
     Input,
     Output,
     Error,
+    /// A figure the command before it drew, where desktop Octave would have popped up a
+    /// window: the line's text is its image's URL, this its number and pixel size.
+    Figure {
+        number: u32,
+        width: u32,
+        height: u32,
+    },
 }
 
 /// Where a job's output goes.
@@ -129,6 +136,8 @@ pub struct Octave {
     pub rendered: Option<u32>,
     /// The figures changed since they were last drawn as images.
     pub figures_stale: bool,
+    /// Figures the last command drew, to show in the command window once they are rendered.
+    pub inline: Vec<u32>,
     /// A job has reported the session's state at least once. Until then the app doesn't know
     /// the working folder or the variables, which isn't the same as there being none.
     pub synced: bool,
@@ -160,6 +169,7 @@ impl Default for Octave {
             controls: Vec::new(),
             rendered: None,
             figures_stale: false,
+            inline: Vec::new(),
             synced: false,
         }
     }
@@ -386,24 +396,62 @@ impl Octave {
         }
         // A render's report is the one whose figures carry images; any other job's replaces
         // it with figures that may have changed, so the next look at them draws them again.
-        let render = self.job.take().filter(|j| j.target == Target::Render);
-        self.rendered = render.as_ref().map(|j| j.seq);
-        self.figures_stale = render.is_none() && !self.session.figures.is_empty();
+        let Some(job) = self.job.take() else {
+            return;
+        };
         self.refresh_tree = true;
+        if job.target == Target::Render {
+            self.rendered = Some(job.seq);
+            self.figures_stale = false;
+            self.show_inline(job.seq);
+            return;
+        }
+        self.rendered = None;
+        self.figures_stale = !self.session.figures.is_empty();
+        if job.target == Target::Console {
+            // Where a desktop would pop up a window, draw the figure into the command window.
+            self.inline = (self.session.figures.iter())
+                .filter(|f| f.changed)
+                .map(|f| f.number)
+                .collect();
+        }
+    }
+
+    /// Put the figures the last command drew into the command window, now render `seq` has
+    /// drawn them.
+    fn show_inline(&mut self, seq: u32) {
+        let client = self.client.unwrap_or(1);
+        for number in core::mem::take(&mut self.inline) {
+            let fig = self.session.figures.iter().find(|f| f.number == number);
+            if let Some((width, height)) = fig.and_then(|f| f.image) {
+                let kind = LineKind::Figure {
+                    number,
+                    width,
+                    height,
+                };
+                self.push_log(kind, &figure_url(client, seq, number));
+            }
+        }
     }
 
     /// Draw the figures as Octave prints them, if they are on screen and have changed since.
     fn render(&mut self, ui: &mut Ui<'_>) {
-        if self.tab == Tab::Figures && self.figures_stale && self.job.is_none() {
+        let wanted = (self.tab == Tab::Figures && self.figures_stale) || !self.inline.is_empty();
+        if wanted && self.job.is_none() {
             // Cleared first, so a render that fails isn't tried again and again: the line
             // drawings stay until the figures next change.
             self.figures_stale = false;
-            self.start(ui, Run::Render, Target::Render);
+            if !self.start(ui, Run::Render, Target::Render) {
+                self.inline.clear();
+            }
         }
     }
 
     fn fail(&mut self, what: &str, err: &str) {
-        self.job = None;
+        if self.job.take().is_some_and(|j| j.target == Target::Render) {
+            // Not drawn, so not shown: the Figures tab still has the lines.
+            self.inline.clear();
+        }
         let mut msg = String::from("error: ");
         msg.push_str(what);
         msg.push_str(err);
@@ -779,7 +827,11 @@ impl Octave {
                     if ui.selectable(false, first).clicked() {
                         act.push(Action::Recall(i));
                     }
-                    ui.tooltip("Put it back in the prompt");
+                    // The row may be cut short, and shows only the first line: the whole
+                    // command is here.
+                    let mut tip = self.history[i].clone();
+                    tip.push_str("\n\nClick to put it back in the prompt.");
+                    ui.tooltip(&tip);
                 });
             });
         }
@@ -789,8 +841,9 @@ impl Octave {
         let log = &self.log;
         let input = &mut self.input;
         let idle = self.job.is_none();
+        let mut open_figures = false;
         ui.scroll_with_footer(
-            |ui| Self::console(ui, log),
+            |ui| Self::console(ui, log, &mut open_figures),
             |ui| {
                 ui.label(">>");
                 if ui.text_edit(input).submitted() {
@@ -818,10 +871,14 @@ impl Octave {
                 ui.tooltip("Clear the command window. Variables are kept.");
             },
         );
+        if open_figures {
+            act.push(Action::Tab(Tab::Figures));
+        }
     }
 
-    /// The command window's output, oldest first.
-    fn console(ui: &mut Ui<'_>, log: &[(LineKind, String)]) {
+    /// The command window's output, oldest first. `open_figures` is set if a figure's link to
+    /// the Figures tab was clicked.
+    fn console(ui: &mut Ui<'_>, log: &[(LineKind, String)], open_figures: &mut bool) {
         if log.is_empty() {
             ui.styled(
                 "Type Octave code at the >> prompt below and press Enter to run it. \
@@ -841,6 +898,20 @@ impl Octave {
                 }
                 LineKind::Error => {
                     ui.styled(line, TextStyle::CODE | TextStyle::ITALIC);
+                }
+                LineKind::Figure {
+                    number,
+                    width,
+                    height,
+                } => {
+                    let (w, h) = fit(*width, *height, MAX_INLINE_WIDTH);
+                    ui.image(line, Vec2::new(w as f32, h as f32));
+                    let mut caption = String::from("Figure ");
+                    caption.push_str(&itoa(u64::from(*number)));
+                    caption.push_str(" · open in the Figures tab");
+                    if ui.styled(&caption, TextStyle::LINK).clicked() {
+                        *open_figures = true;
+                    }
                 }
             }
         }
@@ -1151,6 +1222,14 @@ impl Octave {
 /// The widest a figure's image is shown. Octave's default figure prints narrower than this.
 const MAX_IMAGE_WIDTH: u32 = 640;
 
+/// The widest a figure is shown in the command window, where it sits among lines of text.
+const MAX_INLINE_WIDTH: u32 = 480;
+
+/// `w` by `h`, scaled down to `max` wide if it is wider, keeping its shape.
+fn fit(w: u32, h: u32, max: u32) -> (u32, u32) {
+    if w > max { (max, h * max / w) } else { (w, h) }
+}
+
 /// One figure: Octave's `image` of it (its URL and pixel size) when there is one, else its
 /// lines drawn here. Its Save PNG is a job, so it is offered only when `idle`.
 fn figure(
@@ -1177,11 +1256,7 @@ fn figure(
             });
         });
         if let Some((url, (w, h))) = image {
-            let (w, h) = if w > MAX_IMAGE_WIDTH {
-                (MAX_IMAGE_WIDTH, h * MAX_IMAGE_WIDTH / w)
-            } else {
-                (w, h)
-            };
+            let (w, h) = fit(w, h, MAX_IMAGE_WIDTH);
             ui.image(&url, Vec2::new(w as f32, h as f32));
             return;
         }
