@@ -62,23 +62,31 @@ pub struct AppWindow<I: AppInstance> {
 }
 
 impl<I: AppInstance> AppWindow<I> {
+    /// A window of `app`, opened on `launch_arg` if there is one.
     pub fn new(
         instance: I,
         instance_id: u64,
-        app_id: &'static str,
-        title: String,
-        icon: &'static str,
-        color: egui::Color32,
-        default_size: [f32; 2],
+        app: &crate::registry::AppEntry,
+        launch_arg: Option<&str>,
     ) -> Self {
+        // What it was opened on reaches the app before its first frame, through the same queue
+        // as everything else the shell tells it.
+        let mut events = VecDeque::new();
+        if let Some(arg) = launch_arg {
+            events.push_back(ccosel_abi::event::encode_batch(&[(
+                ccosel_abi::event::event_kind::LAUNCH,
+                0,
+                arg.as_bytes(),
+            )]));
+        }
         Self {
-            title,
-            icon,
-            color,
-            app_id,
+            title: app.name.to_owned(),
+            icon: app.icon,
+            color: app.color,
+            app_id: app.id,
             instance_id,
             open: true,
-            default_size,
+            default_size: app.default_size,
             placement: Placement::default(),
             instance,
             replayer: Replayer::new(),
@@ -86,7 +94,7 @@ impl<I: AppInstance> AppWindow<I> {
             frame_index: 0,
             last_commands: Vec::new(),
             error: None,
-            events: Rc::new(RefCell::new(VecDeque::new())),
+            events: Rc::new(RefCell::new(events)),
             alive: Rc::new(Cell::new(true)),
             uploads_finished: HashMap::new(),
         }
@@ -123,6 +131,29 @@ impl<I: AppInstance> AppWindow<I> {
             .iter()
             .find(|(id, _)| self.clicked(*id))
             .map(|(_, url)| url.clone())
+    }
+
+    /// The app and argument of the `OpenApp` button clicked this frame, if any.
+    pub fn clicked_open_app(&self) -> Option<(String, String)> {
+        self.replayer
+            .open_apps()
+            .iter()
+            .find(|(id, ..)| self.clicked(*id))
+            .map(|(_, app, arg)| (app.clone(), arg.clone()))
+    }
+
+    /// The path of the `CopyLink` button clicked this frame, if any.
+    pub fn clicked_copy_link(&self) -> Option<String> {
+        self.replayer
+            .copy_links()
+            .iter()
+            .find(|(id, _)| self.clicked(*id))
+            .map(|(_, path)| path.clone())
+    }
+
+    /// Where this frame drew the app's audio, video and documents.
+    pub fn media(&self) -> &[ccosel_host::MediaSlot] {
+        self.replayer.media()
     }
 
     fn clicked(&self, local_id: u64) -> bool {

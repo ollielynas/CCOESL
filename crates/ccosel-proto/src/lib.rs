@@ -41,6 +41,7 @@ pub enum Method {
     CreateDir = 9,
     Access = 10,
     Search = 11,
+    ImageInfo = 12,
 }
 
 impl Method {
@@ -57,6 +58,7 @@ impl Method {
             9 => Some(Self::CreateDir),
             10 => Some(Self::Access),
             11 => Some(Self::Search),
+            12 => Some(Self::ImageInfo),
             _ => None,
         }
     }

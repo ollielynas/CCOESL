@@ -2,7 +2,8 @@
 
 use alloc::string::String;
 use ccosel_abi::{
-    Align, Cmd, FrameInput, Layout, MAX_SCOPE_DEPTH, ScopeKind, TextStyle, Vec2, id as ids,
+    Align, Cmd, FrameInput, Layout, MAX_SCOPE_DEPTH, MediaKind, ScopeKind, TextStyle, Vec2,
+    id as ids,
 };
 
 use crate::recorder::Recorder;
@@ -204,6 +205,33 @@ impl<'a> Ui<'a> {
         self.scope(ScopeKind::Frame, Align::Min, add)
     }
 
+    /// A table. Add each row with [`Ui::row`], and the cells of a row inside it: cells line up
+    /// in columns, and a table wider than the window scrolls sideways.
+    ///
+    /// ```ignore
+    /// ui.table(|ui| {
+    ///     for record in &rows {
+    ///         ui.row(|ui| for cell in record { ui.label(cell); });
+    ///     }
+    /// });
+    /// ```
+    pub fn table<R>(&mut self, add: impl FnOnce(&mut Ui<'_>) -> R) -> R {
+        self.scope(ScopeKind::Table, Align::Min, add)
+    }
+
+    /// One row of a [`Ui::table`]: each widget added inside it is a cell.
+    pub fn row<R>(&mut self, add: impl FnOnce(&mut Ui<'_>) -> R) -> R {
+        self.scope(ScopeKind::Group, Align::Min, add)
+    }
+
+    /// A right-click menu on the widget added just before this call. What `add` draws are the
+    /// menu's entries: they appear only while it is open, and a click on one closes it.
+    ///
+    /// Call it unconditionally, like [`Ui::tooltip`]: the shell decides when the menu opens.
+    pub fn context_menu<R>(&mut self, add: impl FnOnce(&mut Ui<'_>) -> R) -> R {
+        self.scope(ScopeKind::ContextMenu, Align::Min, add)
+    }
+
     /// A floating window, hoisted by the shell to the desktop. Use for dialogs; the app's main
     /// content already lives in a shell-owned window.
     pub fn window<R>(&mut self, title: &str, add: impl FnOnce(&mut Ui<'_>) -> R) -> R {
@@ -275,6 +303,22 @@ impl<'a> Ui<'a> {
         self.response(id)
     }
 
+    /// Audio, video or a PDF from `src`, played or shown by the browser itself, with its own
+    /// controls. Which formats work is up to the browser.
+    ///
+    /// A size component of `0.0` is the shell's choice: the row's width, and a height that suits
+    /// `kind` (16:9 for video, a control bar for audio, the rest of the window for a document).
+    pub fn media(&mut self, src: &str, kind: MediaKind, size: Vec2) -> Response {
+        let id = self.auto_id();
+        self.rec.push(&Cmd::Media {
+            id,
+            src,
+            kind,
+            size,
+        });
+        self.response(id)
+    }
+
     /// A single-line text field. See [`Text`] for why the buffer usually isn't sent.
     pub fn text_edit(&mut self, text: &mut Text) -> Response {
         self.text_field(text, false)
@@ -284,6 +328,20 @@ impl<'a> Ui<'a> {
     /// [`Ui::text_edit`]: typing costs the guest a small delta, not the document.
     pub fn text_edit_multiline(&mut self, text: &mut Text) -> Response {
         self.text_field(text, true)
+    }
+
+    /// Read-only, multi-line, monospace text that the user can select and copy, for showing a
+    /// file. Like a text field, it costs the whole text only in the frame after [`Text::set`].
+    pub fn text_view(&mut self, text: &mut Text) -> Response {
+        let id = self.auto_id();
+        let set = text.push_pending.then_some(text.buf.as_str());
+        self.rec.push(&Cmd::TextView {
+            id,
+            version: text.version,
+            set,
+        });
+        text.push_pending = false;
+        self.response(id)
     }
 
     fn text_field(&mut self, text: &mut Text, multiline: bool) -> Response {
@@ -362,6 +420,29 @@ impl<'a> Ui<'a> {
     pub fn open_url(&mut self, label: &str, url: &str) -> Response {
         let id = self.auto_id();
         self.rec.push(&Cmd::OpenUrl { id, label, url });
+        self.response(id)
+    }
+
+    /// A button that opens another app on something: `app` is its id (such as `"viewer"`) and
+    /// `arg` what it should open, which it receives through [`App::open`](crate::App::open).
+    /// On the desktop the app opens in a new window; on an app's own page, in a new tab.
+    pub fn open_app(&mut self, label: &str, app: &str, arg: &str) -> Response {
+        let id = self.auto_id();
+        self.rec.push(&Cmd::OpenApp {
+            id,
+            label,
+            app,
+            arg,
+        });
+        self.response(id)
+    }
+
+    /// A button that copies a link to this server to the clipboard. `path` is everything after
+    /// the server's address, starting with `/` (see [`crate::url::app_link`]); the shell adds the
+    /// address, which an app can't know, and tells the user the link was copied.
+    pub fn copy_link(&mut self, label: &str, path: &str) -> Response {
+        let id = self.auto_id();
+        self.rec.push(&Cmd::CopyLink { id, label, path });
         self.response(id)
     }
 }

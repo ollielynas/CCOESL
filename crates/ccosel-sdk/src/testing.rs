@@ -24,7 +24,7 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 use ccosel_abi::event::{Event, TextDelta, encode_error, encode_text_delta, event_kind};
-use ccosel_abi::{Cmd, Decoder, RespRecord, ResponseFlags, TextStyle};
+use ccosel_abi::{Cmd, Decoder, MediaKind, RespRecord, ResponseFlags, ScopeKind, TextStyle};
 
 /// The codes [`Harness::fail`] takes, re-exported so an app's tests need no `ccosel-abi`
 /// dependency of their own.
@@ -101,6 +101,19 @@ impl<A: App> Harness<A> {
         self.sync_texts();
     }
 
+    /// Plays the shell opening the app on `arg`, as [`Ui::open_app`](crate::Ui::open_app) or a
+    /// link to its own page would: the app's [`App::open`] runs before its next frame.
+    pub fn launch(&mut self, arg: &str) {
+        let event = Event {
+            kind: event_kind::LAUNCH,
+            call_id: 0,
+            payload: arg.as_bytes(),
+        };
+        if let Some(arg) = crate::runtime::deliver(&self.rpc, &mut self.rec, &event) {
+            self.app.open(arg);
+        }
+    }
+
     /// Mirror the shell's text bookkeeping: take the guest's `set`s, and adopt its version for
     /// a field seen for the first time.
     fn sync_texts(&mut self) {
@@ -108,7 +121,8 @@ impl<A: App> Harness<A> {
             .commands()
             .filter_map(|c| match c {
                 Cmd::TextEditSingle { id, version, set }
-                | Cmd::TextEditMulti { id, version, set } => {
+                | Cmd::TextEditMulti { id, version, set }
+                | Cmd::TextView { id, version, set } => {
                     Some((id, version, set.map(ToString::to_string)))
                 }
                 _ => None,
@@ -174,6 +188,85 @@ impl<A: App> Harness<A> {
                 payload: &payload,
             },
         );
+    }
+
+    /// What each read-only [`text_view`](crate::Ui::text_view) in the last frame shows, in order.
+    pub fn text_views(&self) -> Vec<String> {
+        self.commands()
+            .filter_map(|c| match c {
+                Cmd::TextView { id, .. } => {
+                    Some(self.texts.get(&id).map(|t| t.0.clone()).unwrap_or_default())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// `(label, app, arg)` of every `open_app` button drawn in the last frame, in order.
+    pub fn open_apps(&self) -> Vec<(String, String, String)> {
+        self.commands()
+            .filter_map(|c| match c {
+                Cmd::OpenApp {
+                    label, app, arg, ..
+                } => Some((label.to_string(), app.to_string(), arg.to_string())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// `(label, path)` of every `copy_link` button drawn in the last frame, in order.
+    pub fn copy_links(&self) -> Vec<(String, String)> {
+        self.commands()
+            .filter_map(|c| match c {
+                Cmd::CopyLink { label, path, .. } => Some((label.to_string(), path.to_string())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// `(src, kind)` of every audio, video or document drawn in the last frame, in order.
+    pub fn media(&self) -> Vec<(String, MediaKind)> {
+        self.commands()
+            .filter_map(|c| match c {
+                Cmd::Media { src, kind, .. } => Some((src.to_string(), kind)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The URL of every image drawn in the last frame, in order.
+    pub fn images(&self) -> Vec<String> {
+        self.commands()
+            .filter_map(|c| match c {
+                Cmd::Image { src, .. } => Some(src.to_string()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The label of every entry in the last frame's right-click menus, in order: buttons, rows
+    /// and the `open_url`, `open_app` and `copy_link` buttons.
+    pub fn context_menu_items(&self) -> Vec<String> {
+        // How many of the scopes currently open are menus, so nested scopes inside a menu count.
+        let mut stack: Vec<bool> = Vec::new();
+        let mut out = Vec::new();
+        for c in self.commands() {
+            match c {
+                Cmd::BeginScope { layout, .. } => stack.push(layout.kind == ScopeKind::ContextMenu),
+                Cmd::EndScope { .. } => {
+                    stack.pop();
+                }
+                _ if !stack.iter().any(|&m| m) => {}
+                Cmd::Button { text, .. } | Cmd::Selectable { text, .. } => {
+                    out.push(text.to_string())
+                }
+                Cmd::OpenUrl { label, .. }
+                | Cmd::OpenApp { label, .. }
+                | Cmd::CopyLink { label, .. } => out.push(label.to_string()),
+                _ => {}
+            }
+        }
+        out
     }
 
     /// Every styled run drawn in the last frame, in order.
@@ -336,14 +429,21 @@ impl<A: App> Harness<A> {
         self.buttons().iter().any(|b| b == text)
     }
 
-    /// Clicks the first button, or selectable row, with this label in the last frame. The app
+    /// Clicks the first button, or selectable row, with this label in the last frame, including
+    /// `open_url`, `open_app` and `copy_link` buttons and entries in right-click menus. The app
     /// observes it on the next [`frame`](Self::frame). Panics, listing what was drawn, if there
     /// is no such widget.
     pub fn click(&mut self, text: &str) {
         let id = self
             .commands()
             .find_map(|c| match c {
-                Cmd::Button { id, text: t } | Cmd::Selectable { id, text: t, .. } if t == text => {
+                Cmd::Button { id, text: t }
+                | Cmd::Selectable { id, text: t, .. }
+                | Cmd::OpenUrl { id, label: t, .. }
+                | Cmd::OpenApp { id, label: t, .. }
+                | Cmd::CopyLink { id, label: t, .. }
+                    if t == text =>
+                {
                     Some(id)
                 }
                 _ => None,

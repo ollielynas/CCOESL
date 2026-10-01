@@ -27,9 +27,10 @@ pub mod runtime;
 #[cfg(feature = "testing")]
 pub mod testing;
 mod ui;
+pub mod url;
 
 pub use ccosel_abi::{ABI_VERSION, REPAINT_ON_INPUT_ONLY};
-pub use ccosel_abi::{Align, Color32, Pos2, Rect, ScopeKind, TextStyle, Vec2};
+pub use ccosel_abi::{Align, Color32, MediaKind, Pos2, Rect, ScopeKind, TextStyle, Vec2};
 pub use recorder::Recorder;
 pub use response::Response;
 pub use rpc::{CallId, Poll, RpcCtx, RpcError};
@@ -40,6 +41,13 @@ pub trait App {
     /// Build one frame of UI. Called by the shell when input targets this app or its repaint
     /// timer fires — *not* necessarily at display rate.
     fn update(&mut self, ui: &mut Ui<'_>);
+
+    /// What the app was opened on, such as a file path, when another app opened it with
+    /// [`Ui::open_app`] or someone followed a link to its own page (`/app/<id>?open=...`).
+    /// Called once, before the first frame. Not called when the app was simply launched.
+    fn open(&mut self, arg: &str) {
+        let _ = arg;
+    }
 
     /// How long until this app wants to be re-run even with no input, in milliseconds.
     ///

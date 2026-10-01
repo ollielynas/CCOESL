@@ -315,6 +315,56 @@ async fn full_login_flow_approves_and_sets_a_session_cookie() {
     }
 }
 
+/// Signs in through `/auth/login?return=<to>` and reports where the callback sends the browser.
+async fn signed_in_lands_on(to: &str) -> String {
+    let provider = spawn_mock_provider("alice", false).await;
+    let addr = spawn_app(AuthState::new(Some(oauth_config_for(&provider)))).await;
+    let client = no_redirect_client();
+    let resp = client
+        .get(format!("http://{addr}/auth/login"))
+        .query(&[("return", to)])
+        .send()
+        .await
+        .unwrap();
+    let location = resp.headers()[reqwest::header::LOCATION].to_str().unwrap();
+    let state = query_param(location, "state").unwrap().to_string();
+    let callback = client
+        .get(format!(
+            "http://{addr}/auth/callback?code=good-code&state={state}"
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(callback.status(), reqwest::StatusCode::SEE_OTHER);
+    callback.headers()[reqwest::header::LOCATION]
+        .to_str()
+        .unwrap()
+        .to_owned()
+}
+
+/// A shared link to one app's own page survives having to sign in first.
+#[tokio::test]
+async fn signing_in_comes_back_to_the_page_it_started_from() {
+    assert_eq!(
+        signed_in_lands_on("/app/viewer?open=%2FDocs%2Fa.png").await,
+        "/app/viewer?open=%2FDocs%2Fa.png"
+    );
+}
+
+/// Sign-in must not become a way to send someone to another site.
+#[tokio::test]
+async fn signing_in_never_returns_to_another_site() {
+    for to in [
+        "https://evil.example/",
+        "//evil.example/",
+        "/\\evil.example/",
+        "evil.example",
+        "/ok\nSet-Cookie: x=y",
+    ] {
+        assert_eq!(signed_in_lands_on(to).await, "/", "{to:?}");
+    }
+}
+
 #[tokio::test]
 async fn callback_reports_a_provider_side_token_failure() {
     let provider = spawn_mock_provider("alice", true).await;

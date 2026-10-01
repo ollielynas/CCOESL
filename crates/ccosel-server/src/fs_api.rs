@@ -3,8 +3,8 @@
 use std::path::{Component, Path, PathBuf};
 
 use ccosel_proto::fs::{
-    AccessReply, DirEntry, DirListing, EntryKind, FileText, ListDirReq, MAX_TEXT_BYTES, SearchHit,
-    SearchReply, SearchReq, WriteFileReq,
+    AccessReply, DirEntry, DirListing, EntryKind, FileText, ImageInfoReply, ListDirReq,
+    MAX_TEXT_BYTES, SearchHit, SearchReply, SearchReq, WriteFileReq,
 };
 use ccosel_proto::server_error;
 
@@ -179,6 +179,15 @@ impl Jail {
             write: p.write,
             user: user.map(str::to_owned),
         })
+    }
+
+    /// A picture's size and EXIF details (see [`crate::image_info`]), if the caller may read it.
+    pub fn image_info(&self, requested: &str, user: Option<&str>) -> Result<ImageInfoReply, u32> {
+        let real = self.authorize(requested, user, Need::Read)?;
+        if !real.is_file() {
+            return Err(server_error::NOT_FOUND);
+        }
+        Ok(crate::image_info::read(&real))
     }
 
     pub fn read_file(&self, requested: &str, user: Option<&str>) -> Result<FileText, u32> {

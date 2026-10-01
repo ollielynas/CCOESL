@@ -7,6 +7,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use ccosel_connection::Background;
 use ccosel_host::AppHost;
@@ -19,9 +20,12 @@ use crate::http_wire::{HttpWire, Inbox};
 use crate::app_window::AppWindow;
 use crate::background;
 use crate::chrome;
+use crate::clipboard;
 use crate::fetch;
 use crate::fullscreen;
-use crate::registry::{AppEntry, catalog, find};
+use crate::image_loader::BrowserImageLoader;
+use crate::media::{MediaOverlay, Placed};
+use crate::registry::{AppEntry, catalog, find, solo_url};
 use crate::theme;
 use crate::upload::{self, Drops, Uploads};
 
@@ -94,17 +98,23 @@ pub struct Desktop {
     uploads: Uploads,
     /// Files and folders dropped on the page, until the frame routes them to a window.
     drops: Drops,
-    /// The last finished upload's summary and when to stop showing it, so "Uploaded photos:
-    /// 12 files" stays in the status bar long enough to read.
-    upload_notice: Option<(String, f64)>,
+    /// A passing message and when to stop showing it: the last finished upload's summary, so
+    /// "Uploaded photos: 12 files" stays in the status bar long enough to read, or "Link copied".
+    notice: Option<(String, f64)>,
+    /// The browser's own players laid over the canvas, for apps' audio, video and PDFs.
+    media: MediaOverlay,
     /// The app id from a `/app/{id}` page, which shows that one app filling the page with no
     /// desktop around it. `None` is the desktop.
     solo: Option<String>,
 }
 
 impl Desktop {
-    pub fn new(egui_ctx: egui::Context, solo: Option<String>) -> Self {
+    /// `solo` is the app a `/app/{id}` page shows on its own, and `solo_arg` what that page opens
+    /// it on (`?open=...`).
+    pub fn new(egui_ctx: egui::Context, solo: Option<String>, solo_arg: Option<String>) -> Self {
         theme::apply(&egui_ctx);
+        // Pictures apps draw by URL are fetched and decoded by the browser.
+        egui_ctx.add_image_loader(Arc::new(BrowserImageLoader::default()));
 
         let replies: Inbox = Rc::new(RefCell::new(Vec::new()));
         let wire = HttpWire::new("/rpc", replies.clone(), egui_ctx.clone());
@@ -127,7 +137,8 @@ impl Desktop {
             app_menu_open: false,
             uploads: Uploads::default(),
             drops: Drops::default(),
-            upload_notice: None,
+            notice: None,
+            media: MediaOverlay::default(),
             solo,
         };
         if let Err(e) = desktop.drops.listen(desktop.egui_ctx.clone()) {
@@ -139,7 +150,7 @@ impl Desktop {
             match find(&id) {
                 Some(entry) => {
                     set_page_title(entry.name);
-                    desktop.launch(&entry);
+                    desktop.launch(&entry, solo_arg);
                 }
                 None => desktop
                     .errors
@@ -151,7 +162,7 @@ impl Desktop {
         // Open something on first boot: an empty desktop with no affordance is a worse first
         // impression than a window the user can close.
         if let Some(first) = desktop.registry.first().cloned() {
-            desktop.launch(&first);
+            desktop.launch(&first, None);
         }
         if desktop.background == Background::Image {
             desktop.load_wallpaper();
@@ -192,7 +203,8 @@ impl Desktop {
         }
     }
 
-    pub fn launch(&mut self, entry: &AppEntry) {
+    /// Starts `entry` in a new window, opened on `arg` if there is one (see `App::open`).
+    pub fn launch(&mut self, entry: &AppEntry, arg: Option<String>) {
         let entry = entry.clone();
         let modules = self.modules.clone();
         let inbox = self.inbox.clone();
@@ -203,7 +215,7 @@ impl Desktop {
         *pending.borrow_mut() += 1;
 
         wasm_bindgen_futures::spawn_local(async move {
-            let result = launch_inner(&entry, &modules, &next_id).await;
+            let result = launch_inner(&entry, &modules, &next_id, arg.as_deref()).await;
             let outcome = match result {
                 Ok(window) => Launch::Ready(Box::new(window)),
                 Err(error) => Launch::Failed {
@@ -280,6 +292,8 @@ impl Desktop {
         // Closing a window drops the instance, which is the only way to reclaim a guest's
         // memory — wasm linear memory cannot shrink, so a live instance holds its high-water
         // mark forever.
+        // Apps another app asked to open, started once the loop no longer borrows the windows.
+        let mut to_open: Vec<(String, String)> = Vec::new();
         for window in &mut self.windows {
             // A minimised app gets no frames, the same as a suspended one: its replies wait in
             // its queue until its dock item brings it back.
@@ -334,6 +348,29 @@ impl Desktop {
             {
                 self.errors.push(format!("{}: {e}", window.title));
             }
+            if let Some((app, arg)) = window.clicked_open_app() {
+                if self.solo.is_some() {
+                    // No desktop to open a window on: that app's own page, in a new tab.
+                    if let Err(e) = upload::open_url(&solo_url(&app, &arg)) {
+                        self.errors.push(format!("{}: {e}", window.title));
+                    }
+                } else {
+                    to_open.push((app, arg));
+                }
+            }
+            if let Some(path) = window.clicked_copy_link() {
+                let link = format!("{}{path}", page_origin());
+                self.notice = Some(match clipboard::copy(&link) {
+                    Ok(()) => (format!("Link copied: {link}"), now_ms + 6000.0),
+                    // Still worth showing: it can be copied from here by hand.
+                    Err(e) => (
+                        format!("Couldn't copy ({e}). The link is {link}"),
+                        now_ms + 20000.0,
+                    ),
+                });
+                self.egui_ctx
+                    .request_repaint_after(std::time::Duration::from_millis(6100));
+            }
 
             // Anything the guest asked for during that frame.
             let sink = window.sink();
@@ -369,6 +406,44 @@ impl Desktop {
             self.transport.forget_instance(window.instance_id);
         }
         self.windows.retain(|w| w.open);
+
+        for (app, arg) in to_open {
+            match find(&app) {
+                Some(entry) => self.launch(&entry, Some(arg)),
+                None => self.errors.push(format!("There is no app called “{app}”.")),
+            }
+        }
+        self.sync_media(&ctx);
+    }
+
+    /// Lay the browser's players over where apps drew their audio, video and documents this
+    /// frame. A minimised window's are gone with it.
+    fn sync_media(&mut self, ctx: &egui::Context) {
+        let solo = self.solo.is_some();
+        let placed: Vec<Placed<'_>> = self
+            .windows
+            .iter()
+            .filter(|w| !w.placement.minimized)
+            .flat_map(|w| {
+                // On an app's own page it is drawn under every area; on the desktop, in its own.
+                let layer = Some(if solo {
+                    egui::LayerId::background()
+                } else {
+                    egui::LayerId::new(egui::Order::Middle, window_id(w.instance_id))
+                });
+                w.media().iter().map(move |slot| Placed {
+                    instance: w.instance_id,
+                    layer,
+                    slot,
+                })
+            })
+            .collect();
+        if let Err(e) = self.media.sync(ctx, &placed) {
+            let e = format!("media: {e}");
+            if !self.errors.contains(&e) {
+                self.errors.push(e);
+            }
+        }
     }
 
     /// Hand each drop to the window it landed on, which uploads it the way its own upload button
@@ -421,17 +496,17 @@ impl Desktop {
             for f in &done.failures {
                 self.errors.push(format!("upload: {f}"));
             }
-            self.upload_notice = Some((done.status(), now_ms + 6000.0));
+            self.notice = Some((done.status(), now_ms + 6000.0));
             // Nothing else may redraw by then, and the notice must still go away.
             self.egui_ctx
                 .request_repaint_after(std::time::Duration::from_millis(6100));
         }
         if self
-            .upload_notice
+            .notice
             .as_ref()
             .is_some_and(|(_, until)| now_ms > *until)
         {
-            self.upload_notice = None;
+            self.notice = None;
         }
     }
 
@@ -519,7 +594,7 @@ impl Desktop {
                             let upload = self
                                 .uploads
                                 .status()
-                                .or_else(|| self.upload_notice.as_ref().map(|(s, _)| s.clone()));
+                                .or_else(|| self.notice.as_ref().map(|(s, _)| s.clone()));
                             if upload.is_some() {
                                 ui.label(status_text("\u{00b7}".to_owned()));
                             }
@@ -597,7 +672,7 @@ impl Desktop {
         let upload = self
             .uploads
             .status()
-            .or_else(|| self.upload_notice.as_ref().map(|(s, _)| s.clone()));
+            .or_else(|| self.notice.as_ref().map(|(s, _)| s.clone()));
         if upload.is_none() && self.errors.is_empty() {
             return;
         }
@@ -725,7 +800,7 @@ impl Desktop {
             });
 
         if let Some(entry) = to_launch {
-            self.launch(&entry);
+            self.launch(&entry, None);
         }
     }
 
@@ -810,6 +885,7 @@ async fn launch_inner(
     entry: &AppEntry,
     modules: &Rc<RefCell<HashMap<&'static str, WebAssembly::Module>>>,
     next_id: &Rc<RefCell<u64>>,
+    arg: Option<&str>,
 ) -> Result<AppWindow<WebInstance>, String> {
     let host = WebHost::new();
 
@@ -832,15 +908,7 @@ async fn launch_inner(
         *n
     };
 
-    Ok(AppWindow::new(
-        instance,
-        id,
-        entry.id,
-        entry.name.to_owned(),
-        entry.icon,
-        entry.color,
-        entry.default_size,
-    ))
+    Ok(AppWindow::new(instance, id, entry, arg))
 }
 
 /// On an app's own page, the app fills everything the notice strip leaves, with the same
@@ -858,6 +926,15 @@ fn solo_window(ui: &mut egui::Ui, window: &mut AppWindow<WebInstance>) {
                 .auto_shrink([false, false])
                 .show(ui, |ui| window.ui(ui));
         });
+}
+
+/// The address this page was loaded from, such as `http://192.168.1.20:8777`, which a shared
+/// link needs in front of its path. Only the browser knows it, and behind a tunnel it is the
+/// public one.
+fn page_origin() -> String {
+    web_sys::window()
+        .and_then(|w| w.location().origin().ok())
+        .unwrap_or_default()
 }
 
 /// Names the browser tab after the app on its own page, so several of them can be told apart.

@@ -4,8 +4,8 @@
 //! "correct buffers decode correctly" but "no buffer, however malformed, panics".
 
 use ccosel_abi::{
-    Align, Cmd, DecodeError, Decoder, Encoder, Layout, MAX_SCOPE_DEPTH, OpCode, ScopeKind,
-    TextStyle, Vec2, id, validate,
+    Align, Cmd, DecodeError, Decoder, Encoder, Layout, MAX_SCOPE_DEPTH, MediaKind, OpCode,
+    ScopeKind, TextStyle, Vec2, id, validate,
 };
 
 fn encode(cmds: &[Cmd<'_>]) -> Vec<u8> {
@@ -109,6 +109,42 @@ fn sample() -> Vec<Cmd<'static>> {
             version: 3,
             set: Some("# Title\n\nline two"),
         },
+        Cmd::BeginScope {
+            id: id::hash_str(win, "menu"),
+            layout: Layout::new(ScopeKind::ContextMenu, Align::Min),
+        },
+        Cmd::OpenApp {
+            id: id::hash_str(win, "open"),
+            label: "Open with Viewer",
+            app: "viewer",
+            arg: "/Docs/a b.png",
+        },
+        Cmd::CopyLink {
+            id: id::hash_str(win, "share"),
+            label: "Share",
+            path: "/app/viewer?open=%2FDocs",
+        },
+        Cmd::EndScope {
+            id: id::hash_str(win, "menu"),
+        },
+        Cmd::BeginScope {
+            id: id::hash_str(win, "table"),
+            layout: Layout::new(ScopeKind::Table, Align::Min),
+        },
+        Cmd::EndScope {
+            id: id::hash_str(win, "table"),
+        },
+        Cmd::Media {
+            id: id::hash_str(win, "video"),
+            src: "/files/clip.mp4?inline=1",
+            kind: MediaKind::Video,
+            size: Vec2::new(0.0, 0.0),
+        },
+        Cmd::TextView {
+            id: id::hash_str(win, "view"),
+            version: 2,
+            set: Some("read only"),
+        },
         Cmd::EndWindow { id: win },
     ]
 }
@@ -133,6 +169,34 @@ fn text_edit_omits_the_buffer_by_default() {
         set: None,
     }]);
     assert_eq!(without.len(), 1 + 8 + 4 + 1);
+}
+
+#[test]
+fn text_view_keeps_its_own_opcode() {
+    let buf = encode(&[Cmd::TextView {
+        id: 9,
+        version: 1,
+        set: None,
+    }]);
+    assert_eq!(buf[0], OpCode::TextView as u8);
+    assert_eq!(
+        buf.len(),
+        1 + 8 + 4 + 1,
+        "a long file costs nothing after its first frame"
+    );
+}
+
+#[test]
+fn media_rejects_an_unknown_kind() {
+    let mut buf = encode(&[Cmd::Media {
+        id: 1,
+        src: "x",
+        kind: MediaKind::Audio,
+        size: Vec2::new(0.0, 0.0),
+    }]);
+    // opcode, id, then the one-byte src length and its byte: the kind follows.
+    buf[1 + 8 + 2] = 9;
+    assert_eq!(decode(&buf), Err(DecodeError::InvalidEnum));
 }
 
 #[test]

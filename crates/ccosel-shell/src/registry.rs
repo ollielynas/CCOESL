@@ -32,6 +32,55 @@ pub fn solo_id(path: &str) -> Option<&str> {
     (!id.is_empty() && !id.contains('/')).then_some(id)
 }
 
+/// What an app's own page opens it on: the `open` parameter of the page's query string
+/// (`?open=%2FDocs%2Fa.png`), decoded. `None` when there isn't one, or it isn't UTF-8.
+pub fn solo_arg(search: &str) -> Option<String> {
+    let query = search.strip_prefix('?').unwrap_or(search);
+    let value = query
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("open="))?;
+    percent_decode(value)
+}
+
+/// `s` with `%XX` escapes (and `+`, a space in a query) turned back into what they stand for.
+fn percent_decode(s: &str) -> Option<String> {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'%' => {
+                let hex = s.get(i + 1..i + 3)?;
+                out.push(u8::from_str_radix(hex, 16).ok()?);
+                i += 3;
+            }
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            b => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+/// The page that opens `app` on its own, on `arg`: what an `OpenApp` button opens on an app's
+/// own page, where there is no desktop to open a window on.
+pub fn solo_url(app: &str, arg: &str) -> String {
+    let mut url = format!("{SOLO_PREFIX}{app}?open=");
+    for &b in arg.as_bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
+            url.push(b as char);
+        } else {
+            url.push_str(&format!("%{b:02X}"));
+        }
+    }
+    url
+}
+
 /// The catalog entry for `id`.
 pub fn find(id: &str) -> Option<AppEntry> {
     catalog().into_iter().find(|e| e.id == id)
@@ -78,6 +127,14 @@ pub fn catalog() -> Vec<AppEntry> {
             color: egui::Color32::from_rgb(0x8b, 0x5c, 0xf6),
             url: "/dist/account.wasm",
             default_size: [240.0, 160.0],
+        },
+        AppEntry {
+            id: "viewer",
+            name: "Viewer",
+            icon: egui_phosphor::regular::EYE,
+            color: egui::Color32::from_rgb(0x06, 0xb6, 0xd4),
+            url: "/dist/viewer.wasm",
+            default_size: [640.0, 520.0],
         },
         AppEntry {
             id: "docs",
@@ -142,6 +199,34 @@ mod tests {
                 "data/shared/Docs/app-links.md doesn't link to {SOLO_PREFIX}{}",
                 entry.id
             );
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn solo_arg_reads_what_the_page_opens() {
+        assert_eq!(
+            solo_arg("?open=%2FDocs%2Fa%20b.png").as_deref(),
+            Some("/Docs/a b.png")
+        );
+        assert_eq!(solo_arg("?x=1&open=%2Fa").as_deref(), Some("/a"));
+        assert_eq!(solo_arg("open=%C3%BC+x").as_deref(), Some("ü x"));
+        assert_eq!(solo_arg(""), None);
+        assert_eq!(solo_arg("?other=1"), None);
+        assert_eq!(solo_arg("?open=%zz"), None, "a broken escape opens nothing");
+        assert_eq!(
+            solo_arg("?open=%FF"),
+            None,
+            "nor does a path that isn't UTF-8"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn solo_url_round_trips_through_solo_arg() {
+        for arg in ["/Docs/a b.png", "/x?y=1&z#w", "/ü/日本.txt", ""] {
+            let url = solo_url("viewer", arg);
+            let (path, search) = url.split_once('?').unwrap();
+            assert_eq!(solo_id(path), Some("viewer"));
+            assert_eq!(solo_arg(search).as_deref(), Some(arg), "{url}");
         }
     }
 

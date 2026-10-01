@@ -15,4 +15,4 @@ mod host;
 mod replay;
 
 pub use host::{AppHost, AppInstance, FrameArgs, FrameResult, HostError, OutboundCall};
-pub use replay::{ReplayError, Replayer};
+pub use replay::{MediaSlot, ReplayError, Replayer};

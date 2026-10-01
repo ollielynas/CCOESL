@@ -63,7 +63,10 @@
     bar.style.display = 'none';
     const signIn = document.createElement('button');
     signIn.textContent = 'Sign in with Keycloak';
-    signIn.onclick = () => { location.href = '/auth/login'; };
+    // Back to this page afterwards: a shared link to one app's own page (`/app/viewer?open=..`)
+    // should still open that file once its reader has signed in.
+    const here = location.pathname + location.search;
+    signIn.onclick = () => { location.href = '/auth/login?return=' + encodeURIComponent(here); };
     boot.appendChild(signIn);
   }
 
