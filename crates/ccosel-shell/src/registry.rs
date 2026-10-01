@@ -14,8 +14,27 @@ pub struct AppEntry {
     /// The badge's background. Each app gets its own, so its windows and dock entries
     /// stay visually identifiable at a glance instead of blurring into one grey list.
     pub color: egui::Color32,
+    /// Absolute, so it resolves the same from `/` and from `/app/{id}`.
     pub url: &'static str,
     pub default_size: [f32; 2],
+}
+
+/// Where an app opens on its own, filling the page with no desktop around it: `/app/{id}`.
+/// The server answers every such path with the boot page, so an app gets one by being in
+/// [`catalog`], with nothing else to wire up.
+pub const SOLO_PREFIX: &str = "/app/";
+
+/// The app id in a `/app/{id}` path, if `path` is one. A trailing slash is allowed, since
+/// people type one; anything deeper than one segment is not an app page.
+pub fn solo_id(path: &str) -> Option<&str> {
+    let rest = path.strip_prefix(SOLO_PREFIX)?;
+    let id = rest.strip_suffix('/').unwrap_or(rest);
+    (!id.is_empty() && !id.contains('/')).then_some(id)
+}
+
+/// The catalog entry for `id`.
+pub fn find(id: &str) -> Option<AppEntry> {
+    catalog().into_iter().find(|e| e.id == id)
 }
 
 pub fn catalog() -> Vec<AppEntry> {
@@ -25,7 +44,7 @@ pub fn catalog() -> Vec<AppEntry> {
             name: "Files",
             icon: egui_phosphor::regular::FOLDER,
             color: egui::Color32::from_rgb(0x3b, 0x82, 0xf6),
-            url: "./dist/file-browser.wasm",
+            url: "/dist/file-browser.wasm",
             default_size: [420.0, 320.0],
         },
         AppEntry {
@@ -33,7 +52,7 @@ pub fn catalog() -> Vec<AppEntry> {
             name: "Clock",
             icon: egui_phosphor::regular::CLOCK,
             color: egui::Color32::from_rgb(0xf5, 0x9e, 0x0b),
-            url: "./dist/clock.wasm",
+            url: "/dist/clock.wasm",
             default_size: [240.0, 200.0],
         },
         AppEntry {
@@ -41,7 +60,7 @@ pub fn catalog() -> Vec<AppEntry> {
             name: "Server",
             icon: egui_phosphor::regular::CHART_LINE,
             color: egui::Color32::from_rgb(0x10, 0xb9, 0x81),
-            url: "./dist/server-dashboard.wasm",
+            url: "/dist/server-dashboard.wasm",
             default_size: [380.0, 560.0],
         },
         AppEntry {
@@ -49,7 +68,7 @@ pub fn catalog() -> Vec<AppEntry> {
             name: "Compiler",
             icon: egui_phosphor::regular::HAMMER,
             color: egui::Color32::from_rgb(0xea, 0x58, 0x0c),
-            url: "./dist/rust-compiler.wasm",
+            url: "/dist/rust-compiler.wasm",
             default_size: [480.0, 420.0],
         },
         AppEntry {
@@ -57,7 +76,7 @@ pub fn catalog() -> Vec<AppEntry> {
             name: "Account",
             icon: egui_phosphor::regular::USER_CIRCLE,
             color: egui::Color32::from_rgb(0x8b, 0x5c, 0xf6),
-            url: "./dist/account.wasm",
+            url: "/dist/account.wasm",
             default_size: [240.0, 160.0],
         },
         AppEntry {
@@ -65,8 +84,69 @@ pub fn catalog() -> Vec<AppEntry> {
             name: "Docs",
             icon: egui_phosphor::regular::BOOK_OPEN,
             color: egui::Color32::from_rgb(0x8b, 0x5c, 0xf6),
-            url: "./dist/docs.wasm",
+            url: "/dist/docs.wasm",
             default_size: [560.0, 560.0],
         },
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    use super::*;
+
+    #[wasm_bindgen_test]
+    fn solo_id_reads_the_app_from_its_path() {
+        assert_eq!(solo_id("/app/clock"), Some("clock"));
+        assert_eq!(solo_id("/app/clock/"), Some("clock"));
+        assert_eq!(solo_id("/app/file-browser"), Some("file-browser"));
+    }
+
+    #[wasm_bindgen_test]
+    fn solo_id_is_none_off_an_app_page() {
+        assert_eq!(solo_id("/"), None);
+        assert_eq!(solo_id("/index.html"), None);
+        assert_eq!(solo_id("/app"), None);
+        assert_eq!(solo_id("/app/"), None);
+        assert_eq!(solo_id("/app/clock/extra"), None);
+        assert_eq!(solo_id("/apps/clock"), None);
+    }
+
+    /// The other half of "every app gets a page automatically": each catalog entry can be
+    /// reached at its own `/app/{id}`, and loads its module from there.
+    #[wasm_bindgen_test]
+    fn every_app_has_a_page_that_finds_it() {
+        for entry in catalog() {
+            let path = format!("{SOLO_PREFIX}{}", entry.id);
+            let id = solo_id(&path).unwrap_or_else(|| panic!("{path} is not an app page"));
+            assert_eq!(find(id).map(|e| e.id), Some(entry.id));
+            assert!(
+                entry.url.starts_with('/'),
+                "{}: module url {} would resolve under {path}",
+                entry.id,
+                entry.url
+            );
+        }
+    }
+
+    /// The Docs page listing each app's own page. A new app in the catalog fails this until it
+    /// is listed there, so the page can't silently fall behind.
+    #[wasm_bindgen_test]
+    fn every_app_page_is_listed_in_the_docs() {
+        let page = include_str!("../../../data/shared/Docs/app-links.md");
+        for entry in catalog() {
+            let link = format!("]({SOLO_PREFIX}{})", entry.id);
+            assert!(
+                page.contains(&link),
+                "data/shared/Docs/app-links.md doesn't link to {SOLO_PREFIX}{}",
+                entry.id
+            );
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn find_rejects_an_unknown_app() {
+        assert!(find("no-such-app").is_none());
+    }
 }

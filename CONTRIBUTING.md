@@ -85,6 +85,9 @@ Real examples: `apps/clock/src/tests.rs` (time as an input) and `apps/file-brows
 2. Wire the remaining pieces:
    - Register it in `crates/ccosel-shell/src/registry.rs` (the catalog) and in the `guests`
      list in `build_web()` in `xtask/src/main.rs`. Neither is checked automatically yet.
+   - Being in the catalog gives it its own page at `/app/<id>`, with nothing to add on the
+     server. List that link in `data/shared/Docs/app-links.md`; `cargo xtask test-wasm` fails
+     until you do.
 3. **Write its user documentation** in `data/shared/Docs/Apps/<name>.md`, and link it from the
    list in `data/shared/Docs/README.md`. `new-app` creates a stub; replace it. This is what
    people read in the Docs app, so write it for them: what the app is for and how to use each

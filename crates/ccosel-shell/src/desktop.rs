@@ -21,7 +21,7 @@ use crate::background;
 use crate::chrome;
 use crate::fetch;
 use crate::fullscreen;
-use crate::registry::{AppEntry, catalog};
+use crate::registry::{AppEntry, catalog, find};
 use crate::theme;
 use crate::upload::{self, Drops, Uploads};
 
@@ -97,10 +97,13 @@ pub struct Desktop {
     /// The last finished upload's summary and when to stop showing it, so "Uploaded photos:
     /// 12 files" stays in the status bar long enough to read.
     upload_notice: Option<(String, f64)>,
+    /// The app id from a `/app/{id}` page, which shows that one app filling the page with no
+    /// desktop around it. `None` is the desktop.
+    solo: Option<String>,
 }
 
 impl Desktop {
-    pub fn new(egui_ctx: egui::Context) -> Self {
+    pub fn new(egui_ctx: egui::Context, solo: Option<String>) -> Self {
         theme::apply(&egui_ctx);
 
         let replies: Inbox = Rc::new(RefCell::new(Vec::new()));
@@ -125,11 +128,25 @@ impl Desktop {
             uploads: Uploads::default(),
             drops: Drops::default(),
             upload_notice: None,
+            solo,
         };
         if let Err(e) = desktop.drops.listen(desktop.egui_ctx.clone()) {
             desktop
                 .errors
                 .push(format!("drag and drop is unavailable: {e:?}"));
+        }
+        if let Some(id) = desktop.solo.clone() {
+            match find(&id) {
+                Some(entry) => {
+                    set_page_title(entry.name);
+                    desktop.launch(&entry);
+                }
+                None => desktop
+                    .errors
+                    .push(format!("There is no app called “{id}”.")),
+            }
+            // No wallpaper: the app covers the whole page.
+            return desktop;
         }
         // Open something on first boot: an empty desktop with no affordance is a worse first
         // impression than a window the user can close.
@@ -237,11 +254,19 @@ impl Desktop {
         self.drain_uploads(now_ms);
         self.route_drops(&ctx);
 
-        self.paint_background(&ctx);
-        self.status_bar(&ctx);
-        self.empty_state(ui);
-        self.app_menu(&ctx);
-        self.dock(&ctx);
+        if self.solo.is_some() {
+            // Panels before the central one, which takes whatever space they leave.
+            self.solo_notices(ui);
+            if self.windows.is_empty() {
+                self.solo_placeholder(ui);
+            }
+        } else {
+            self.paint_background(&ctx);
+            self.status_bar(&ctx);
+            self.empty_state(ui);
+            self.app_menu(&ctx);
+            self.dock(&ctx);
+        }
 
         let desktop = desktop_rect(&ctx);
         let shown: Vec<egui::Id> = self
@@ -261,30 +286,38 @@ impl Desktop {
             if window.placement.minimized {
                 continue;
             }
-            let id = window_id(window.instance_id);
-            let mut placement = std::mem::take(&mut window.placement);
-            let actions = chrome::show_window(
-                &ctx,
-                id,
-                &mut placement,
-                desktop,
-                window.default_size.into(),
-                window.icon,
-                &window.title.clone(),
-                // The active window's bar is filled with its app's colour, the same as its dock
-                // badge, so the two read as one thing.
-                (active == Some(id)).then_some(window.color),
-                |ui| {
-                    // `auto_shrink(false)` claims the whole window body regardless of how much
-                    // the app actually drew, so dragging the window bigger than its content
-                    // leaves blank space rather than the window snapping back to fit. It also
-                    // means a long listing scrolls instead of growing the window without bound.
-                    egui::ScrollArea::vertical()
-                        .auto_shrink([false, false])
-                        .show(ui, |ui| window.ui(ui));
-                },
-            );
-            window.placement = placement;
+            // On an app's own page it fills the page: no title bar, so nothing closes it.
+            let close = if self.solo.is_some() {
+                solo_window(ui, window);
+                false
+            } else {
+                let id = window_id(window.instance_id);
+                let mut placement = std::mem::take(&mut window.placement);
+                let actions = chrome::show_window(
+                    &ctx,
+                    id,
+                    &mut placement,
+                    desktop,
+                    window.default_size.into(),
+                    window.icon,
+                    &window.title.clone(),
+                    // The active window's bar is filled with its app's colour, the same as its
+                    // dock badge, so the two read as one thing.
+                    (active == Some(id)).then_some(window.color),
+                    |ui| {
+                        // `auto_shrink(false)` claims the whole window body regardless of how
+                        // much the app actually drew, so dragging the window bigger than its
+                        // content leaves blank space rather than the window snapping back to
+                        // fit. It also means a long listing scrolls instead of growing the
+                        // window without bound.
+                        egui::ScrollArea::vertical()
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| window.ui(ui));
+                    },
+                );
+                window.placement = placement;
+                actions.close
+            };
 
             // Acted on in the frame the click is drawn: browsers only open a picker or a tab
             // in response to a user action, and the next frame could be too late.
@@ -323,7 +356,7 @@ impl Desktop {
                 });
             }
 
-            if actions.close {
+            if close {
                 window.close();
             }
         }
@@ -344,10 +377,11 @@ impl Desktop {
     fn route_drops(&mut self, ctx: &egui::Context) {
         for dropped in self.drops.take() {
             let layer = ctx.layer_id_at(dropped.pos).map(|l| l.id);
-            let window = self
-                .windows
-                .iter()
-                .find(|w| !w.placement.minimized && Some(window_id(w.instance_id)) == layer);
+            // On an app's own page the app is the whole page, so anywhere counts as on it.
+            let solo = self.solo.is_some();
+            let window = self.windows.iter().find(|w| {
+                !w.placement.minimized && (solo || Some(window_id(w.instance_id)) == layer)
+            });
             let Some(window) = window else {
                 self.errors
                     .push("upload: drop files onto an app window to upload them".to_owned());
@@ -557,6 +591,65 @@ impl Desktop {
             });
     }
 
+    /// On an app's own page, what the status bar would otherwise say: upload progress and
+    /// errors, in a strip along the bottom. Nothing at all while there is nothing to say.
+    fn solo_notices(&self, ui: &mut egui::Ui) {
+        let upload = self
+            .uploads
+            .status()
+            .or_else(|| self.upload_notice.as_ref().map(|(s, _)| s.clone()));
+        if upload.is_none() && self.errors.is_empty() {
+            return;
+        }
+        let t = theme::tokens();
+        egui::Panel::bottom("solo-notices")
+            .frame(
+                egui::Frame::NONE
+                    .fill(t.surface)
+                    .inner_margin(egui::Margin::symmetric(BAR_PAD as i8, 5)),
+            )
+            .show(ui, |ui| {
+                theme::paint_rule(ui.painter(), ui.max_rect(), egui::Align::Min);
+                if let Some(text) = upload {
+                    ui.horizontal(|ui| {
+                        if let Some(fraction) = self.uploads.progress() {
+                            ui.add(
+                                egui::ProgressBar::new(fraction)
+                                    .desired_width(UPLOAD_BAR_WIDTH)
+                                    .desired_height(8.0),
+                            );
+                        }
+                        ui.label(egui::RichText::new(text).small().color(t.ink));
+                    });
+                }
+                for error in &self.errors {
+                    ui.colored_label(ui.visuals().error_fg_color, error);
+                }
+            });
+    }
+
+    /// On an app's own page, before the app is up or when it can't be: loading, or a way back
+    /// to the desktop when the page names no app or the app failed to start.
+    fn solo_placeholder(&self, ui: &mut egui::Ui) {
+        let t = theme::tokens();
+        let loading = *self.pending.borrow() > 0;
+        egui::CentralPanel::default()
+            .frame(egui::Frame::NONE.fill(t.surface))
+            .show(ui, |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.add_space(ui.available_height() * 0.35);
+                    if loading {
+                        ui.spinner();
+                    } else {
+                        ui.label(
+                            egui::RichText::new("This app couldn't be opened.").color(t.text_dim),
+                        );
+                        ui.hyperlink_to("Go to the desktop", "/");
+                    }
+                });
+            });
+    }
+
     /// The app menu: a popup above the dock listing every installed app with its icon and
     /// name. Clicking one launches it and closes the menu.
     fn app_menu(&mut self, ctx: &egui::Context) {
@@ -748,6 +841,30 @@ async fn launch_inner(
         entry.color,
         entry.default_size,
     ))
+}
+
+/// On an app's own page, the app fills everything the notice strip leaves, with the same
+/// scrolling a window body has.
+fn solo_window(ui: &mut egui::Ui, window: &mut AppWindow<WebInstance>) {
+    let t = theme::tokens();
+    egui::CentralPanel::default()
+        .frame(
+            egui::Frame::NONE
+                .fill(t.surface)
+                .inner_margin(egui::Margin::same(12)),
+        )
+        .show(ui, |ui| {
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| window.ui(ui));
+        });
+}
+
+/// Names the browser tab after the app on its own page, so several of them can be told apart.
+fn set_page_title(app: &str) {
+    if let Some(document) = web_sys::window().and_then(|w| w.document()) {
+        document.set_title(&format!("{app} · CCOSEL"));
+    }
 }
 
 fn window_id(instance_id: u64) -> egui::Id {
