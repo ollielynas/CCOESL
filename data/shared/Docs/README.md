@@ -11,7 +11,9 @@ machine on the network.
 - [Clock](Apps/clock.md): a clock and stopwatch
 - [Server](Apps/server-dashboard.md): live graphs of how the server is doing
 - [Compiler](Apps/rust-compiler.md): build a Rust project on the server and download the result
-- [Account](Apps/account.md): see who you are signed in as, and sign out
+- [Account](Apps/account.md): see who you are signed in as, sign out, and make app passwords
+
+You can also [open your files as a drive](WebDAV.md) on your own computer, with WebDAV.
 
 Any app can also be opened on its own, in a tab with no desktop around it. The
 [links to each app's own page](app-links.md) are in one place.

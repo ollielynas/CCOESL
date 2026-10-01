@@ -73,7 +73,8 @@ cookie `Secure`. Put it in `.env` to keep it.
 `CCOSEL_KEYCLOAK_CLIENT_SECRET` for a confidential client. Browsers then go to that Keycloak
 directly, and its client needs `<this server>/auth/callback` as a valid redirect URI.
 
-Once login is on, `/rpc`, `/upload` and `/files/...` answer `401` without a signed-in session;
+Once login is on, `/rpc`, `/upload` and `/files/...` answer `401` without a signed-in session
+(and `/dav/` without an app password, see [WebDAV](#webdav));
 only the boot page, the shell and app modules, `/auth/*` and the forwarded `/idp/` pages stay
 public.
 
@@ -82,6 +83,26 @@ account page (profile, password, sessions) in a new tab. **Sign out** ends the s
 server and in Keycloak, so signing in again asks for the password.
 
 Sessions live in server memory only — a restart signs everyone out.
+
+### WebDAV
+
+The files are also served over WebDAV at `/dav/`, so people can mount them as a drive in
+Finder, Windows Explorer, GNOME Files, davfs2 or rclone. The same `.access` permissions apply as
+in the browser. [Docs/WebDAV.md](data/shared/Docs/WebDAV.md) is the user guide.
+
+- **Signing in** is HTTP Basic: the user's login and an **app password**, which they make in
+  the Account app. The session cookie is never accepted on `/dav/`. App password hashes are
+  kept in `app-passwords.json` in the server's data folder (`~/.local/share/ccosel/`,
+  `%APPDATA%\ccosel\`, or `/data/ccosel/` in Docker), never in the served folder. The server
+  refuses to start if that data folder is inside the folder it serves.
+- **It needs HTTPS in practice.** Basic auth over plain `http://` sends the app password
+  readably across the LAN, and Windows refuses Basic auth over `http://` by default. Serve it
+  behind an HTTPS tunnel or proxy (see above) and give people the `https://` address.
+- **Failed sign-ins are rate-limited:** after ten in five minutes for one login, or from one
+  address, `/dav/` answers `429` for the rest of the five minutes. Behind a tunnel running on
+  this machine, the address is the one the tunnel puts last in `X-Forwarded-For`; that header
+  is ignored from anywhere else.
+- With login off, `/dav/` is open to everyone, anonymously, like the rest of the server.
 
 ## Running it in Docker
 
@@ -118,7 +139,8 @@ sets itself up.
   the container recreated with the new address each time, since Keycloak only sends people
   back to addresses it was told about.
 - **What's kept:** the `ccosel-data` volume holds people's files (`/data/files`, which starts
-  with the app documentation), Keycloak's accounts, and the admin password. Remove the
+  with the app documentation), Keycloak's accounts, the admin password, and people's
+  [app passwords](#webdav). Remove the
   container freely; remove the volume only to start over.
 - **Smaller image:** `docker build --build-arg WITH_RUST=0 -t ccosel .` leaves out the Rust
   toolchain the Compiler app builds with, about 1 GB. Everything else still works.
