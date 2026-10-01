@@ -13,6 +13,9 @@ machine on the network.
 - [Compiler](Apps/rust-compiler.md): build a Rust project on the server and download the result
 - [Account](Apps/account.md): see who you are signed in as, and sign out
 
+Any app can also be opened on its own, in a tab with no desktop around it. The
+[links to each app's own page](app-links.md) are in one place.
+
 ## Where your files go
 
 | Folder | Who can see it |

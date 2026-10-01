@@ -39,6 +39,9 @@ fn documents_and_titles() {
     assert!(is_doc("/a/B.MD"));
     assert!(is_doc("x.markdown"));
     assert!(!is_doc("x.txt"));
+    assert!(is_app_page("/app/clock"));
+    assert!(!is_app_page("/apps/clock.md"));
+    assert!(!is_app_page("app/clock"));
     assert_eq!(title("/a/getting-started.md"), "getting-started");
     assert_eq!(title("notes.markdown"), "notes");
     assert_eq!(title("Folder"), "Folder");

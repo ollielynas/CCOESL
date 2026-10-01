@@ -40,13 +40,18 @@ impl eframe::App for Shell {
 pub async fn start(canvas: web_sys::HtmlCanvasElement) -> Result<(), JsValue> {
     console_error_panic_hook::set_once();
 
+    // `/app/{id}` is the same page with one app filling it instead of the desktop.
+    let solo = web_sys::window()
+        .and_then(|w| w.location().pathname().ok())
+        .and_then(|path| registry::solo_id(&path).map(str::to_owned));
+
     eframe::WebRunner::new()
         .start(
             canvas,
             eframe::WebOptions::default(),
             Box::new(|cc| {
                 Ok(Box::new(Shell {
-                    desktop: Desktop::new(cc.egui_ctx.clone()),
+                    desktop: Desktop::new(cc.egui_ctx.clone(), solo),
                 }))
             }),
         )

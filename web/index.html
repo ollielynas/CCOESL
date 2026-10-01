@@ -37,7 +37,9 @@
   const fill = document.getElementById('fill');
   const note = document.getElementById('note');
 
-  const SHELL = './dist/ccosel-shell_bg.wasm';
+  // Absolute, because this page is also served at `/app/{id}` (one app on its own, no
+  // desktop), where `./dist/` would resolve to `/app/dist/`.
+  const SHELL = '/dist/ccosel-shell_bg.wasm';
 
   // Whether this server has Keycloak login turned on, and whether this browser is already
   // signed in — `/auth/*` exists independently of the wasm shell (see
@@ -100,7 +102,7 @@
     statusEl.textContent = 'Starting…';
     note.textContent = '';
 
-    const { default: init, start } = await import('./dist/ccosel-shell.js');
+    const { default: init, start } = await import('/dist/ccosel-shell.js');
     await init({ module_or_path: bytes });
 
     boot.remove();

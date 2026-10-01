@@ -873,6 +873,7 @@ fn new_app(name: &str) -> Result<()> {
         "  3. {APP_DOCS_DIR}/{name}.md — replace the stub with real documentation, and link it \
          from data/shared/Docs/README.md"
     );
+    println!("  4. data/shared/Docs/app-links.md — add a row linking its own page, /app/{name}");
     Ok(())
 }
 

@@ -154,7 +154,7 @@ fn a_document_is_rendered_and_its_links_followed() {
     open_doc(
         &mut h,
         &l(icons::FILE_TEXT, "Guide"),
-        "# Welcome\n\nRead about [Files](Apps/files.md), fetch [the logo](logo.png) or visit <https://example.com>.\n\n- one\n1. two\n- [x] done\n\n> note\n\n```\ncode\n\nmore\n```\n\n---\n\n| A | B |\n|---|---|\n| [c](c.md) | d |\n\n[top](#top)",
+        "# Welcome\n\nRead about [Files](Apps/files.md), fetch [the logo](logo.png) or visit <https://example.com>. Open [the clock](/app/clock) alone.\n\n- one\n1. two\n- [x] done\n\n> note\n\n```\ncode\n\nmore\n```\n\n---\n\n| A | B |\n|---|---|\n| [c](c.md) | d |\n\n[top](#top)",
         false,
     );
     assert_eq!(h.app.view, View::Read("/Docs/Guide.md".into()));
@@ -181,6 +181,8 @@ fn a_document_is_rendered_and_its_links_followed() {
         l(icons::LINK, "https://example.com"),
         "https://example.com".into()
     )));
+    // An app's own page opens as a page, not as a download of a file called `/app/clock`.
+    assert!(urls.contains(&(l(icons::LINK, "the clock"), "/app/clock".into())));
 
     h.click_link("Files");
     h.frame();
