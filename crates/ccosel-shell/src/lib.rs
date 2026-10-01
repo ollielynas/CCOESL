@@ -13,10 +13,13 @@
 mod app_window;
 mod background;
 mod chrome;
+mod clipboard;
 mod desktop;
 mod fetch;
 mod fullscreen;
 mod http_wire;
+mod image_loader;
+mod media;
 mod registry;
 mod theme;
 mod upload;
@@ -40,10 +43,16 @@ impl eframe::App for Shell {
 pub async fn start(canvas: web_sys::HtmlCanvasElement) -> Result<(), JsValue> {
     console_error_panic_hook::set_once();
 
-    // `/app/{id}` is the same page with one app filling it instead of the desktop.
-    let solo = web_sys::window()
-        .and_then(|w| w.location().pathname().ok())
+    // `/app/{id}` is the same page with one app filling it instead of the desktop, and
+    // `?open=...` what to open that app on: how a shared link opens a file in the Viewer.
+    let location = web_sys::window().map(|w| w.location());
+    let solo = location
+        .as_ref()
+        .and_then(|l| l.pathname().ok())
         .and_then(|path| registry::solo_id(&path).map(str::to_owned));
+    let solo_arg = location
+        .and_then(|l| l.search().ok())
+        .and_then(|search| registry::solo_arg(&search));
 
     eframe::WebRunner::new()
         .start(
@@ -51,7 +60,7 @@ pub async fn start(canvas: web_sys::HtmlCanvasElement) -> Result<(), JsValue> {
             eframe::WebOptions::default(),
             Box::new(|cc| {
                 Ok(Box::new(Shell {
-                    desktop: Desktop::new(cc.egui_ctx.clone(), solo),
+                    desktop: Desktop::new(cc.egui_ctx.clone(), solo, solo_arg),
                 }))
             }),
         )
