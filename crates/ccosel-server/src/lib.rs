@@ -8,6 +8,7 @@ pub mod auth;
 pub mod build_api;
 pub mod fs_api;
 pub mod idp;
+pub mod image_info;
 pub mod keycloak;
 pub mod rpc;
 pub mod scratch;

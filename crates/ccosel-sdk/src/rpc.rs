@@ -370,6 +370,7 @@ pub fn method_name(method: u32) -> String {
         Some(Method::CreateDir) => "create_dir",
         Some(Method::Access) => "access",
         Some(Method::Search) => "search",
+        Some(Method::ImageInfo) => "image_info",
         None => "unknown",
     };
     String::from(name)
