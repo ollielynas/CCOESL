@@ -670,7 +670,8 @@ impl Octave {
         if !self.editor_status.is_empty() {
             ui.styled(&self.editor_status, TextStyle::WEAK);
         }
-        ui.text_edit_multiline(&mut self.editor);
+        // The file scrolls by itself, under its toolbar, rather than the whole window.
+        ui.scroll(|ui| ui.text_edit_multiline(&mut self.editor));
     }
 
     fn figures_tab(&self, ui: &mut Ui<'_>, act: &mut Vec<Action>) {

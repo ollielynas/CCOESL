@@ -943,3 +943,44 @@ fn enter_in_a_footer_field_submits_it_and_keeps_the_focus() {
     assert_ne!(find(&recs, 95).flags & ResponseFlags::HAS_FOCUS, 0);
     assert_eq!(r.text(95).unwrap().0, "x = 1y");
 }
+
+#[test]
+fn a_long_document_in_a_scroll_region_scrolls_there_not_the_window() {
+    let ctx = egui::Context::default();
+    let mut r = Replayer::new();
+    let text: String = (0..200).map(|i| format!("line {i}\n")).collect();
+    let buf = encode(&[
+        Cmd::BeginScope {
+            id: 85,
+            layout: Layout::new(ScopeKind::Scroll, Align::Min),
+        },
+        Cmd::TextEditMulti {
+            id: 86,
+            version: 1,
+            set: Some(&text),
+        },
+        Cmd::EndScope { id: 85 },
+        Cmd::Label {
+            id: 87,
+            text: "after",
+        },
+    ]);
+    // Inside a window-sized scroll area, as the shell draws every app.
+    let mut out = Vec::new();
+    let mut full = ctx.run_ui(raw_input(), |ui| {
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| out = r.replay(ui, APP, &buf).unwrap());
+    });
+    full.textures_delta.clear();
+    let editor = find(&out, 86);
+    assert!(
+        editor.rect[3] > 600.0,
+        "the document is taller: {:?}",
+        editor.rect
+    );
+    assert!(
+        find(&out, 87).rect[1] <= 610.0,
+        "but the region stops at the window"
+    );
+}
