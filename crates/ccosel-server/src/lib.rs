@@ -24,7 +24,7 @@ use axum::middleware;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Extension, Router};
-use tower_http::services::ServeDir;
+use tower_http::services::{ServeDir, ServeFile};
 
 use access::User;
 use auth::AuthState;
@@ -104,9 +104,16 @@ pub fn app(jail: Jail, web_dir: PathBuf, auth: AuthState) -> Router {
             auth::require_session,
         ));
 
+    // `/app/{id}` is the boot page again: the shell reads the id from the address and shows that
+    // one app on its own. Any id gets the page, so a new app has one without touching this, and
+    // the shell is what says an id names no app. Public, like the page at `/`.
+    let boot_page = ServeFile::new(web_dir.join("index.html"));
+
     Router::new()
         .merge(protected)
         .merge(auth::router())
+        .route_service("/app/{id}", boot_page.clone())
+        .route_service("/app/{id}/", boot_page)
         .fallback_service(
             // Precompressed assets are served as-is when the client accepts them: compressing
             // a 5 MB shell on every request would be absurd, and `xtask` can do it once at
