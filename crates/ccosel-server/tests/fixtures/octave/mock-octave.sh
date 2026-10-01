@@ -9,7 +9,9 @@
 # transcripts again with `CCOSEL_RECORD_OCTAVE=1 cargo test -p ccosel-server --test octave`.
 #
 # Two fixtures do instead what real Octave would: `exit` ends the process, `hang` never answers.
+# Like real Octave, an interrupt (SIGINT) abandons the command running and reads the next one.
 here=$(dirname "$0")
+trap ':' INT
 while IFS= read -r line; do
   case "$line" in
     printf*)
@@ -22,7 +24,13 @@ while IFS= read -r line; do
       [ -n "$name" ] || name=empty
       case "$name" in
         exit) exit 0 ;;
-        hang) sleep 60; exit 0 ;;
+        hang)
+          # In the background so the trap can run: `wait` returns early on an interrupt.
+          sleep 60 &
+          wait $!
+          kill $! 2>/dev/null
+          continue
+          ;;
       esac
       sed -e "s/@TAG/$tag/g" -e "s|@CWD|$PWD|g" "$here/$name.out"
       ;;

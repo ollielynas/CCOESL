@@ -19,8 +19,8 @@ use ccosel_proto::fs::{
     EntryKind, ListDir, ListDirReq, PathReq, ReadFile, WriteFile, WriteFileReq,
 };
 use ccosel_proto::octave::{
-    Axes, Figure, OctaveInput, OctavePoll, OctavePollReq, OctaveResult, OctaveRun, OctaveRunReq,
-    OctaveStatus,
+    Axes, DEFAULT_LIMIT_MS, Figure, OctaveAction, OctaveControl, OctaveControlReq, OctaveInput,
+    OctavePoll, OctavePollReq, OctaveResult, OctaveRun, OctaveRunReq, OctaveStatus,
 };
 use ccosel_sdk::{App, CallId, Poll, Text, TextStyle, Ui, Vec2, icons};
 
@@ -77,6 +77,11 @@ pub struct Job {
     received: u32,
     /// Output not yet ending in a newline, held until the rest of the line arrives.
     partial: String,
+    /// How long it has run, and when the server will stop it, as the last poll said.
+    pub elapsed_ms: u64,
+    pub limit_ms: u64,
+    /// Stop was pressed: the server is interrupting it.
+    pub stopping: bool,
 }
 
 /// An editor save in flight, and whether to run the file once it is saved.
@@ -113,6 +118,8 @@ pub struct Octave {
     pub expanded: BTreeSet<String>,
     /// A job or a save may have changed the files: list the tree's folders again.
     refresh_tree: bool,
+    /// Stop and extend requests not yet answered.
+    controls: Vec<CallId>,
 }
 
 impl Default for Octave {
@@ -138,6 +145,7 @@ impl Default for Octave {
             inspect_output: Vec::new(),
             expanded: BTreeSet::new(),
             refresh_tree: false,
+            controls: Vec::new(),
         }
     }
 }
@@ -165,6 +173,10 @@ enum Action {
     Toggle(String),
     /// Open a file from the tree in the editor.
     Edit(String),
+    /// Give the running job more time.
+    Extend(u32),
+    /// Interrupt the running job.
+    Stop,
     /// Change Octave's working folder, to a path relative to the current one: the session's
     /// `cwd` is a jail path, which means nothing to Octave itself.
     Cd(String),
@@ -194,8 +206,35 @@ pub fn label(icon: &str, text: &str) -> String {
     s
 }
 
+/// Says what the time limit is, before anything runs.
+const LIMIT_TIP: &str = "Run it. A command gets 10 minutes before the server stops it; while it \
+                         runs you can give it longer, or stop it.";
+
 /// What the command window shows for running the editor's text when it has no file.
 const UNSAVED_RUN: &str = "run (unsaved script)";
+
+/// `ms` as a clock: `1:05`, or `1:02:05` past an hour.
+fn clock(ms: u64) -> String {
+    let s = ms / 1000;
+    let (h, m, s) = (s / 3600, s / 60 % 60, s % 60);
+    let mut out = String::new();
+    let two = |out: &mut String, n: u64| {
+        if n < 10 {
+            out.push('0');
+        }
+        out.push_str(&itoa(n));
+    };
+    if h > 0 {
+        out.push_str(&itoa(h));
+        out.push(':');
+        two(&mut out, m);
+    } else {
+        out.push_str(&itoa(m));
+    }
+    out.push(':');
+    two(&mut out, s);
+    out
+}
 
 /// `name` inside the folder `dir`, both jail paths.
 fn join(dir: &str, name: &str) -> String {
@@ -251,6 +290,9 @@ impl Octave {
             sent: Some(call),
             received: 0,
             partial: String::new(),
+            elapsed_ms: 0,
+            limit_ms: DEFAULT_LIMIT_MS,
+            stopping: false,
         });
         true
     }
@@ -336,6 +378,44 @@ impl Octave {
         self.push_log(LineKind::Error, &msg);
     }
 
+    /// Ask the server to stop the running job, or give it more time.
+    fn control(&mut self, ui: &mut Ui<'_>, action: OctaveAction) {
+        let Some(job) = &mut self.job else {
+            return;
+        };
+        let call = ui.rpc().send::<OctaveControl>(&OctaveControlReq {
+            client: self.client.unwrap_or(1),
+            seq: job.seq,
+            action,
+        });
+        if action == OctaveAction::Stop {
+            job.stopping = true;
+        }
+        self.controls.push(call);
+    }
+
+    /// See how stop and extend requests went: an extension's reply is the job's new limit.
+    fn controlled(&mut self, ui: &mut Ui<'_>) {
+        for call in core::mem::take(&mut self.controls) {
+            match ui.rpc().outcome::<OctaveControl>(call) {
+                Poll::Pending => self.controls.push(call),
+                Poll::Ready(limit) => {
+                    if let Some(job) = &mut self.job {
+                        job.limit_ms = *limit;
+                    }
+                }
+                Poll::Failed(err) => {
+                    if let Some(job) = &mut self.job {
+                        job.stopping = false;
+                    }
+                    let mut msg = String::from("error: could not change the running job: ");
+                    msg.push_str(err.message());
+                    self.push_log(LineKind::Error, &msg);
+                }
+            }
+        }
+    }
+
     /// Follow the running job: see whether the server took it, then poll it.
     fn follow(&mut self, ui: &mut Ui<'_>) {
         let Some(job) = &mut self.job else {
@@ -371,6 +451,8 @@ impl Octave {
                 ui.rpc().invalidate::<OctavePoll>(&req);
                 if let Some(job) = &mut self.job {
                     job.received = status.next;
+                    job.elapsed_ms = status.elapsed_ms;
+                    job.limit_ms = status.limit_ms;
                 }
                 if status.finished {
                     self.finish(&status);
@@ -405,8 +487,8 @@ impl Octave {
                 }
                 ui.tooltip("Start a fresh Octave session: every variable and figure is cleared");
             });
-            if !idle {
-                ui.label(&label(icons::HOURGLASS, "Running…"));
+            if let Some(job) = &self.job {
+                self.running(ui, job, act);
             }
         });
         ui.horizontal(|ui| {
@@ -428,6 +510,38 @@ impl Octave {
             }
         });
         ui.separator();
+    }
+
+    /// The running job: how long it has had, and the controls to give it longer or stop it.
+    fn running(&self, ui: &mut Ui<'_>, job: &Job, act: &mut Vec<Action>) {
+        if job.stopping {
+            ui.label(&label(icons::HOURGLASS, "Stopping…"));
+            return;
+        }
+        ui.label(&label(icons::HOURGLASS, "Running…"));
+        let mut time = clock(job.elapsed_ms);
+        time.push_str(" of ");
+        time.push_str(&clock(job.limit_ms));
+        ui.label(&time);
+        ui.tooltip(
+            "How long it has run, and its time limit. At the limit the server stops it and \
+             restarts Octave, which clears your variables.",
+        );
+        // Until the server has taken the job there is nothing there to change.
+        ui.enabled(job.sent.is_none(), |ui| {
+            if ui.button(&label(icons::TIMER, "+10 min")).clicked() {
+                act.push(Action::Extend(10));
+            }
+            ui.tooltip("Give it 10 more minutes before the time limit");
+            if ui.button("+1 h").clicked() {
+                act.push(Action::Extend(60));
+            }
+            ui.tooltip("Give it an hour more before the time limit");
+            if ui.button(&label(icons::STOP, "Stop")).clicked() {
+                act.push(Action::Stop);
+            }
+            ui.tooltip("Interrupt it, like Ctrl-C. Your variables are kept.");
+        });
     }
 
     fn sidebar(&mut self, ui: &mut Ui<'_>, act: &mut Vec<Action>) {
@@ -644,6 +758,7 @@ impl Octave {
                     if ui.button(&label(icons::PLAY, "Run")).clicked() {
                         act.push(Action::Submit);
                     }
+                    ui.tooltip(LIMIT_TIP);
                 });
                 if ui.button(icons::CARET_UP).clicked() {
                     act.push(Action::Older);
@@ -950,6 +1065,8 @@ impl Octave {
                 self.editor_path.set("");
                 self.editor_status.clear();
             }
+            Action::Extend(minutes) => self.control(ui, OctaveAction::Extend { minutes }),
+            Action::Stop => self.control(ui, OctaveAction::Stop),
             Action::Toggle(path) => {
                 if !self.expanded.remove(&path) {
                     self.expanded.insert(path);
@@ -1047,6 +1164,7 @@ impl App for Octave {
             // Any number another window is unlikely to have picked. The clock will do.
             self.client = Some((ui.ctx().time_ms as u64 as u32) | 1);
         }
+        self.controlled(ui);
         self.follow(ui);
         self.load(ui);
         self.saved(ui);

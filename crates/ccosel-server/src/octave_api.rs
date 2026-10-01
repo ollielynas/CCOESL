@@ -18,13 +18,14 @@ use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use ccosel_proto::octave::{
-    Axes, Figure, MAX_OUTPUT_BYTES, OctaveInput, OctavePollReq, OctaveResult, OctaveRunReq,
-    OctaveStatus, Series, Variable,
+    Axes, DEFAULT_LIMIT_MS, Figure, MAX_LIMIT_MS, MAX_OUTPUT_BYTES, OctaveAction, OctaveControlReq,
+    OctaveInput, OctavePollReq, OctaveResult, OctaveRunReq, OctaveStatus, Series, Variable,
 };
 use ccosel_proto::server_error;
 
@@ -35,9 +36,19 @@ use crate::fs_api::{Jail, Need};
 /// the server binary is all that needs deploying.
 const RUNNER: &str = include_str!("octave/__ccosel_run__.m");
 
-/// A job still running after this is not coming back. The session is killed to stop it, which
-/// loses its variables; the app says so.
-const JOB_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+/// A job still running after this is not coming back, unless its user said it would take
+/// longer (`OctaveControl`). The session is killed to stop it, which loses its variables; the
+/// app says so.
+const JOB_TIMEOUT: Duration = Duration::from_millis(DEFAULT_LIMIT_MS);
+
+/// How long Octave gets to come back to its prompt after being interrupted, before it is
+/// killed instead. Octave notices an interrupt between operations, so this is usually instant;
+/// one long builtin call can hold it up.
+const STOP_GRACE: Duration = Duration::from_secs(5);
+
+/// How often a running job's wait looks up from Octave's output to see whether its limit moved
+/// or it was asked to stop.
+const TICK: Duration = Duration::from_millis(100);
 
 /// A session nobody has used for this long is stopped, so an abandoned window doesn't keep an
 /// Octave process (and whatever it allocated) alive forever.
@@ -150,15 +161,14 @@ impl Octave {
         }
 
         let session = self.session(&who, jail, user);
-        let job = Arc::new(Job::new());
+        let job = Arc::new(Job::new(self.timeout));
         jobs.insert(key, job.clone());
         drop(jobs);
 
         let program = program.clone();
         let jail_root = jail.root().to_path_buf();
-        let timeout = self.timeout;
         std::thread::spawn(move || {
-            let result = session.execute(&program, &jail_root, input, &job, timeout);
+            let result = session.execute(&program, &jail_root, input, &job);
             *job.result.lock().unwrap() = Some(result);
             *job.finished_at.lock().unwrap() = Some(Instant::now());
         });
@@ -176,6 +186,29 @@ impl Octave {
             .cloned()
             .ok_or(server_error::NOT_FOUND)?;
         Ok(job.snapshot(req.from as usize))
+    }
+
+    /// Move job `(client, seq)`'s time limit, or stop it. Replies with its limit afterwards.
+    pub fn control(&self, user: Option<&str>, req: &OctaveControlReq) -> Result<u64, u32> {
+        let key = (user.unwrap_or_default().to_owned(), req.client, req.seq);
+        let job = self
+            .jobs
+            .lock()
+            .unwrap()
+            .get(&key)
+            .cloned()
+            .ok_or(server_error::NOT_FOUND)?;
+        let mut limit = job.limit.lock().unwrap();
+        if job.result.lock().unwrap().is_none() {
+            match req.action {
+                OctaveAction::Extend { minutes } => {
+                    let more = Duration::from_secs(u64::from(minutes) * 60);
+                    *limit = (*limit + more).min(Duration::from_millis(MAX_LIMIT_MS));
+                }
+                OctaveAction::Stop => job.stop.store(true, Ordering::Relaxed),
+            }
+        }
+        Ok(limit.as_millis() as u64)
     }
 
     /// The caller's session, made if need be, after stopping any that have sat idle too long.
@@ -220,6 +253,10 @@ enum Input {
 
 struct Job {
     started: Instant,
+    /// When, from `started`, the job is stopped for running too long.
+    limit: Mutex<Duration>,
+    /// Its user asked for it to be interrupted.
+    stop: AtomicBool,
     output: Mutex<Output>,
     result: Mutex<Option<OctaveResult>>,
     finished_at: Mutex<Option<Instant>>,
@@ -232,9 +269,11 @@ struct Output {
 }
 
 impl Job {
-    fn new() -> Self {
+    fn new(limit: Duration) -> Self {
         Self {
             started: Instant::now(),
+            limit: Mutex::new(limit),
+            stop: AtomicBool::new(false),
             output: Mutex::new(Output::default()),
             result: Mutex::new(None),
             finished_at: Mutex::new(None),
@@ -266,6 +305,7 @@ impl Job {
         OctaveStatus {
             finished: result.is_some(),
             elapsed_ms: self.started.elapsed().as_millis() as u64,
+            limit_ms: self.limit.lock().unwrap().as_millis() as u64,
             output: out.text[from..].to_owned(),
             next: out.text.len() as u32,
             output_truncated: out.truncated,
@@ -320,7 +360,6 @@ impl Session {
         jail_root: &Path,
         input: Input,
         job: &Job,
-        timeout: Duration,
     ) -> OctaveResult {
         let mut process = self.process.lock().unwrap();
         *self.last_used.lock().unwrap() = Instant::now();
@@ -360,24 +399,69 @@ impl Session {
             );
         }
 
-        let deadline = Instant::now() + timeout;
+        let mut tag = tag;
         let mut report = Vec::new();
+        // Once interrupted: when, and the tag the interrupted run would have reported with.
+        let mut stopped: Option<(Instant, String)> = None;
         loop {
-            let left = deadline.saturating_duration_since(Instant::now());
-            match p.lines.recv_timeout(left) {
-                Ok(line) => match line.strip_prefix(&tag) {
-                    Some(" DONE") => break,
-                    Some(rest) => report.push(rest.trim_start().to_owned()),
-                    None => job.push_line(&line),
-                },
-                Err(RecvTimeoutError::Timeout) => {
+            let now = Instant::now();
+            if let Some((at, _)) = &stopped
+                && now >= *at + STOP_GRACE
+            {
+                *process = None;
+                return ended(
+                    job,
+                    "Octave didn't stop when asked, so the session was restarted and its \
+                     variables are gone.",
+                );
+            }
+            // Read each time round: the user can move it while the job runs.
+            let deadline = job.started + *job.limit.lock().unwrap();
+            if now >= deadline {
+                *process = None;
+                return ended(
+                    job,
+                    "Stopped: this ran past its time limit. The session was restarted, so its \
+                     variables are gone. Extend the limit while it runs if it needs longer.",
+                );
+            }
+            if stopped.is_none() && job.stop.load(Ordering::Relaxed) {
+                // Interrupt it, then ask for a report. The interrupt abandons the job's whole
+                // command line, report and all, and Octave goes on to read the next one. That
+                // report is under a new tag, so whatever the interrupted run already printed
+                // under the old one can't be taken for it.
+                interrupt(&p.child);
+                let fresh = job_tag();
+                let command = self.write_script("").map(|script| {
+                    format!(
+                        "__ccosel_run__(\"code\", \"{}\", \"{fresh}\")\n",
+                        octave_string(&script.display().to_string())
+                    )
+                });
+                let sent = command.is_ok_and(|c| {
+                    p.stdin.write_all(c.as_bytes()).is_ok() && p.stdin.flush().is_ok()
+                });
+                if !sent {
                     *process = None;
                     return ended(
                         job,
-                        "Stopped: this ran past the server's time limit. The session was \
-                         restarted, so its variables are gone.",
+                        "Octave has stopped. The next command starts a new session.",
                     );
                 }
+                report.clear();
+                stopped = Some((now, core::mem::replace(&mut tag, fresh)));
+            }
+            let wait = deadline.saturating_duration_since(now).min(TICK);
+            match p.lines.recv_timeout(wait) {
+                Ok(line) => match line.strip_prefix(&tag) {
+                    Some(" DONE") => break,
+                    Some(rest) => report.push(rest.trim_start().to_owned()),
+                    None => match &stopped {
+                        Some((_, old)) if line.starts_with(old.as_str()) => {}
+                        _ => job.push_line(&line),
+                    },
+                },
+                Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => {
                     *process = None;
                     return ended(
@@ -388,7 +472,12 @@ impl Session {
             }
         }
         *self.last_used.lock().unwrap() = Instant::now();
-        parse_report(&report, jail_root)
+        let mut result = parse_report(&report, jail_root);
+        if stopped.is_some() {
+            job.push_line("error: Stopped. Variables it set before stopping are kept.");
+            result.error = true;
+        }
+        result
     }
 
     fn write_script(&self, code: &str) -> std::io::Result<PathBuf> {
@@ -448,6 +537,21 @@ impl Session {
         })
     }
 }
+
+/// Interrupt what Octave is running, as Ctrl-C at its prompt would. It stays running, with its
+/// variables, and goes on to read its next command.
+#[cfg(unix)]
+fn interrupt(child: &Child) {
+    // SAFETY: `kill` only sends a signal; the pid is our own child, which `Process` reaps
+    // only when it is dropped, so the pid can't have been reused by now.
+    unsafe {
+        libc::kill(child.id() as libc::pid_t, libc::SIGINT);
+    }
+}
+
+/// Elsewhere there is no interrupt to send: the job runs on, and the grace period ends it.
+#[cfg(not(unix))]
+fn interrupt(_child: &Child) {}
 
 /// Reads `from` a line at a time into `tx`, on its own thread, until it closes.
 fn forward_lines(from: impl Read + Send + 'static, tx: Sender<String>) {

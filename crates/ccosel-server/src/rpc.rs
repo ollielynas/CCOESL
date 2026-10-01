@@ -13,7 +13,7 @@ use ccosel_proto::account::Account;
 use ccosel_proto::build::CompileReq;
 use ccosel_proto::fs::{ListDirReq, PathReq, SearchReq, WriteFileReq};
 use ccosel_proto::info::ServerInfoReply;
-use ccosel_proto::octave::{OctavePollReq, OctaveRunReq};
+use ccosel_proto::octave::{OctaveControlReq, OctavePollReq, OctaveRunReq};
 use ccosel_proto::{Method, PROTO_VERSION, WireReply, WireRequest, WireResult, server_error};
 
 use serde::Serialize;
@@ -149,6 +149,9 @@ async fn dispatch(
             run::<OctaveRunReq, _>(req, |a| (state.octave.run(jail, user, &a), ""))
         }
         Method::OctavePoll => run::<OctavePollReq, _>(req, |a| (state.octave.poll(user, &a), "")),
+        Method::OctaveControl => {
+            run::<OctaveControlReq, _>(req, |a| (state.octave.control(user, &a), ""))
+        }
     }
 }
 

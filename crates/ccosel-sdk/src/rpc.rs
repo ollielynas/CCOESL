@@ -372,6 +372,7 @@ pub fn method_name(method: u32) -> String {
         Some(Method::Search) => "search",
         Some(Method::OctaveRun) => "octave_run",
         Some(Method::OctavePoll) => "octave_poll",
+        Some(Method::OctaveControl) => "octave_control",
         None => "unknown",
     };
     String::from(name)

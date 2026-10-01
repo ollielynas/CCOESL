@@ -11,7 +11,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use ccosel_proto::octave::{OctaveInput, OctavePollReq, OctaveRunReq, OctaveStatus};
+use ccosel_proto::octave::{
+    MAX_LIMIT_MS, OctaveAction, OctaveControlReq, OctaveInput, OctavePollReq, OctaveRunReq,
+    OctaveStatus,
+};
 use ccosel_proto::server_error;
 use ccosel_server::fs_api::Jail;
 use ccosel_server::octave_api::Octave;
@@ -361,4 +364,174 @@ fn real_octave_keeps_variables_between_jobs() {
     assert_eq!(result.cwd, "/");
     let names: Vec<&str> = result.variables.iter().map(|v| v.name.as_str()).collect();
     assert_eq!(names, ["a", "b"]);
+}
+
+fn control(octave: &Octave, seq: u32, action: OctaveAction) -> Result<u64, u32> {
+    octave.control(
+        None,
+        &OctaveControlReq {
+            client: 1,
+            seq,
+            action,
+        },
+    )
+}
+
+/// Poll job `seq` once.
+fn status(octave: &Octave, seq: u32) -> OctaveStatus {
+    let req = OctavePollReq {
+        client: 1,
+        seq,
+        from: 0,
+    };
+    octave.poll(None, &req).unwrap()
+}
+
+#[test]
+fn a_running_job_can_be_stopped_and_its_session_carries_on() {
+    let (jail, support) = setup("stop");
+    let octave = mock(support, Duration::from_secs(20));
+    run(
+        &octave,
+        &jail,
+        None,
+        1,
+        OctaveInput::Code("% fixture: hang"),
+    );
+    // Give it time to be running, not just queued.
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(!status(&octave, 1).finished);
+    assert_eq!(control(&octave, 1, OctaveAction::Stop), Ok(20_000));
+
+    let status = wait(&octave, None, 1);
+    let result = status.result.unwrap();
+    assert!(result.error, "a stopped job is an error");
+    assert!(!result.ended, "but the session survives it");
+    assert!(status.output.contains("Stopped."), "{}", status.output);
+    // Well before the limit.
+    assert!(status.elapsed_ms < 10_000, "{}", status.elapsed_ms);
+
+    // The same session runs the next job.
+    run(
+        &octave,
+        &jail,
+        None,
+        2,
+        OctaveInput::Code(&fixture("assign")),
+    );
+    let result = wait(&octave, None, 2).result.unwrap();
+    assert!(!result.error && !result.ended);
+}
+
+#[test]
+fn a_jobs_time_limit_shows_and_can_be_extended() {
+    let (jail, support) = setup("extend");
+    let octave = mock(support, Duration::from_millis(500));
+    run(
+        &octave,
+        &jail,
+        None,
+        1,
+        OctaveInput::Code("% fixture: hang"),
+    );
+    assert_eq!(status(&octave, 1).limit_ms, 500);
+    assert_eq!(
+        control(&octave, 1, OctaveAction::Extend { minutes: 1 }),
+        Ok(60_500)
+    );
+    assert_eq!(status(&octave, 1).limit_ms, 60_500);
+    // Past the old limit, it is still running.
+    std::thread::sleep(Duration::from_millis(1_000));
+    assert!(!status(&octave, 1).finished);
+
+    // However much is asked for, it stops at the cap.
+    assert_eq!(
+        control(&octave, 1, OctaveAction::Extend { minutes: u32::MAX }),
+        Ok(MAX_LIMIT_MS)
+    );
+    control(&octave, 1, OctaveAction::Stop).unwrap();
+    assert!(!wait(&octave, None, 1).result.unwrap().ended);
+}
+
+#[test]
+fn only_a_running_job_of_yours_can_be_changed() {
+    let (jail, support) = setup("control");
+    let octave = mock(support, Duration::from_secs(20));
+    assert_eq!(
+        control(&octave, 9, OctaveAction::Stop),
+        Err(server_error::NOT_FOUND)
+    );
+    run(
+        &octave,
+        &jail,
+        None,
+        1,
+        OctaveInput::Code(&fixture("assign")),
+    );
+    wait(&octave, None, 1);
+    // Finished: nothing changes.
+    assert_eq!(
+        control(&octave, 1, OctaveAction::Extend { minutes: 5 }),
+        Ok(20_000)
+    );
+    // Someone else's job of the same number isn't there for them.
+    let req = OctaveControlReq {
+        client: 1,
+        seq: 1,
+        action: OctaveAction::Stop,
+    };
+    assert_eq!(
+        octave.control(Some("mallory"), &req),
+        Err(server_error::NOT_FOUND)
+    );
+}
+
+/// Real Octave, when this machine has it: a script waiting forever (here, for figure windows
+/// nobody can close) is interrupted, and what it set before is kept.
+#[test]
+fn real_octave_stops_a_job_and_keeps_its_variables() {
+    let (jail, support) = setup("real-stop");
+    let octave = Octave::detect(support);
+    if !octave.available() {
+        eprintln!("octave-cli is not installed; skipped");
+        return;
+    }
+    run(
+        &octave,
+        &jail,
+        None,
+        1,
+        OctaveInput::Code(
+            "a = 5;\nfigure();\ntry\n  while ! isempty(get(0, \"children\"))\n    pause(0.2);\n  endwhile\ncatch\n  disp(\"caught\");\nend_try_catch\nb = 6;",
+        ),
+    );
+    // Real Octave takes a moment to start.
+    let start = Instant::now();
+    while status(&octave, 1).elapsed_ms < 1_500 && start.elapsed() < Duration::from_secs(30) {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    std::thread::sleep(Duration::from_millis(1_500));
+    assert!(
+        !status(&octave, 1).finished,
+        "{}",
+        status(&octave, 1).output
+    );
+    control(&octave, 1, OctaveAction::Stop).unwrap();
+
+    let status = wait(&octave, None, 1);
+    assert!(
+        !status.output.contains("caught"),
+        "try doesn't catch it: {}",
+        status.output
+    );
+    let result = status.result.unwrap();
+    assert!(result.error && !result.ended, "{}", status.output);
+    let names: Vec<&str> = result.variables.iter().map(|v| v.name.as_str()).collect();
+    assert_eq!(names, ["a"], "{}", status.output);
+    assert_eq!(result.figures.len(), 1);
+
+    // And the session takes the next command.
+    run(&octave, &jail, None, 2, OctaveInput::Code("c = a + 1"));
+    let status = wait(&octave, None, 2);
+    assert!(status.output.contains("c = 6"), "{}", status.output);
 }

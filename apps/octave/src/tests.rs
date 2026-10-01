@@ -723,3 +723,105 @@ fn the_tree_changes_octaves_folder() {
 fn quotes_in_a_folder_name_are_doubled() {
     assert_eq!(quoted("it's"), "'it''s'");
 }
+
+#[test]
+fn the_limit_tip_matches_the_servers_limit() {
+    assert_eq!(
+        DEFAULT_LIMIT_MS,
+        10 * 60 * 1000,
+        "update LIMIT_TIP to match"
+    );
+}
+
+#[test]
+fn clocks_read_as_minutes_or_hours() {
+    assert_eq!(clock(0), "0:00");
+    assert_eq!(clock(65_000), "1:05");
+    assert_eq!(clock(600_000), "10:00");
+    assert_eq!(clock(3_725_000), "1:02:05");
+}
+
+#[test]
+fn a_running_job_shows_its_time_against_the_limit() {
+    let mut h = Harness::new(Octave::default());
+    h.frame();
+    h.type_text(1, "pause(100)");
+    h.press_enter(1);
+    h.frame();
+    h.frame();
+    // Not taken by the server yet: nothing to extend or stop.
+    assert!(h.has_label("0:00 of 10:00"));
+    assert!(h.is_disabled(&label(icons::STOP, "Stop")));
+    h.reply::<OctaveRun>(&true);
+    h.frame();
+    h.reply::<OctavePoll>(&OctaveStatus {
+        elapsed_ms: 65_000,
+        limit_ms: DEFAULT_LIMIT_MS,
+        ..OctaveStatus::default()
+    });
+    h.frame();
+    assert!(h.has_label("1:05 of 10:00"));
+    assert!(!h.is_disabled(&label(icons::STOP, "Stop")));
+}
+
+#[test]
+fn a_running_job_can_be_given_longer() {
+    let mut h = running("pause(1000)");
+    h.click(&label(icons::TIMER, "+10 min"));
+    h.frame();
+    assert_eq!(h.outstanding::<OctaveControl>(), 1);
+    h.reply::<OctaveControl>(&(20 * 60 * 1000));
+    h.frame();
+    h.frame();
+    assert!(h.has_label("0:00 of 20:00"));
+
+    h.click("+1 h");
+    h.frame();
+    h.reply::<OctaveControl>(&(80 * 60 * 1000));
+    h.frame();
+    h.frame();
+    assert!(h.has_label("0:00 of 1:20:00"));
+}
+
+#[test]
+fn a_running_job_can_be_stopped() {
+    let mut h = running("while true, pause(0.2); end");
+    h.click(&label(icons::STOP, "Stop"));
+    h.frame();
+    assert_eq!(h.outstanding::<OctaveControl>(), 1);
+    assert!(h.app.job.as_ref().unwrap().stopping);
+    h.frame();
+    assert!(h.has_label(&label(icons::HOURGLASS, "Stopping…")));
+    assert!(!h.has_button(&label(icons::STOP, "Stop")));
+    h.reply::<OctaveControl>(&DEFAULT_LIMIT_MS);
+    h.frame();
+
+    let mut stopped = session(vec![], vec![]);
+    stopped.error = true;
+    h.reply::<OctavePoll>(&done(
+        "error: Stopped. Variables it set before stopping are kept.\n",
+        stopped,
+    ));
+    h.frame();
+    assert!(h.app.job.is_none());
+    h.frame();
+    assert!(h.has_text("error: Stopped. Variables it set before stopping are kept."));
+    assert!(!h.is_disabled(&label(icons::PLAY, "Run")));
+}
+
+#[test]
+fn a_stop_that_fails_is_reported_and_can_be_tried_again() {
+    let mut h = running("pause(1000)");
+    h.click(&label(icons::STOP, "Stop"));
+    h.frame();
+    h.fail::<OctaveControl>(rpc_error::SERVER);
+    h.frame();
+    assert!(!h.app.job.as_ref().unwrap().stopping);
+    h.frame();
+    assert!(
+        h.styled()
+            .iter()
+            .any(|(t, _)| t.starts_with("error: could not change the running job: "))
+    );
+    assert!(h.has_button(&label(icons::STOP, "Stop")));
+}

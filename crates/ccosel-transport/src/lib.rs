@@ -85,6 +85,7 @@ fn policy(method: u16) -> (Coalesce, u32) {
         Some(Method::WriteFile) => (Coalesce::None, 15_000),
         Some(Method::CreateDir) => (Coalesce::None, 8_000),
         Some(Method::OctaveRun) => (Coalesce::None, 8_000),
+        Some(Method::OctaveControl) => (Coalesce::None, 8_000),
         None => (Coalesce::None, 4_000),
     }
 }

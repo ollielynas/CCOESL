@@ -23,9 +23,24 @@ following new output until you scroll to the bottom again.
   until it finishes, the buttons that would run something else (Run, Restart, **cd** and the
   others) are greyed out. You can still type the next command; press Enter once it's done.
 
-A command that runs for more than ten minutes is stopped, and the session starts again from
-empty. Commands that wait for you to type something, such as `input` or `keyboard`, can't be
-answered here, so avoid them.
+## Long-running commands
+
+While a command runs, the top of the window shows how long it has run and its time limit, such
+as `1:05 of 10:00`. A command gets **10 minutes**. Then the server stops it and starts Octave
+again, which clears your variables.
+
+- **:timer: +10 min** and **+1 h** give the running command more time, up to 8 hours in all.
+  Use them when you expect a script to take a while.
+- **:stop: Stop** interrupts it, like Ctrl-C at Octave's own prompt. Your variables are kept,
+  including any the command had set before it stopped.
+
+Commands that wait for something nobody here can do never finish on their own, so stop them, or
+avoid them:
+
+- waiting for you to type, such as `input` or `keyboard`;
+- waiting for figure windows to be closed, such as
+  `while ! isempty(get(0, "children")), pause(0.2); end`. Figures here have no windows to close.
+  Look at them in the **Figures** tab instead.
 
 ## The working folder
 

@@ -48,6 +48,8 @@ pub const PLAY: &str = "\u{E3D0}";
 pub const CARET_UP: &str = "\u{E13C}";
 pub const CARET_DOWN: &str = "\u{E136}";
 pub const BROOM: &str = "\u{EC54}";
+pub const STOP: &str = "\u{E46C}";
+pub const TIMER: &str = "\u{E492}";
 
 #[cfg(test)]
 mod tests {
@@ -94,5 +96,7 @@ mod tests {
         assert_eq!(super::CARET_UP, p::CARET_UP);
         assert_eq!(super::CARET_DOWN, p::CARET_DOWN);
         assert_eq!(super::BROOM, p::BROOM);
+        assert_eq!(super::STOP, p::STOP);
+        assert_eq!(super::TIMER, p::TIMER);
     }
 }

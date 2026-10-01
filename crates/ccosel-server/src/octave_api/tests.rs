@@ -79,7 +79,7 @@ fn report_caps_what_it_carries() {
 
 #[test]
 fn output_is_sent_from_where_the_app_is_up_to() {
-    let job = Job::new();
+    let job = Job::new(JOB_TIMEOUT);
     job.push_line("héllo");
     let s = job.snapshot(0);
     assert_eq!(s.output, "héllo\n");
@@ -93,7 +93,7 @@ fn output_is_sent_from_where_the_app_is_up_to() {
 
 #[test]
 fn output_stops_at_the_cap() {
-    let job = Job::new();
+    let job = Job::new(JOB_TIMEOUT);
     let line = "x".repeat(1000);
     for _ in 0..(MAX_OUTPUT_BYTES / 1000 + 5) {
         job.push_line(&line);

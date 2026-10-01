@@ -10,6 +10,8 @@
 //!   at a few hertz costs a few bytes each way, and replies carry only the output produced
 //!   since `from`.
 //!
+//! - [`OctaveControl`] changes a running job: moves its time limit, or stops it.
+//!
 //! `(client, seq)` names a job. `client` is a number a window picks for itself so two windows
 //! of the same user, sharing one session, do not collide; `seq` goes up by one per run. Running
 //! the same `(client, seq)` twice starts nothing new, so a retried send is harmless.
@@ -22,6 +24,12 @@ use crate::{Coalesce, Command, Effect, Method, Query, Rpc};
 
 /// The most output one job keeps. Later output is dropped and the job reports it was.
 pub const MAX_OUTPUT_BYTES: usize = 256 * 1024;
+
+/// How long a job may run before the server stops it, unless [`OctaveControl`] extends it.
+pub const DEFAULT_LIMIT_MS: u64 = 10 * 60 * 1000;
+
+/// The furthest a job's limit can be extended to, from its start.
+pub const MAX_LIMIT_MS: u64 = 8 * 60 * 60 * 1000;
 
 /// What to run.
 #[derive(Debug, Serialize, Deserialize)]
@@ -135,6 +143,8 @@ pub struct OctaveResult {
 pub struct OctaveStatus {
     pub finished: bool,
     pub elapsed_ms: u64,
+    /// When, counting from the job's start, the server will stop it.
+    pub limit_ms: u64,
     /// Output from byte `from` onwards.
     pub output: String,
     /// The output offset to ask from next time.
@@ -158,3 +168,35 @@ impl Rpc for OctavePoll {
 }
 
 impl Query for OctavePoll {}
+
+/// What to do to a running job.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum OctaveAction {
+    /// Give it this many more minutes before the time limit, up to [`MAX_LIMIT_MS`] in all.
+    Extend { minutes: u32 },
+    /// Interrupt it, as Ctrl-C would at Octave's prompt. The session and its variables stay;
+    /// the job finishes with an error saying it was stopped.
+    Stop,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct OctaveControlReq {
+    pub client: u32,
+    pub seq: u32,
+    pub action: OctaveAction,
+}
+
+/// Change job `(client, seq)`. Replies with its time limit afterwards, as in
+/// [`OctaveStatus::limit_ms`]. A job that has already finished is left as it is.
+pub struct OctaveControl;
+
+impl Rpc for OctaveControl {
+    const METHOD: Method = Method::OctaveControl;
+    const COALESCE: Coalesce = Coalesce::None;
+    const EFFECT: Effect = Effect::Effectful;
+    const DEADLINE_MS: u32 = 8_000;
+    type Req<'a> = OctaveControlReq;
+    type Reply = u64;
+}
+
+impl Command for OctaveControl {}
