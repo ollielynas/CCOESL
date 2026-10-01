@@ -1,4 +1,4 @@
-use ccosel_proto::fs::FileText;
+use ccosel_proto::fs::{DirEntry, DirListing, FileText};
 use ccosel_proto::octave::{Series, Variable};
 use ccosel_sdk::testing::{Harness, rpc_error};
 
@@ -527,4 +527,129 @@ fn outside_the_jail_the_folder_says_so() {
     let mut h = Harness::new(Octave::default());
     h.frame();
     assert!(h.has_label("(outside the shared files)"));
+}
+
+#[test]
+fn enter_at_the_prompt_runs_the_command() {
+    let mut h = Harness::new(Octave::default());
+    h.frame();
+    assert!(h.has_text(
+        "Type Octave code at the >> prompt below and press Enter to run it. \
+         Variables are kept between commands."
+    ));
+    h.type_text(1, "y = 4");
+    h.press_enter(1);
+    h.frame();
+    assert_eq!(h.outstanding::<OctaveRun>(), 1);
+    assert_eq!(h.app.history, ["y = 4"]);
+    assert_eq!(h.app.input.as_str(), "");
+    h.frame();
+    assert!(h.has_text(">> y = 4"));
+}
+
+fn entry(name: &str, kind: EntryKind) -> DirEntry {
+    DirEntry {
+        name: name.to_owned(),
+        kind,
+        size: 0,
+        mtime_s: 0,
+    }
+}
+
+fn listing(entries: Vec<DirEntry>) -> DirListing {
+    DirListing {
+        entries,
+        truncated: false,
+    }
+}
+
+/// An app whose session is in `/home/alice`, with that folder listed.
+fn in_folder() -> Harness<Octave> {
+    let mut h = Harness::new(Octave::default());
+    h.app.session = session(vec![], vec![]);
+    h.frame();
+    assert!(h.has_text("Current Folder"));
+    assert!(h.has_text("Loading…"));
+    h.reply::<ListDir>(&listing(vec![
+        entry("notes.txt", EntryKind::File),
+        entry("fit.m", EntryKind::File),
+        entry(".hidden.m", EntryKind::File),
+        entry("data", EntryKind::Dir),
+    ]));
+    h.frame();
+    h
+}
+
+#[test]
+fn the_current_folder_lists_folders_then_files() {
+    let h = in_folder();
+    let rows: Vec<String> = h.selectables().into_iter().map(|(t, _)| t).collect();
+    let data = rows.iter().position(|r| r == "📁 data").unwrap();
+    let fit = rows.iter().position(|r| r == "📜 fit.m").unwrap();
+    assert!(data < fit, "folders first: {rows:?}");
+    // Other files are shown but do nothing; hidden ones are left out.
+    assert!(h.has_text("📄 notes.txt"));
+    assert!(!rows.iter().any(|r| r.contains(".hidden")));
+}
+
+#[test]
+fn a_script_in_the_tree_opens_in_the_editor() {
+    let mut h = in_folder();
+    h.click("📜 fit.m");
+    h.frame();
+    assert_eq!(h.app.tab, Tab::Editor);
+    assert_eq!(h.app.editor_path.as_str(), "/home/alice/fit.m");
+    h.frame();
+    assert_eq!(h.outstanding::<ReadFile>(), 1);
+    h.reply::<ReadFile>(&FileText {
+        text: "p = polyfit(x, y, 1)".to_owned(),
+        writable: true,
+    });
+    h.frame();
+    assert_eq!(h.app.editor.as_str(), "p = polyfit(x, y, 1)");
+    assert!(h.selectables().contains(&("📜 fit.m".to_owned(), true)));
+}
+
+#[test]
+fn a_folder_in_the_tree_opens_and_closes() {
+    let mut h = in_folder();
+    h.click("📁 data");
+    h.frame();
+    h.frame();
+    assert!(h.app.expanded.contains("/home/alice/data"));
+    assert_eq!(h.outstanding::<ListDir>(), 1);
+    h.reply::<ListDir>(&listing(vec![]));
+    h.frame();
+    assert!(h.has_text("Empty"));
+    h.click("📂 data");
+    h.frame();
+    assert!(h.app.expanded.is_empty());
+}
+
+#[test]
+fn the_tree_changes_octaves_folder() {
+    let mut h = in_folder();
+    h.click("cd");
+    h.frame();
+    assert_eq!(h.app.history, ["cd 'data'"]);
+    h.reply::<OctaveRun>(&true);
+    h.frame();
+    let mut moved = session(vec![], vec![]);
+    moved.cwd = "/home/alice/data".to_owned();
+    h.reply::<OctavePoll>(&done("", moved));
+    h.frame();
+    // The new folder is listed, and the old one's listing is dropped.
+    h.frame();
+    assert_eq!(h.outstanding::<ListDir>(), 1);
+    h.reply::<ListDir>(&listing(vec![]));
+    h.frame();
+
+    h.click("⬆");
+    h.frame();
+    assert_eq!(h.app.history, ["cd 'data'", "cd '..'"]);
+}
+
+#[test]
+fn quotes_in_a_folder_name_are_doubled() {
+    assert_eq!(quoted("it's"), "'it''s'");
 }

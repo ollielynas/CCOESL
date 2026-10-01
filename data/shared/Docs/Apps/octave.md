@@ -9,9 +9,13 @@ Each person gets their own Octave: nobody else sees your variables.
 
 ## The command window
 
-Type code next to **>>** and press **⏎ Run**. What Octave prints appears above, the same as
-at Octave's own prompt: `x = 3` shows `x = 3`, and ending a line with `;` keeps it quiet.
-Errors are shown in *italics*.
+The prompt, **>>**, is always at the bottom of the command window. Type code there and press
+**Enter** (or **⏎ Run**). What Octave prints appears above it, the same as at Octave's own
+prompt: `x = 3` shows `x = 3`, and ending a line with `;` keeps it quiet. Errors are shown in
+*italics*. The prompt stays ready for the next command, so you can type one after another.
+
+The output scrolls on its own and keeps the newest line in view. Scroll up to read back; it stops
+following new output until you scroll to the bottom again.
 
 - **▲** and **▼** bring back earlier commands, so you can run one again or change it.
 - **Clear** empties the command window. Your variables are kept.
@@ -26,11 +30,22 @@ answered here, so avoid them.
 
 The folder at the top, next to 📁, is where Octave reads and writes files: `load`, `save`,
 `print` and scripts you run by name all use it. It starts as your own folder, `/home/your-name`.
-Change it with `cd` at the prompt, for example `cd /Docs`.
+Change it with `cd` at the prompt, for example `cd /Docs`, or from **Current Folder** below.
+
+## Current Folder
+
+At the top of the left side are the files in the working folder, folders first.
+
+- Click a folder to open or close it, and see what is inside.
+- **cd** next to a folder makes it the working folder. **⬆** goes up to the folder above.
+- Click a script (a file ending in `.m`, marked 📜) to open it in the **Editor**.
+- Other files are listed but can't be opened here; use the Files app for them.
+
+The list updates after each command, so files you save, or that Octave writes, show up.
 
 ## Workspace
 
-The left side lists your variables: their name, size (such as `3x3`) and class (such as
+Below the current folder, the left side lists your variables: their name, size (such as `3x3`) and class (such as
 `double` or `char`). Small values are shown underneath. Hover over a variable to see whether it
 is `global` or `persistent`.
 

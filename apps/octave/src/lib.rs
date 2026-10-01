@@ -8,10 +8,16 @@
 //! then [`OctavePoll`] follows it at a few hertz, asking only for output it hasn't had. One job
 //! runs at a time; the finished job's report replaces the workspace and figures wholesale.
 //!
-//! Layout, like Octave's own: a toolbar (working folder, restart), the workspace and history
-//! down the side, and tabs for the command window, editor, figures and the variable view.
+//! Layout, like Octave's own: a toolbar (working folder, restart), the current folder's files,
+//! the workspace and the history down the side, and tabs for the command window, editor,
+//! figures and the variable view. The command window is a terminal: its output scrolls above a
+//! prompt that stays at the bottom, and Enter runs what is typed.
 
-use ccosel_proto::fs::{PathReq, ReadFile, WriteFile, WriteFileReq};
+use std::collections::BTreeSet;
+
+use ccosel_proto::fs::{
+    EntryKind, ListDir, ListDirReq, PathReq, ReadFile, WriteFile, WriteFileReq,
+};
 use ccosel_proto::octave::{
     Axes, Figure, OctaveInput, OctavePoll, OctavePollReq, OctaveResult, OctaveRun, OctaveRunReq,
     OctaveStatus,
@@ -26,6 +32,9 @@ const MAX_LOG: usize = 1000;
 
 /// History entries the side panel lists at once, newest first.
 const HISTORY_SHOWN: usize = 50;
+
+/// How deep the current folder's tree opens. Bounds the listings one frame can ask for.
+const TREE_DEPTH: usize = 6;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tab {
@@ -100,6 +109,10 @@ pub struct Octave {
     /// The variable the variable view shows, and what displaying it printed.
     pub inspected: Option<String>,
     pub inspect_output: Vec<String>,
+    /// Folders open in the current folder's tree.
+    pub expanded: BTreeSet<String>,
+    /// A job or a save may have changed the files: list the tree's folders again.
+    refresh_tree: bool,
 }
 
 impl Default for Octave {
@@ -123,6 +136,8 @@ impl Default for Octave {
             save: None,
             inspected: None,
             inspect_output: Vec::new(),
+            expanded: BTreeSet::new(),
+            refresh_tree: false,
         }
     }
 }
@@ -140,10 +155,19 @@ enum Action {
     Script(Vec<usize>),
     Inspect(String),
     Open,
-    Save { run_after: bool },
+    Save {
+        run_after: bool,
+    },
     RunEditor,
     NewFile,
     SaveFigure(u32),
+    /// Open or close a folder in the tree.
+    Toggle(String),
+    /// Open a file from the tree in the editor.
+    Edit(String),
+    /// Change Octave's working folder, to a path relative to the current one: the session's
+    /// `cwd` is a jail path, which means nothing to Octave itself.
+    Cd(String),
 }
 
 /// Hand-rolled, as in the other apps: float `Display` would cost every user tens of KB.
@@ -159,6 +183,27 @@ fn itoa(mut n: u64) -> String {
         n /= 10;
     }
     String::from_utf8_lossy(&buf[i..]).into_owned()
+}
+
+/// `name` inside the folder `dir`, both jail paths.
+fn join(dir: &str, name: &str) -> String {
+    let mut path = String::from(dir.trim_end_matches('/'));
+    path.push('/');
+    path.push_str(name);
+    path
+}
+
+/// `s` as an Octave single-quoted string, quotes doubled.
+fn quoted(s: &str) -> String {
+    let mut out = String::from("'");
+    out.push_str(&s.replace('\'', "''"));
+    out.push('\'');
+    out
+}
+
+/// Whether the tree opens this file in the editor: Octave's own scripts and functions.
+fn is_script(name: &str) -> bool {
+    name.ends_with(".m")
 }
 
 /// `name` if it is an Octave identifier: only a real variable name is ever spliced into code
@@ -268,6 +313,7 @@ impl Octave {
             self.session = result.clone();
         }
         self.job = None;
+        self.refresh_tree = true;
     }
 
     fn fail(&mut self, what: &str, err: &str) {
@@ -367,6 +413,122 @@ impl Octave {
     }
 
     fn sidebar(&mut self, ui: &mut Ui<'_>, act: &mut Vec<Action>) {
+        // One scroll for the whole column, so a long tree or history never pushes the
+        // command window's prompt off the window.
+        ui.scroll(|ui| {
+            self.folder(ui, act);
+            ui.separator();
+            self.workspace(ui, act);
+            ui.separator();
+            self.history_list(ui, act);
+        });
+    }
+
+    /// The current folder's files, as a tree. Scripts open in the editor.
+    fn folder(&self, ui: &mut Ui<'_>, act: &mut Vec<Action>) {
+        ui.push_id("folder", |ui| {
+            ui.horizontal(|ui| {
+                ui.styled("Current Folder", TextStyle::heading(3));
+                let cwd = self.session.cwd.as_str();
+                if !cwd.is_empty() && cwd != "/" && ui.button("⬆").clicked() {
+                    act.push(Action::Cd("..".to_owned()));
+                }
+                ui.tooltip("Go up to the folder that holds this one");
+            });
+            if self.session.cwd.is_empty() {
+                ui.styled(
+                    "Octave's working folder is outside the shared files.",
+                    TextStyle::WEAK,
+                );
+                return;
+            }
+            let root = self.session.cwd.clone();
+            self.tree(ui, &root, 0, act);
+        });
+    }
+
+    fn tree(&self, ui: &mut Ui<'_>, dir: &str, depth: usize, act: &mut Vec<Action>) {
+        let listing = match ui.rpc().get::<ListDir>(&ListDirReq { path: dir }) {
+            Poll::Ready(listing) => listing,
+            Poll::Pending => {
+                ui.styled("Loading…", TextStyle::WEAK);
+                return;
+            }
+            Poll::Failed(err) => {
+                ui.styled(err.message(), TextStyle::WEAK | TextStyle::ITALIC);
+                return;
+            }
+        };
+        // Folders first, then files, each by name, as Octave's own file browser lists them.
+        let mut entries: Vec<_> = listing
+            .entries
+            .iter()
+            .filter(|e| !e.name.starts_with('.'))
+            .collect();
+        entries.sort_by(|a, b| {
+            (a.kind != EntryKind::Dir)
+                .cmp(&(b.kind != EntryKind::Dir))
+                .then_with(|| a.name.cmp(&b.name))
+        });
+        if entries.is_empty() {
+            ui.styled("Empty", TextStyle::WEAK | TextStyle::ITALIC);
+        }
+        let editing = self.editor_path.as_str().trim();
+        for entry in entries {
+            let path = join(dir, &entry.name);
+            ui.push_id(&entry.name, |ui| {
+                if entry.kind == EntryKind::Dir {
+                    let open = self.expanded.contains(&path);
+                    let mut text = String::from(if open { "📂 " } else { "📁 " });
+                    text.push_str(&entry.name);
+                    ui.horizontal(|ui| {
+                        if ui.selectable(false, &text).clicked() {
+                            act.push(Action::Toggle(path.clone()));
+                        }
+                        ui.tooltip("Open or close this folder");
+                        if ui.button("cd").clicked() {
+                            let rel = path.strip_prefix(&self.session.cwd).unwrap_or(&path);
+                            act.push(Action::Cd(rel.trim_start_matches('/').to_owned()));
+                        }
+                        ui.tooltip("Make this Octave's working folder");
+                    });
+                    if open && depth + 1 < TREE_DEPTH {
+                        ui.indent(|ui| self.tree(ui, &path, depth + 1, act));
+                    }
+                } else if is_script(&entry.name) {
+                    let mut text = String::from("📜 ");
+                    text.push_str(&entry.name);
+                    if ui.selectable(editing == path, &text).clicked() {
+                        act.push(Action::Edit(path.clone()));
+                    }
+                    ui.tooltip("Open it in the editor");
+                } else {
+                    let mut text = String::from("📄 ");
+                    text.push_str(&entry.name);
+                    ui.styled(&text, TextStyle::WEAK);
+                }
+            });
+        }
+        if listing.truncated {
+            ui.styled("(more not shown)", TextStyle::WEAK);
+        }
+    }
+
+    /// List the tree's folders again, the next time they are drawn.
+    fn invalidate_tree(&mut self, ui: &mut Ui<'_>) {
+        if !core::mem::take(&mut self.refresh_tree) || self.session.cwd.is_empty() {
+            return;
+        }
+        let rpc = ui.rpc();
+        rpc.invalidate::<ListDir>(&ListDirReq {
+            path: &self.session.cwd,
+        });
+        for dir in &self.expanded {
+            rpc.invalidate::<ListDir>(&ListDirReq { path: dir });
+        }
+    }
+
+    fn workspace(&self, ui: &mut Ui<'_>, act: &mut Vec<Action>) {
         ui.styled("Workspace", TextStyle::heading(3));
         if self.session.variables.is_empty() {
             ui.styled("No variables yet", TextStyle::WEAK);
@@ -393,8 +555,9 @@ impl Octave {
         if self.session.variables_truncated {
             ui.styled("(more variables than shown)", TextStyle::WEAK);
         }
+    }
 
-        ui.separator();
+    fn history_list(&mut self, ui: &mut Ui<'_>, act: &mut Vec<Action>) {
         ui.styled("Command History", TextStyle::heading(3));
         ui.text_edit(&mut self.history_filter);
         ui.tooltip("Search the history");
@@ -430,49 +593,59 @@ impl Octave {
     }
 
     fn command_window(&mut self, ui: &mut Ui<'_>, act: &mut Vec<Action>) {
-        if self.log.is_empty() {
+        let log = &self.log;
+        let input = &mut self.input;
+        ui.scroll_with_footer(
+            |ui| Self::console(ui, log),
+            |ui| {
+                ui.label(">>");
+                if ui.text_edit(input).submitted() {
+                    act.push(Action::Submit);
+                }
+                ui.tooltip("Type Octave code here and press Enter to run it");
+                if ui.button("⏎ Run").clicked() {
+                    act.push(Action::Submit);
+                }
+                if ui.button("▲").clicked() {
+                    act.push(Action::Older);
+                }
+                ui.tooltip("The previous command");
+                if ui.button("▼").clicked() {
+                    act.push(Action::Newer);
+                }
+                ui.tooltip("The next command");
+                if ui.button("Clear").clicked() {
+                    act.push(Action::ClearLog);
+                }
+                ui.tooltip("Clear the command window. Variables are kept.");
+            },
+        );
+    }
+
+    /// The command window's output, oldest first.
+    fn console(ui: &mut Ui<'_>, log: &[(LineKind, String)]) {
+        if log.is_empty() {
             ui.styled(
-                "Type Octave code below and press Run. Variables are kept between commands.",
+                "Type Octave code at the >> prompt below and press Enter to run it. \
+                 Variables are kept between commands.",
                 TextStyle::WEAK,
             );
         }
-        ui.scroll(|ui| {
-            for (kind, line) in &self.log {
-                match kind {
-                    LineKind::Input => {
-                        let mut s = String::from(">> ");
-                        s.push_str(line);
-                        ui.styled(&s, TextStyle::CODE | TextStyle::STRONG);
-                    }
-                    LineKind::Output => {
-                        ui.styled(line, TextStyle::CODE);
-                    }
-                    LineKind::Error => {
-                        ui.styled(line, TextStyle::CODE | TextStyle::ITALIC);
-                    }
+        for (kind, line) in log {
+            match kind {
+                LineKind::Input => {
+                    let mut s = String::from(">> ");
+                    s.push_str(line);
+                    ui.styled(&s, TextStyle::CODE | TextStyle::STRONG);
+                }
+                LineKind::Output => {
+                    ui.styled(line, TextStyle::CODE);
+                }
+                LineKind::Error => {
+                    ui.styled(line, TextStyle::CODE | TextStyle::ITALIC);
                 }
             }
-        });
-        ui.separator();
-        ui.horizontal(|ui| {
-            ui.label(">>");
-            ui.text_edit(&mut self.input);
-            if ui.button("⏎ Run").clicked() {
-                act.push(Action::Submit);
-            }
-            if ui.button("▲").clicked() {
-                act.push(Action::Older);
-            }
-            ui.tooltip("The previous command");
-            if ui.button("▼").clicked() {
-                act.push(Action::Newer);
-            }
-            ui.tooltip("The next command");
-            if ui.button("Clear").clicked() {
-                act.push(Action::ClearLog);
-            }
-            ui.tooltip("Clear the command window. Variables are kept.");
-        });
+        }
     }
 
     fn editor_tab(&mut self, ui: &mut Ui<'_>, act: &mut Vec<Action>) {
@@ -586,6 +759,7 @@ impl Octave {
                 let run_after = save.run_after;
                 self.save = None;
                 self.editor_status = String::from("Saved.");
+                self.refresh_tree = true;
                 if run_after {
                     let path = self.editor_path.as_str().trim().to_owned();
                     self.run_file(ui, path);
@@ -720,6 +894,22 @@ impl Octave {
                 self.editor_path.set("");
                 self.editor_status.clear();
             }
+            Action::Toggle(path) => {
+                if !self.expanded.remove(&path) {
+                    self.expanded.insert(path);
+                }
+            }
+            Action::Edit(path) => {
+                self.editor_path.set(&path);
+                self.editor_status = String::from("Opening…");
+                self.loading = Some(path);
+                self.tab = Tab::Editor;
+            }
+            Action::Cd(path) => {
+                let mut code = String::from("cd ");
+                code.push_str(&quoted(&path));
+                self.submit(ui, &code);
+            }
             Action::SaveFigure(n) => {
                 let n = itoa(u64::from(n));
                 let mut code = String::from("print(");
@@ -801,6 +991,7 @@ impl App for Octave {
         self.follow(ui);
         self.load(ui);
         self.saved(ui);
+        self.invalidate_tree(ui);
 
         if self.unavailable {
             ui.styled("Octave isn't installed on this server.", TextStyle::STRONG);
