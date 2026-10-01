@@ -22,8 +22,21 @@ function __ccosel_run__ (kind, file, tag)
       evalin ("base", sprintf ("source ('%s');", strrep (file, "'", "''")));
     endif
   catch err
-    failed = true;
-    printf ("error: %s\n", err.message);
+    if (strcmp (err.identifier, "Octave:ccosel-exit"))
+      ## The script called `exit` or `quit` (our stand-ins): it ends there, an error only if
+      ## it said so with a status other than 0.
+      status = getappdata (0, "__ccosel_exit__");
+      rmappdata (0, "__ccosel_exit__");
+      failed = ! isequal (status, 0);
+      if (failed)
+        printf ("error: %s\n", err.message);
+      else
+        printf ("%s\n", err.message);
+      endif
+    else
+      failed = true;
+      printf ("error: %s\n", err.message);
+    endif
   end_try_catch
   fflush (stdout);
   fflush (stderr);

@@ -609,7 +609,8 @@ fn real_octave_renders_a_surface() {
 }
 
 /// Real Octave, when this machine has it: `exit` and `input` would end the session or wait
-/// forever. Each stops the script with an error instead, and the session and its variables stay.
+/// forever. Each ends the script instead, an error unless it was `exit` with status 0, and the
+/// session and its variables stay.
 #[test]
 fn real_octave_survives_exit_and_input() {
     let (jail, support) = setup("real-exit");
@@ -618,19 +619,23 @@ fn real_octave_survives_exit_and_input() {
         eprintln!("octave-cli is not installed; skipped");
         return;
     }
-    for (seq, code, says) in [
+    for (seq, code, says, error) in [
+        // A script that ends with status 0 ended normally.
         (
             1,
             "a = 1;\nexit(0);\nb = 2;",
-            "exit doesn't end Octave here",
+            "exit(0): the script ends here",
+            false,
         ),
-        (2, "quit", "quit doesn't end Octave here"),
+        (2, "quit", "quit(0): the script ends here", false),
+        (3, "exit(3)", "exit(3): the script ends here", true),
         (
-            3,
+            4,
             "c = input(\"? \", \"s\");",
             "input can't be answered here",
+            true,
         ),
-        (4, "keyboard", "keyboard can't be answered here"),
+        (5, "keyboard", "keyboard can't be answered here", true),
     ] {
         run(&octave, &jail, None, seq, OctaveInput::Code(code));
         let status = wait(&octave, None, seq);
@@ -641,8 +646,15 @@ fn real_octave_survives_exit_and_input() {
             "no warning: {}",
             status.output
         );
+        assert_eq!(
+            status.output.contains("error: "),
+            error,
+            "{code}: {}",
+            status.output
+        );
         let result = status.result.unwrap();
-        assert!(result.error && !result.ended, "{code}: {}", status.output);
+        assert_eq!(result.error, error, "{code}: {}", status.output);
+        assert!(!result.ended, "{code}: {}", status.output);
         let names: Vec<&str> = result.variables.iter().map(|v| v.name.as_str()).collect();
         assert_eq!(names, ["a"], "{code}: the session and `a` survive");
     }
@@ -703,6 +715,14 @@ fn real_octave_says_which_figures_a_job_drew() {
         "{output}"
     );
     assert!(!output.contains("unknown' terminal"), "{output}");
+    // Figures are shown, so as far as a script is concerned there are windows, and a new
+    // figure is visible, as it would be on a desktop.
+    let (_, output) = changed(
+        &octave,
+        6,
+        "disp(have_window_system()); disp(get(figure(), \"visible\"))",
+    );
+    assert_eq!(output.trim(), "1\non", "{output}");
 }
 
 #[test]

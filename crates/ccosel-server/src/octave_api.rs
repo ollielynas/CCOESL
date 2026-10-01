@@ -40,14 +40,19 @@ const RUNNER: &str = include_str!("octave/__ccosel_run__.m");
 /// an error at once: `exit` and `quit` would end the session and lose its variables (Restart is
 /// how to get a fresh one), and `input` and `keyboard` would wait forever on the server's own
 /// command channel. `waitfor` and `uiwait`, which wait for a window to close, carry on at
-/// once with a warning instead: there is no window, but nothing is lost by not waiting.
-const SHADOWS: [(&str, &str); 6] = [
+/// once with a warning instead: there is no window, but nothing is lost by not waiting. And
+/// `have_window_system` says true, since figures are shown, so scripts don't skip their plots.
+const SHADOWS: [(&str, &str); 7] = [
     ("exit.m", include_str!("octave/exit.m")),
     ("quit.m", include_str!("octave/quit.m")),
     ("input.m", include_str!("octave/input.m")),
     ("keyboard.m", include_str!("octave/keyboard.m")),
     ("waitfor.m", include_str!("octave/waitfor.m")),
     ("uiwait.m", include_str!("octave/uiwait.m")),
+    (
+        "have_window_system.m",
+        include_str!("octave/have_window_system.m"),
+    ),
 ];
 
 /// A job still running after this is not coming back, unless its user said it would take
@@ -614,8 +619,10 @@ impl Session {
         let mut stdin = child.stdin.take().expect("piped");
 
         let support = self.dir.parent().unwrap_or(&self.dir).display().to_string();
-        // No pager (it would wait for a key nobody can press) and figures drawn off screen.
-        // Then one figure opened and closed: the gnuplot toolkit prints a long warning the
+        // No pager (it would wait for a key nobody can press). Figures are visible, as on a
+        // desktop, so scripts that check find what they expect: `GNUTERM=unknown` (above) has
+        // gnuplot draw them nowhere, and the app shows them from `print`. Then one figure
+        // opened and closed: the gnuplot toolkit prints a long warning the
         // first time it draws, one no `warning("off", id)` reaches and nobody using this app
         // can act on, so it is set off here and thrown away with the rest of the start-up.
         let tag = job_tag();
@@ -623,7 +630,6 @@ impl Session {
             "more off\n\
              warning(\"off\", \"Octave:shadowed-function\")\n\
              addpath(\"{}\")\n\
-             set(0, \"defaultfigurevisible\", \"off\")\n\
              try, close(figure()), end\n\
              printf(\"%s\\n\", \"{tag}\")\n",
             octave_string(&support)

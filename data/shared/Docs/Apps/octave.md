@@ -46,8 +46,12 @@ A few commands work differently here, because there is no terminal behind the wi
 
 - `input` and `keyboard` can't be answered. A script that calls one stops there with an error
   saying so. Set the value in the script instead.
-- `exit` and `quit` don't end Octave. The script stops there, as on an error, and your
-  variables are kept. Use **:arrow_clockwise: Restart** to start again from empty.
+- `exit` and `quit` don't end Octave. The script ends there and your variables are kept; it
+  counts as an error only if it gave a status other than 0, such as `exit(1)`. Use
+  **:arrow_clockwise: Restart** to start again from empty.
+- `have_window_system()` says true, and new figures are visible, since figures are shown here
+  even without windows of their own. Other window functions, such as `uigetfile` or
+  `msgbox`, still can't work.
 
 ## The working folder
 
