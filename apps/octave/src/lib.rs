@@ -22,7 +22,7 @@ use ccosel_proto::octave::{
     Axes, DEFAULT_LIMIT_MS, Figure, OctaveAction, OctaveControl, OctaveControlReq, OctaveInput,
     OctavePoll, OctavePollReq, OctaveResult, OctaveRun, OctaveRunReq, OctaveStatus, figure_url,
 };
-use ccosel_sdk::{App, CallId, Poll, Text, TextStyle, Ui, Vec2, icons};
+use ccosel_sdk::{App, CallId, CodeLang, Poll, Text, TextStyle, Ui, Vec2, icons};
 
 /// 4 Hz while a job runs, the rate `ARCHITECTURE.md` sets for job progress.
 const POLL_MS: u32 = 250;
@@ -874,7 +874,7 @@ impl Octave {
             ui.styled(&self.editor_status, TextStyle::WEAK);
         }
         // The file scrolls by itself, under its toolbar, rather than the whole window.
-        ui.scroll(|ui| ui.text_edit_multiline(&mut self.editor));
+        ui.scroll(|ui| ui.code_editor(&mut self.editor, CodeLang::Octave));
     }
 
     fn figures_tab(&self, ui: &mut Ui<'_>, act: &mut Vec<Action>) {

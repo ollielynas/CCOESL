@@ -11,6 +11,7 @@
 //! malformed halfway through is discarded entirely and the previous frame stands.
 
 mod convert;
+pub mod highlight;
 mod host;
 mod replay;
 

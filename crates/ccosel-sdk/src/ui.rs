@@ -2,7 +2,8 @@
 
 use alloc::string::String;
 use ccosel_abi::{
-    Align, Cmd, FrameInput, Layout, MAX_SCOPE_DEPTH, ScopeKind, TextStyle, Vec2, id as ids,
+    Align, Cmd, CodeLang, FrameInput, Layout, MAX_SCOPE_DEPTH, ScopeKind, TextStyle, Vec2,
+    id as ids,
 };
 
 use crate::recorder::Recorder;
@@ -307,16 +308,23 @@ impl<'a> Ui<'a> {
 
     /// A single-line text field. See [`Text`] for why the buffer usually isn't sent.
     pub fn text_edit(&mut self, text: &mut Text) -> Response {
-        self.text_field(text, false)
+        self.text_field(text, Field::Single)
     }
 
     /// A multi-line, monospace text area for documents and code. Same protocol as
     /// [`Ui::text_edit`]: typing costs the guest a small delta, not the document.
     pub fn text_edit_multiline(&mut self, text: &mut Text) -> Response {
-        self.text_field(text, true)
+        self.text_field(text, Field::Multi)
     }
 
-    fn text_field(&mut self, text: &mut Text, multiline: bool) -> Response {
+    /// [`Ui::text_edit_multiline`] for source code in `lang`, which the shell colours as it
+    /// is typed: keywords, strings, comments, numbers. The colouring costs the guest nothing;
+    /// the shell does it from the text it already holds.
+    pub fn code_editor(&mut self, text: &mut Text, lang: CodeLang) -> Response {
+        self.text_field(text, Field::Code(lang))
+    }
+
+    fn text_field(&mut self, text: &mut Text, field: Field) -> Response {
         let id = self.auto_id();
         // Apply what the user typed since this field was last drawn. Skipped when the app has
         // just called `Text::set`: the set replaces the whole buffer, and the shell accepts it
@@ -332,10 +340,15 @@ impl<'a> Ui<'a> {
             None
         };
         let version = text.version;
-        self.rec.push(&if multiline {
-            Cmd::TextEditMulti { id, version, set }
-        } else {
-            Cmd::TextEditSingle { id, version, set }
+        self.rec.push(&match field {
+            Field::Single => Cmd::TextEditSingle { id, version, set },
+            Field::Multi => Cmd::TextEditMulti { id, version, set },
+            Field::Code(lang) => Cmd::TextEditCode {
+                id,
+                version,
+                set,
+                lang,
+            },
         });
         text.push_pending = false;
         self.response(id)
@@ -394,6 +407,14 @@ impl<'a> Ui<'a> {
         self.rec.push(&Cmd::OpenUrl { id, label, url });
         self.response(id)
     }
+}
+
+/// Which kind of text field to draw.
+#[derive(Clone, Copy)]
+enum Field {
+    Single,
+    Multi,
+    Code(CodeLang),
 }
 
 /// A text field's contents.

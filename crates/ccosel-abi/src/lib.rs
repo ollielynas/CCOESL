@@ -29,7 +29,7 @@ pub use decode::{Cmd, DecodeError, Decoder, validate};
 pub use encode::Encoder;
 pub use event::{Event, EventBatch, EventError, EventHeader, decode_batch, encode_batch};
 pub use frame::{FrameInput, FrameOutput, RespRecord, ResponseFlags, Slice};
-pub use geom::{Align, Color32, Layout, Pos2, Rect, ScopeKind, TextStyle, Vec2};
+pub use geom::{Align, CodeLang, Color32, Layout, Pos2, Rect, ScopeKind, TextStyle, Vec2};
 pub use id::{hash_bytes, hash_id, hash_str};
 pub use opcode::OpCode;
 

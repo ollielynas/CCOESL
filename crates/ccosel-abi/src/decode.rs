@@ -6,7 +6,7 @@
 //! frame instead.
 
 use crate::MAX_SCOPE_DEPTH;
-use crate::geom::{Align, Layout, ScopeKind, TextStyle, Vec2};
+use crate::geom::{Align, CodeLang, Layout, ScopeKind, TextStyle, Vec2};
 use crate::opcode::OpCode;
 
 /// One decoded command, borrowing its strings from the command buffer.
@@ -89,6 +89,13 @@ pub enum Cmd<'a> {
         id: u64,
         version: u32,
         set: Option<&'a str>,
+    },
+    /// `TextEditMulti` for source code in `lang`, which the shell colours.
+    TextEditCode {
+        id: u64,
+        version: u32,
+        set: Option<&'a str>,
+        lang: CodeLang,
     },
     Styled {
         id: u64,
@@ -243,6 +250,16 @@ impl<'a> Decoder<'a> {
             OpCode::TextEditMulti => {
                 let (id, version, set) = self.text_edit()?;
                 Cmd::TextEditMulti { id, version, set }
+            }
+            OpCode::TextEditCode => {
+                let (id, version, set) = self.text_edit()?;
+                let lang = CodeLang::from_u8(self.u8()?).ok_or(DecodeError::InvalidEnum)?;
+                Cmd::TextEditCode {
+                    id,
+                    version,
+                    set,
+                    lang,
+                }
             }
             OpCode::Styled => Cmd::Styled {
                 id: self.u64()?,

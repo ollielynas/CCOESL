@@ -53,6 +53,23 @@ impl ScopeKind {
     }
 }
 
+/// The language a code editor's text is in, for the shell to colour it by.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[repr(u8)]
+pub enum CodeLang {
+    /// GNU Octave, which covers most MATLAB too.
+    Octave = 1,
+}
+
+impl CodeLang {
+    pub const fn from_u8(v: u8) -> Option<Self> {
+        match v {
+            1 => Some(Self::Octave),
+            _ => None,
+        }
+    }
+}
+
 /// How a `Styled` run of text looks. A bit set, so styles combine: a bold link inside a
 /// heading is `heading(2) | STRONG | LINK`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

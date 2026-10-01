@@ -5,10 +5,11 @@ use std::ops::Range;
 
 use ccosel_abi::event::{TextDelta, encode_batch, encode_text_delta, event_kind};
 use ccosel_abi::{
-    Align, Cmd, DecodeError, Decoder, RespRecord, ResponseFlags, ScopeKind, TextStyle, validate,
+    Align, Cmd, CodeLang, DecodeError, Decoder, RespRecord, ResponseFlags, ScopeKind, TextStyle,
+    validate,
 };
 
-use crate::convert;
+use crate::{convert, highlight};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReplayError {
@@ -269,6 +270,14 @@ fn match_scopes(cmds: &[Cmd<'_>]) -> Vec<usize> {
 /// (`ui.horizontal(|ui| ..)`) rather than hand-managing a `Vec<Ui>` stack. Indexing the tree
 /// up front is what buys that: because the scopes are known to be balanced before rendering
 /// starts, the natural egui API is available and there is no stack to corrupt.
+/// Which kind of text field a command draws.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Field {
+    Single,
+    Multi,
+    Code(CodeLang),
+}
+
 struct Cx<'a> {
     app_instance: u64,
     tooltips: &'a HashMap<u64, &'a str>,
@@ -298,18 +307,40 @@ impl Cx<'_> {
         id: u64,
         version: u32,
         set: Option<&str>,
-        multiline: bool,
+        field: Field,
     ) {
+        let multiline = field != Field::Single;
         let is_new = !self.text.contains_key(&id);
         let state = self.text.entry(id).or_default();
         state.sync_from_guest(version, set, is_new);
+        // Colours a code editor's text as it is laid out, from tokens cached while the text
+        // is unchanged.
+        let mut layouter = |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap_width: f32| {
+            let text = buf.as_str();
+            let spans = match field {
+                Field::Code(lang) => ui.ctx().memory_mut(|m| {
+                    m.caches
+                        .cache::<highlight::LexCache>()
+                        .get((text, lang))
+                        .clone()
+                }),
+                _ => Vec::new(),
+            };
+            let job = highlight::layout_job(ui, text, &spans, wrap_width);
+            ui.fonts_mut(|f| f.layout_job(job))
+        };
         let edit = if multiline {
             // Monospace, full width and tab-to-indent: this is for writing documents and
             // code, where columns line up and a tab should not move focus away.
-            egui::TextEdit::multiline(&mut state.buf)
+            let edit = egui::TextEdit::multiline(&mut state.buf)
                 .code_editor()
                 .desired_width(f32::INFINITY)
-                .desired_rows(16)
+                .desired_rows(16);
+            if matches!(field, Field::Code(_)) {
+                edit.layouter(&mut layouter)
+            } else {
+                edit
+            }
         } else {
             egui::TextEdit::singleline(&mut state.buf)
         };
@@ -437,11 +468,20 @@ impl Cx<'_> {
                 }
 
                 Cmd::TextEditSingle { id, version, set } => {
-                    self.text_edit(ui, id, version, set, false);
+                    self.text_edit(ui, id, version, set, Field::Single);
                 }
 
                 Cmd::TextEditMulti { id, version, set } => {
-                    self.text_edit(ui, id, version, set, true);
+                    self.text_edit(ui, id, version, set, Field::Multi);
+                }
+
+                Cmd::TextEditCode {
+                    id,
+                    version,
+                    set,
+                    lang,
+                } => {
+                    self.text_edit(ui, id, version, set, Field::Code(lang));
                 }
 
                 Cmd::Selectable { id, text, selected } => {

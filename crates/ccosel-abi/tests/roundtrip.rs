@@ -4,8 +4,8 @@
 //! "correct buffers decode correctly" but "no buffer, however malformed, panics".
 
 use ccosel_abi::{
-    Align, Cmd, DecodeError, Decoder, Encoder, Layout, MAX_SCOPE_DEPTH, OpCode, ScopeKind,
-    TextStyle, Vec2, id, validate,
+    Align, Cmd, CodeLang, DecodeError, Decoder, Encoder, Layout, MAX_SCOPE_DEPTH, OpCode,
+    ScopeKind, TextStyle, Vec2, id, validate,
 };
 
 fn encode(cmds: &[Cmd<'_>]) -> Vec<u8> {
@@ -108,6 +108,12 @@ fn sample() -> Vec<Cmd<'static>> {
             id: id::hash_str(win, "body"),
             version: 3,
             set: Some("# Title\n\nline two"),
+        },
+        Cmd::TextEditCode {
+            id: id::hash_str(win, "script"),
+            version: 2,
+            set: Some("x = 1; % one"),
+            lang: CodeLang::Octave,
         },
         Cmd::EndWindow { id: win },
     ]
@@ -353,4 +359,20 @@ fn plot_claiming_more_samples_than_are_present_is_truncated_not_a_panic() {
     let len_at = buf.len() - 4;
     lying[len_at] = 100;
     assert_eq!(decode(&lying), Err(DecodeError::Truncated));
+}
+
+#[test]
+fn a_code_editor_costs_one_byte_more_than_a_text_area() {
+    let buf = encode(&[Cmd::TextEditCode {
+        id: 9,
+        version: 1,
+        set: None,
+        lang: CodeLang::Octave,
+    }]);
+    assert_eq!(buf[0], OpCode::TextEditCode as u8);
+    assert_eq!(buf.len(), 1 + 8 + 4 + 1 + 1);
+    // A language this shell doesn't know is refused, not guessed at.
+    let mut unknown = buf.clone();
+    *unknown.last_mut().unwrap() = 0;
+    assert!(decode(&unknown).is_err());
 }

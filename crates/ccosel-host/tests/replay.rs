@@ -1085,3 +1085,46 @@ fn an_image_is_drawn_by_the_shells_loader_at_the_size_the_app_asked() {
     let recs = frame(&ctx, &mut r, &buf, click_at(centre(&find(&recs, 50)))).unwrap();
     assert!(find(&recs, 50).clicked());
 }
+
+#[test]
+fn a_code_editor_colours_its_text_and_still_takes_typing() {
+    let ctx = egui::Context::default();
+    let mut r = Replayer::new();
+    let field = |set: Option<&'static str>| {
+        encode(&[Cmd::TextEditCode {
+            id: 60,
+            version: 1,
+            set,
+            lang: ccosel_abi::CodeLang::Octave,
+        }])
+    };
+    let colours = |full: &egui::FullOutput| -> Vec<egui::Color32> {
+        full.shapes
+            .iter()
+            .filter_map(|c| match &c.shape {
+                egui::Shape::Text(t) => Some(t.galley.job.sections.iter().map(|s| s.format.color)),
+                _ => None,
+            })
+            .flatten()
+            .collect()
+    };
+    let buf = field(Some("if x % why"));
+    let mut recs = Vec::new();
+    let mut full = ctx.run_ui(raw_input(), |ui| recs = r.replay(ui, APP, &buf).unwrap());
+    full.textures_delta.clear();
+    let painted = colours(&full);
+    // egui's default theme is dark: a blue keyword and a green comment, besides plain text.
+    assert!(
+        painted.contains(&egui::Color32::from_rgb(0x56, 0x9C, 0xD6)),
+        "{painted:?}"
+    );
+    assert!(
+        painted.contains(&egui::Color32::from_rgb(0x6A, 0x99, 0x55)),
+        "{painted:?}"
+    );
+
+    let at = centre(&find(&recs, 60));
+    frame(&ctx, &mut r, &field(None), click_at(at)).unwrap();
+    frame(&ctx, &mut r, &field(None), typing("!")).unwrap();
+    assert!(r.text(60).unwrap().0.contains('!'));
+}

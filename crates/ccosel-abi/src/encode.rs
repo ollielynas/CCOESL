@@ -123,11 +123,15 @@ impl Encoder {
                 self.u8(OpCode::EndWindow as u8);
                 self.u64(id);
             }
-            Cmd::TextEditSingle { id, version, set } | Cmd::TextEditMulti { id, version, set } => {
-                self.u8(if matches!(cmd, Cmd::TextEditMulti { .. }) {
-                    OpCode::TextEditMulti as u8
-                } else {
-                    OpCode::TextEditSingle as u8
+            Cmd::TextEditSingle { id, version, set }
+            | Cmd::TextEditMulti { id, version, set }
+            | Cmd::TextEditCode {
+                id, version, set, ..
+            } => {
+                self.u8(match cmd {
+                    Cmd::TextEditMulti { .. } => OpCode::TextEditMulti as u8,
+                    Cmd::TextEditCode { .. } => OpCode::TextEditCode as u8,
+                    _ => OpCode::TextEditSingle as u8,
                 });
                 self.u64(id);
                 self.u32(version);
@@ -139,6 +143,9 @@ impl Encoder {
                         self.u8(1);
                         self.str(s);
                     }
+                }
+                if let Cmd::TextEditCode { lang, .. } = cmd {
+                    self.u8(*lang as u8);
                 }
             }
             Cmd::Image { id, src, size } => {

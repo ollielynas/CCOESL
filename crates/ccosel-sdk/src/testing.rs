@@ -108,9 +108,10 @@ impl<A: App> Harness<A> {
             .commands()
             .filter_map(|c| match c {
                 Cmd::TextEditSingle { id, version, set }
-                | Cmd::TextEditMulti { id, version, set } => {
-                    Some((id, version, set.map(ToString::to_string)))
-                }
+                | Cmd::TextEditMulti { id, version, set }
+                | Cmd::TextEditCode {
+                    id, version, set, ..
+                } => Some((id, version, set.map(ToString::to_string))),
                 _ => None,
             })
             .collect();
@@ -130,7 +131,9 @@ impl<A: App> Harness<A> {
     fn text_field_ids(&self) -> Vec<u64> {
         self.commands()
             .filter_map(|c| match c {
-                Cmd::TextEditSingle { id, .. } | Cmd::TextEditMulti { id, .. } => Some(id),
+                Cmd::TextEditSingle { id, .. }
+                | Cmd::TextEditMulti { id, .. }
+                | Cmd::TextEditCode { id, .. } => Some(id),
                 _ => None,
             })
             .collect()

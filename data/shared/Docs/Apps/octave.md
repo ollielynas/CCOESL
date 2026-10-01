@@ -83,7 +83,8 @@ The history belongs to this window: closing it forgets the history, not your var
 
 ## Editor
 
-The **Editor** tab is for scripts: several lines of code you want to keep.
+The **Editor** tab is for scripts: several lines of code you want to keep. Code is coloured as
+you type: keywords such as `if` and `for`, strings, numbers, and comments in italics.
 
 - Type a path in **File**, such as `/home/your-name/fit.m`, and press **:folder_open: Open** to load it,
   or **:floppy_disk: Save** to save what you have written there.

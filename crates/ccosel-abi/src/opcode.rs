@@ -42,6 +42,9 @@ pub enum OpCode {
     Styled = 0x11,
     /// A clickable row that shows whether it is the selected one, like an entry in a file tree.
     Selectable = 0x12,
+    /// A multi-line text area for source code, coloured by the shell for a `CodeLang`. The
+    /// `TextEditMulti` payload and protocol, then the language.
+    TextEditCode = 0x13,
     // 0x40..0x4F reserved for subtree caching (BeginCached / EndCached / CachedRef).
     // Not implemented yet, but the space is reserved so adding it is not an ABI break.
 }
@@ -67,6 +70,7 @@ impl OpCode {
             0x10 => Some(Self::TextEditMulti),
             0x11 => Some(Self::Styled),
             0x12 => Some(Self::Selectable),
+            0x13 => Some(Self::TextEditCode),
             _ => None,
         }
     }
