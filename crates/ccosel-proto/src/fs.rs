@@ -23,6 +23,9 @@ pub struct DirEntry {
     /// postcard varints this, so small files cost one byte.
     pub size: u64,
     pub mtime_s: i64,
+    /// Whether the caller may change it. There is no `readable`: a listing only ever holds
+    /// what the caller may read, so everything in one is.
+    pub writable: bool,
 }
 
 impl DirEntry {
@@ -145,7 +148,9 @@ pub struct AccessReply {
     pub user: Option<String>,
 }
 
-/// Ask what the caller may do with a path, which need not exist yet.
+/// Ask what the caller may do with a path. A path that does not exist and one the caller may
+/// not read both answer no access at all, so this cannot be used to find a hidden folder by
+/// guessing its name. `user` is answered either way.
 pub struct Access;
 
 impl Rpc for Access {

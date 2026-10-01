@@ -2,7 +2,8 @@
 //! (clicking buttons by label) and the server (answering `ListDir`), so the whole loop the app
 //! runs in production — ask, wait, render, navigate, re-ask — runs here without a browser.
 
-use ccosel_proto::fs::{DirEntry, DirListing, EntryKind, ListDir};
+use ccosel_proto::fs::{Access, AccessReply, DirEntry, DirListing, EntryKind, ListDir};
+use ccosel_sdk::icons;
 use ccosel_sdk::testing::{Harness, rpc_error};
 
 use super::*;
@@ -13,6 +14,7 @@ fn entry(name: &str, kind: EntryKind, size: u64) -> DirEntry {
         kind,
         size,
         mtime_s: 0,
+        writable: true,
     }
 }
 
@@ -32,10 +34,28 @@ fn sample() -> DirListing {
     ])
 }
 
-/// A browser that has asked for `/` and been answered with `listing`, then drawn it.
+/// Answers every `Access` call the app is waiting on: it may change what it asked about, and
+/// is signed in as `user`.
+fn answer_access(h: &mut Harness<FileBrowser>, write: bool, user: Option<&str>) {
+    while h.outstanding::<Access>() > 0 {
+        h.reply::<Access>(&AccessReply {
+            read: true,
+            write,
+            user: user.map(str::to_owned),
+        });
+    }
+}
+
+/// A browser that has asked for `/` and been answered with `listing`, then drawn it. `/` is a
+/// folder it may change, and nobody is signed in.
 fn browsing(listing: DirListing) -> Harness<FileBrowser> {
+    browsing_as(listing, true, None)
+}
+
+fn browsing_as(listing: DirListing, write: bool, user: Option<&str>) -> Harness<FileBrowser> {
     let mut h = Harness::new(FileBrowser::default());
     h.frame();
+    answer_access(&mut h, write, user);
     h.reply::<ListDir>(&listing);
     h.frame();
     h
@@ -259,6 +279,8 @@ fn the_upload_button_targets_the_folder_on_screen() {
     let mut h = browsing(sample());
     assert_eq!(h.upload_buttons(), vec!["/"]);
     press(&mut h, "docs");
+    answer_access(&mut h, true, None);
+    h.frame();
     assert_eq!(h.upload_buttons(), vec!["/docs"]);
 }
 
@@ -316,4 +338,141 @@ fn download_urls_are_percent_encoded_per_segment() {
         download_url("/café/", "résumé.pdf"),
         "/files/caf%C3%A9/r%C3%A9sum%C3%A9.pdf"
     );
+}
+
+#[test]
+fn the_labels_use_the_sdk_icons() {
+    assert_eq!(SHARED_TAB, format!("{}  Shared", icons::USERS));
+    assert_eq!(MINE_TAB, format!("{}  My files", icons::HOUSE));
+    assert_eq!(CAN_CHANGE, format!("{}  Can change", icons::PENCIL_SIMPLE));
+    assert_eq!(READ_ONLY, format!("{}  Read-only", icons::LOCK_SIMPLE));
+}
+
+#[test]
+fn a_signed_in_user_has_a_tab_for_their_own_files() {
+    let mut h = browsing_as(sample(), true, Some("alice"));
+    assert_eq!(
+        h.selectables(),
+        vec![(SHARED_TAB.to_owned(), true), (MINE_TAB.to_owned(), false)]
+    );
+
+    press(&mut h, MINE_TAB);
+    assert_eq!(h.app.place, Place::Mine);
+    assert_eq!(h.app.path, "/home/alice");
+    assert_eq!(h.outstanding::<ListDir>(), 1, "it lists the private folder");
+    assert_eq!(
+        h.selectables(),
+        vec![(SHARED_TAB.to_owned(), false), (MINE_TAB.to_owned(), true)]
+    );
+
+    // Up never leaves it: the top of "My files" is the private folder.
+    press(&mut h, "⬆ Up");
+    assert_eq!(h.app.path, "/home/alice");
+
+    press(&mut h, SHARED_TAB);
+    assert_eq!(h.app.place, Place::Shared);
+    assert_eq!(h.app.path, "/");
+}
+
+#[test]
+fn someone_not_signed_in_has_no_files_of_their_own() {
+    let h = browsing(sample());
+    assert_eq!(h.selectables(), vec![(SHARED_TAB.to_owned(), true)]);
+    assert!(h.has_text("Sign in to have files of your own"));
+}
+
+#[test]
+fn signing_out_while_in_my_files_goes_back_to_shared() {
+    let mut h = Harness::new(FileBrowser::default());
+    h.app.place = Place::Mine;
+    h.app.path = "/home/alice/Work".to_owned();
+    h.frame();
+    answer_access(&mut h, true, None);
+    h.frame();
+    assert_eq!(h.app.place, Place::Shared);
+    assert_eq!(h.app.path, "/");
+}
+
+#[test]
+fn my_files_breadcrumbs_start_at_the_private_folder() {
+    let mut app = FileBrowser {
+        place: Place::Mine,
+        path: "/home/alice/Work/2026".to_owned(),
+        ..FileBrowser::default()
+    };
+    assert_eq!(
+        app.crumbs(),
+        [
+            ("🏠".to_owned(), "/home/alice".to_owned()),
+            ("Work".to_owned(), "/home/alice/Work".to_owned()),
+            ("2026".to_owned(), "/home/alice/Work/2026".to_owned()),
+        ]
+    );
+    app.go_up();
+    app.go_up();
+    assert_eq!(app.path, "/home/alice");
+    app.go_up();
+    assert_eq!(app.path, "/home/alice", "and no further");
+}
+
+#[test]
+fn the_top_of_shared_leaves_out_everyones_home_folders() {
+    let h = browsing_as(
+        listing(vec![
+            entry("Docs", EntryKind::Dir, 0),
+            entry("home", EntryKind::Dir, 0),
+        ]),
+        true,
+        Some("alice"),
+    );
+    assert!(h.has_button("Docs"));
+    assert!(!h.has_button("home"), "that is what My files is for");
+    assert!(h.has_label("1 of 1 items"));
+
+    // A folder called home anywhere else is just a folder.
+    let mut h = browsing(listing(vec![entry("home", EntryKind::Dir, 0)]));
+    h.app.path = "/Projects".to_owned();
+    h.frame();
+    answer_access(&mut h, true, None);
+    h.reply::<ListDir>(&listing(vec![entry("home", EntryKind::Dir, 0)]));
+    h.frame();
+    assert!(h.has_button("home"));
+}
+
+#[test]
+fn every_entry_says_whether_it_can_be_changed() {
+    let mut notes = entry("notes.md", EntryKind::File, 10);
+    notes.writable = false;
+    let h = browsing(listing(vec![entry("docs", EntryKind::Dir, 0), notes]));
+    assert!(h.has_label("Permissions"));
+    let labels = h.labels();
+    let perms: Vec<_> = labels
+        .iter()
+        .filter(|l| *l == CAN_CHANGE || *l == READ_ONLY)
+        .collect();
+    assert_eq!(perms, [CAN_CHANGE, READ_ONLY]);
+}
+
+#[test]
+fn a_read_only_folder_says_so_and_offers_no_upload() {
+    let h = browsing_as(sample(), false, Some("alice"));
+    assert!(h.upload_buttons().is_empty());
+    assert!(h.has_label(&format!(
+        "{READ_ONLY}: you can open and download files here, but not change them"
+    )));
+}
+
+#[test]
+fn a_folder_that_can_be_changed_says_so() {
+    let h = browsing(sample());
+    assert!(h.has_label(&format!("{CAN_CHANGE}: you can add and change files here")));
+    assert_eq!(h.upload_buttons(), vec!["/"]);
+}
+
+#[test]
+fn nothing_is_said_about_a_folder_until_the_server_answers() {
+    let mut h = Harness::new(FileBrowser::default());
+    h.frame();
+    assert!(h.upload_buttons().is_empty());
+    assert!(!h.labels().iter().any(|l| l.contains("you can")));
 }

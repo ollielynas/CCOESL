@@ -36,6 +36,29 @@ impl Need {
     }
 }
 
+/// Whether `p` allows `need`, and if not, the error that says so. Something the caller may not
+/// read answers `NOT_FOUND`, exactly as if it were not there, so no answer can tell a hidden
+/// file or folder apart from a missing one. `DENIED` is only for something the caller can see
+/// but not change.
+fn check(p: Perms, need: Need) -> Result<(), u32> {
+    if !p.read {
+        Err(server_error::NOT_FOUND)
+    } else if !need.granted(p) {
+        Err(server_error::DENIED)
+    } else {
+        Ok(())
+    }
+}
+
+/// What is allowed by both of two sets of rules: those for a path as asked for, and those for
+/// where it really leads.
+fn both(a: Perms, b: Perms) -> Perms {
+    Perms {
+        read: a.read && b.read,
+        write: a.write && b.write,
+    }
+}
+
 pub struct Jail {
     root: PathBuf,
 }
@@ -91,7 +114,7 @@ impl Jail {
 
     /// [`Jail::resolve`], but only if `user` may do `need` to the path — checked both on the
     /// path as asked for and on where it really leads, so a symlink cannot lend a private
-    /// folder the permissions of a public one.
+    /// folder the permissions of a public one. See [`check`] for which error a refusal is.
     pub fn authorize(
         &self,
         requested: &str,
@@ -99,14 +122,24 @@ impl Jail {
         need: Need,
     ) -> Result<PathBuf, u32> {
         let parts = access::components(requested)?;
-        if !need.granted(access::perms(&self.root, &parts, user)) {
-            return Err(server_error::DENIED);
-        }
-        let real = self.resolve(requested)?;
-        match access::perms_of_real(&self.root, &real, user) {
-            Some(p) if need.granted(p) => Ok(real),
-            _ => Err(server_error::DENIED),
-        }
+        check(access::perms(&self.root, &parts, user), need)?;
+        let real = self.find(requested)?;
+        check(self.perms_of_real(&real, user), need)?;
+        Ok(real)
+    }
+
+    /// [`Jail::resolve`] for a caller: a symlink leading out of the jail is as absent as
+    /// anything else they may not read.
+    fn find(&self, requested: &str) -> Result<PathBuf, u32> {
+        self.resolve(requested).map_err(|e| match e {
+            server_error::DENIED => server_error::NOT_FOUND,
+            e => e,
+        })
+    }
+
+    /// The rules for a real path, or none at all if it is not in the jail.
+    fn perms_of_real(&self, real: &Path, user: Option<&str>) -> Perms {
+        access::perms_of_real(&self.root, real, user).unwrap_or_default()
     }
 
     /// Where a new entry `requested` would go, if `user` may create it: its parent must exist
@@ -120,24 +153,27 @@ impl Jail {
         };
         let mut lexical = parts.clone();
         lexical.push(name.clone());
-        if !access::perms(&self.root, &lexical, user).write {
-            return Err(server_error::DENIED);
-        }
-        let parent = self.resolve(&parts.join("/"))?;
+        check(access::perms(&self.root, &lexical, user), Need::Write)?;
+        let parent = self.find(&parts.join("/"))?;
         if !parent.is_dir() {
             return Err(server_error::NOT_A_DIRECTORY);
         }
         let target = parent.join(&name);
-        match access::perms_of_real(&self.root, &target, user) {
-            Some(p) if p.write => Ok(target),
-            _ => Err(server_error::DENIED),
-        }
+        check(self.perms_of_real(&target, user), Need::Write)?;
+        Ok(target)
     }
 
-    /// What `user` may do with `requested`, which need not exist.
+    /// What `user` may do with `requested`. Something missing and something hidden from them
+    /// both answer no access at all, so this cannot find a hidden folder by guessing its name.
     pub fn access(&self, requested: &str, user: Option<&str>) -> Result<AccessReply, u32> {
         let parts = access::components(requested)?;
-        let p = access::perms(&self.root, &parts, user);
+        let p = match self.authorize(requested, user, Need::Read) {
+            Ok(real) => both(
+                access::perms(&self.root, &parts, user),
+                self.perms_of_real(&real, user),
+            ),
+            Err(_) => Perms::default(),
+        };
         Ok(AccessReply {
             read: p.read,
             write: p.write,
@@ -261,9 +297,17 @@ impl Jail {
         Ok(reply)
     }
 
+    /// The entries of a folder the caller may read, leaving out everything in it they may not.
+    /// Each entry is checked the way opening it would be, both as named and where it really
+    /// leads, so a symlink to somewhere private is left out like the private folder itself.
     pub fn list_dir(&self, req: &ListDirReq<'_>, user: Option<&str>) -> Result<DirListing, u32> {
         let dir = self.authorize(req.path, user, Need::Read)?;
         let parts = access::components(req.path)?;
+        // A plain file has its folder's rules, so they are worked out once, not per file.
+        let here = both(
+            access::perms(&self.root, &parts, user),
+            self.perms_of_real(&dir, user),
+        );
 
         let meta = std::fs::metadata(&dir).map_err(|_| server_error::IO)?;
         if !meta.is_dir() {
@@ -289,14 +333,32 @@ impl Jail {
             if name == ACCESS_FILE {
                 continue;
             }
-            // A folder the caller may not open is not shown at all: listing `/home` shows each
-            // user their own folder and nobody else's.
-            if meta.is_dir() {
+            // `DirEntry::metadata` does not follow symlinks, so `meta` is about the entry
+            // itself: a real folder, a real file, or a link to be followed and checked.
+            let perms = if meta.is_file() {
+                here
+            } else if meta.is_dir() {
+                // A folder can have rules of its own. One the caller may not open is not shown
+                // at all: listing `/home` shows each user their own folder and nobody else's.
                 let mut child = parts.clone();
                 child.push(name.clone());
-                if !access::perms(&self.root, &child, user).read {
-                    continue;
+                both(
+                    access::perms(&self.root, &child, user),
+                    self.perms_of_real(&item.path(), user),
+                )
+            } else {
+                let child = format!("{}/{name}", parts.join("/"));
+                match self.authorize(&child, user, Need::Read) {
+                    Ok(_) => Perms {
+                        read: true,
+                        write: self.authorize(&child, user, Need::Write).is_ok(),
+                    },
+                    // Dangling, out of the jail, or somewhere the caller may not read.
+                    Err(_) => continue,
                 }
+            };
+            if !perms.read {
+                continue;
             }
 
             entries.push(DirEntry {
@@ -317,6 +379,7 @@ impl Jail {
                     .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                     .map(|d| d.as_secs() as i64)
                     .unwrap_or(0),
+                writable: perms.write,
             });
         }
 

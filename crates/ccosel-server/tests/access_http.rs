@@ -7,8 +7,8 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use ccosel_proto::fs::{
-    Access, AccessReply, CreateDir, DirListing, FileText, ListDir, ListDirReq, PathReq, ReadFile,
-    Search, SearchReply, SearchReq, WriteFile, WriteFileReq,
+    Access, AccessReply, CreateDir, DirListing, EntryKind, FileText, ListDir, ListDirReq, PathReq,
+    ReadFile, Search, SearchReply, SearchReq, WriteFile, WriteFileReq,
 };
 use ccosel_proto::{Rpc, WireReply, WireRequest, WireResult, server_error};
 use ccosel_server::fs_api::Jail;
@@ -206,7 +206,8 @@ async fn each_user_has_a_private_home_folder() {
     .await
     .unwrap();
 
-    // bob sees only his own folder in /home, and cannot reach alice's by name.
+    // bob sees only his own folder in /home, and cannot reach alice's by name. What he may not
+    // read answers exactly as if it were not there, so he cannot even learn that it exists.
     assert_eq!(names(s.bob, "/home").await.unwrap(), vec!["bob"]);
     assert_eq!(
         names(s.alice, "/home").await.unwrap(),
@@ -215,18 +216,21 @@ async fn each_user_has_a_private_home_folder() {
     );
     assert_eq!(
         read(s.bob, "/home/alice/diary.md").await.unwrap_err(),
-        server_error::DENIED
+        server_error::NOT_FOUND
     );
     assert_eq!(
         write(s.bob, "/home/alice/diary.md", "hi").await,
-        Err(server_error::DENIED)
+        Err(server_error::NOT_FOUND)
     );
-    assert_eq!(names(s.bob, "/home/alice").await, Err(server_error::DENIED));
+    assert_eq!(
+        names(s.bob, "/home/alice").await,
+        Err(server_error::NOT_FOUND)
+    );
     // Anonymous callers have no home, and cannot look in /home at all.
-    assert_eq!(names(s.anon, "/home").await, Err(server_error::DENIED));
+    assert_eq!(names(s.anon, "/home").await, Err(server_error::NOT_FOUND));
     assert_eq!(
         read(s.anon, "/home/alice/diary.md").await.unwrap_err(),
-        server_error::DENIED
+        server_error::NOT_FOUND
     );
 
     // The same rules hold for /files and /upload, not just the RPCs.
@@ -249,7 +253,7 @@ async fn each_user_has_a_private_home_folder() {
         403
     );
     let upload = "/upload?path=/home/alice/Work&filename=x.txt";
-    assert_eq!(request(s.bob, "POST", upload, b"x").await.0, 403);
+    assert_eq!(request(s.bob, "POST", upload, b"x").await.0, 404);
     assert_eq!(request(s.alice, "POST", upload, b"x").await.0, 200);
     assert_eq!(
         request(s.anon, "POST", "/upload?path=/Docs&filename=x.md", b"x")
@@ -395,7 +399,7 @@ async fn search_finds_names_and_lines_but_only_where_the_caller_can_read() {
         call::<Search>(s.anon, &search("/home", "milk"))
             .await
             .unwrap_err(),
-        server_error::DENIED
+        server_error::NOT_FOUND
     );
 }
 
@@ -410,11 +414,11 @@ async fn a_symlink_cannot_lend_a_private_folder_public_permissions() {
 
     assert_eq!(
         read(s.bob, "/Shared/peek/diary.md").await.unwrap_err(),
-        server_error::DENIED
+        server_error::NOT_FOUND
     );
     assert_eq!(
         write(s.bob, "/Shared/peek/diary.md", "gotcha").await,
-        Err(server_error::DENIED)
+        Err(server_error::NOT_FOUND)
     );
     assert_eq!(
         request(s.bob, "GET", "/files/Shared/peek/diary.md", &[])
@@ -431,7 +435,7 @@ async fn a_symlink_cannot_lend_a_private_folder_public_permissions() {
         )
         .await
         .0,
-        403
+        404
     );
     assert_eq!(
         fs::read_to_string(s.root.join("home/alice/diary.md")).unwrap(),
@@ -456,4 +460,166 @@ async fn search_does_not_follow_a_symlink_back_to_its_own_folder() {
     .unwrap();
     assert_eq!(found.hits.len(), 1);
     assert!(!found.truncated);
+}
+
+async fn listing(addr: SocketAddr, path: &str) -> DirListing {
+    call::<ListDir>(addr, &ListDirReq { path }).await.unwrap()
+}
+
+/// Each way of asking about a folder bob may not read gets the same answer as for one that is
+/// not there at all, so no call tells him `secret` exists.
+#[tokio::test]
+async fn a_hidden_folder_is_indistinguishable_from_a_missing_one() {
+    let s = site().await;
+    fs::create_dir_all(s.root.join("Shared/secret")).unwrap();
+    fs::write(s.root.join("Shared/secret/.access"), "read: alice\n").unwrap();
+    fs::write(s.root.join("Shared/secret/plans.md"), "plans").unwrap();
+
+    assert_eq!(names(s.bob, "/Shared").await.unwrap(), vec!["notes.md"]);
+    assert_eq!(
+        names(s.alice, "/Shared").await.unwrap(),
+        vec!["secret", "notes.md"]
+    );
+
+    let (hidden, missing) = ("/Shared/secret", "/Shared/nothing");
+    assert_eq!(names(s.bob, hidden).await, names(s.bob, missing).await);
+    assert_eq!(names(s.bob, hidden).await, Err(server_error::NOT_FOUND));
+    let file = |dir: &str| format!("{dir}/plans.md");
+    assert_eq!(
+        read(s.bob, &file(hidden)).await.unwrap_err(),
+        read(s.bob, &file(missing)).await.unwrap_err()
+    );
+    assert_eq!(
+        write(s.bob, &file(hidden), "x").await,
+        write(s.bob, &file(missing), "x").await
+    );
+    let new = |dir: &str| format!("{dir}/new");
+    assert_eq!(
+        call::<CreateDir>(s.bob, &PathReq { path: &new(hidden) }).await,
+        call::<CreateDir>(
+            s.bob,
+            &PathReq {
+                path: &new(missing)
+            }
+        )
+        .await
+    );
+    assert_eq!(
+        call::<Access>(s.bob, &PathReq { path: hidden }).await,
+        call::<Access>(s.bob, &PathReq { path: missing }).await
+    );
+    let get = |dir: &str| format!("/files{dir}/plans.md");
+    assert_eq!(
+        request(s.bob, "GET", &get(hidden), &[]).await.0,
+        request(s.bob, "GET", &get(missing), &[]).await.0
+    );
+    let search = |dir: &'static str| SearchReq {
+        path: dir,
+        query: "plans",
+        suffix: "",
+    };
+    assert_eq!(
+        call::<Search>(s.bob, &search(hidden)).await.unwrap_err(),
+        call::<Search>(s.bob, &search(missing)).await.unwrap_err()
+    );
+    assert_eq!(
+        call::<Access>(
+            s.bob,
+            &PathReq {
+                path: "/Shared/secret"
+            }
+        )
+        .await
+        .unwrap(),
+        AccessReply {
+            read: false,
+            write: false,
+            user: Some("bob".into())
+        }
+    );
+    assert_eq!(
+        request(
+            s.bob,
+            "POST",
+            "/upload?path=/Shared/secret&filename=x.md",
+            b"x"
+        )
+        .await
+        .0,
+        404
+    );
+    assert!(!s.root.join("Shared/secret/x.md").exists());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_listing_leaves_out_links_to_what_the_caller_cannot_read() {
+    let s = site().await;
+    write(s.alice, "/home/alice/diary.md", "secret")
+        .await
+        .unwrap();
+    let link = |target: PathBuf, name: &str| {
+        std::os::unix::fs::symlink(target, s.root.join("Shared").join(name)).unwrap();
+    };
+    link(s.root.join("home/alice"), "to-alices-home");
+    link(s.root.join("home/alice/diary.md"), "to-alices-diary");
+    link(s.root.join("nowhere"), "dangling");
+    link(std::env::temp_dir(), "out-of-the-jail");
+    link(s.root.join("Docs/Apps/files.md"), "to-the-docs");
+
+    // bob sees only the link to somewhere he may read, and may not change what it leads to.
+    let bob = listing(s.bob, "/Shared").await;
+    let seen: Vec<_> = bob
+        .entries
+        .iter()
+        .map(|e| (e.name.as_str(), e.kind, e.writable))
+        .collect();
+    assert_eq!(
+        seen,
+        vec![
+            ("notes.md", EntryKind::File, true),
+            ("to-the-docs", EntryKind::Symlink, false),
+        ]
+    );
+
+    // alice may read her own home, so the links into it are hers to see.
+    let alice: Vec<_> = listing(s.alice, "/Shared")
+        .await
+        .entries
+        .into_iter()
+        .map(|e| (e.name, e.writable))
+        .collect();
+    assert!(alice.contains(&("to-alices-home".into(), true)));
+    assert!(alice.contains(&("to-alices-diary".into(), true)));
+    assert!(
+        !alice
+            .iter()
+            .any(|(n, _)| n == "dangling" || n == "out-of-the-jail")
+    );
+}
+
+#[tokio::test]
+async fn a_listing_says_what_the_caller_may_change() {
+    let s = site().await;
+    let root: Vec<_> = listing(s.anon, "/")
+        .await
+        .entries
+        .into_iter()
+        .map(|e| (e.name, e.writable))
+        .collect();
+    assert_eq!(
+        root,
+        vec![("Docs".into(), false), ("Shared".into(), true)],
+        "and no /home for someone not signed in"
+    );
+    let docs = listing(s.anon, "/Docs/Apps").await;
+    assert!(!docs.entries[0].writable, "a file has its folder's rules");
+
+    write(s.alice, "/home/alice/diary.md", "secret")
+        .await
+        .unwrap();
+    let home = listing(s.alice, "/home").await;
+    assert_eq!(home.entries.len(), 1);
+    assert!(home.entries[0].writable);
+    assert!(listing(s.alice, "/home/alice").await.entries[0].writable);
 }
