@@ -908,7 +908,7 @@ async fn launch_inner(
         *n
     };
 
-    Ok(AppWindow::new(instance, id, entry, arg))
+    Ok(AppWindow::new(instance, id, entry, &page_origin(), arg))
 }
 
 /// On an app's own page, the app fills everything the notice strip leaves, with the same
@@ -930,7 +930,7 @@ fn solo_window(ui: &mut egui::Ui, window: &mut AppWindow<WebInstance>) {
 
 /// The address this page was loaded from, such as `http://192.168.1.20:8777`, which a shared
 /// link needs in front of its path. Only the browser knows it, and behind a tunnel it is the
-/// public one.
+/// public one. Every app is told it too, as `PAGE_INFO` (see `app_window::first_events`).
 fn page_origin() -> String {
     web_sys::window()
         .and_then(|w| w.location().origin().ok())

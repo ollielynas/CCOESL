@@ -74,6 +74,14 @@ Consequences worth knowing before writing an app:
   user types. Neither side resends the buffer each frame.
 - `available_width` is last frame's. Use the shell-side responsive helpers, or add hysteresis,
   or layout will oscillate.
+- An app cannot see the browser, so what only the page knows the shell tells it once, before
+  the first frame: a `PAGE_INFO` event of `key=value` lines, read as `ui.page()`. Today that is
+  the page's `origin` (`ui.page().origin()`), the address to put in front of a link that must
+  work from another machine. It is the browser's own, so it is right behind a tunnel or proxy,
+  where the server could only guess. It is `None` under a shell too old to send it. New facts
+  are new keys, never a new `FrameInput` field: `FrameInput` is fixed-size, and changing it
+  bumps `ABI_VERSION` and invalidates every cached module. An app built before an event kind
+  existed drops it, since `call_id` zero matches no call.
 
 ## Keeping modules small — the whole thesis
 
