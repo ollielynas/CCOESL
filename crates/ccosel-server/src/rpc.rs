@@ -11,6 +11,7 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use ccosel_proto::account::{Account, CreateAppPasswordReq, RevokeAppPasswordReq};
 use ccosel_proto::build::CompileReq;
+use ccosel_proto::desktop::DesktopLayout;
 use ccosel_proto::fs::{ListDirReq, PathReq, SearchReq, WriteFileReq};
 use ccosel_proto::info::ServerInfoReply;
 use ccosel_proto::{Method, PROTO_VERSION, WireReply, WireRequest, WireResult, server_error};
@@ -161,6 +162,10 @@ async fn dispatch(
                 .ok_or(server_error::DENIED)
                 .and_then(|name| state.auth.app_passwords.revoke(name, a.id));
             (revoked, "")
+        }),
+        Method::LoadDesktop => encode(&crate::desktop::load(jail.root(), user)),
+        Method::SaveDesktop => run::<DesktopLayout, _>(req, |layout| {
+            (crate::desktop::save(jail.root(), user, &layout), "")
         }),
     }
 }

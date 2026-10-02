@@ -9,9 +9,12 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
+use ccosel_abi::event::event_kind;
 use ccosel_connection::Background;
 use ccosel_host::AppHost;
 use ccosel_host_web::{WebHost, WebInstance};
+use ccosel_proto::Method;
+use ccosel_proto::desktop::DesktopLayout;
 use ccosel_transport::{PendingKey, Transport};
 use js_sys::WebAssembly;
 
@@ -19,13 +22,14 @@ use crate::http_wire::{HttpWire, Inbox};
 
 use crate::app_window::AppWindow;
 use crate::background;
-use crate::chrome;
+use crate::chrome::{self, Placement};
 use crate::clipboard;
 use crate::fetch;
 use crate::fullscreen;
 use crate::image_loader::BrowserImageLoader;
 use crate::media::{MediaOverlay, Placed};
 use crate::registry::{AppEntry, catalog, find, solo_url};
+use crate::session::{self, Autosave, OnScreen, SHELL_INSTANCE, Save, ShellSink};
 use crate::theme;
 use crate::upload::{self, Drops, Uploads};
 
@@ -58,9 +62,19 @@ pub const WALLPAPER_URL: &str = "/wallpaper.jpg";
 
 /// A launch in flight, or its outcome. Launching is async (fetch + compile); the render loop
 /// is not, so results land here and the next frame picks them up.
+///
+/// `restored` is the window's place in a remembered desktop, back to front, for one being
+/// reopened from it.
 enum Launch {
-    Ready(Box<AppWindow<WebInstance>>),
-    Failed { name: String, error: String },
+    Ready {
+        window: Box<AppWindow<WebInstance>>,
+        restored: Option<usize>,
+    },
+    Failed {
+        name: String,
+        error: String,
+        restored: Option<usize>,
+    },
 }
 
 pub struct Desktop {
@@ -106,6 +120,15 @@ pub struct Desktop {
     /// The app id from a `/app/{id}` page, which shows that one app filling the page with no
     /// desktop around it. `None` is the desktop.
     solo: Option<String>,
+    /// Replies to the shell's own calls (see `session`), and the next id for one.
+    shell_calls: ShellSink,
+    next_shell_call: u32,
+    /// The call loading the remembered desktop, while it is on its way.
+    load_call: Option<u32>,
+    autosave: Autosave,
+    /// Remembered windows still opening, and the stacking place of each one that has.
+    restoring: usize,
+    restore_order: Vec<(usize, u64)>,
 }
 
 impl Desktop {
@@ -140,6 +163,12 @@ impl Desktop {
             notice: None,
             media: MediaOverlay::default(),
             solo,
+            shell_calls: ShellSink::default(),
+            next_shell_call: 1,
+            load_call: None,
+            autosave: Autosave::default(),
+            restoring: 0,
+            restore_order: Vec::new(),
         };
         if let Err(e) = desktop.drops.listen(desktop.egui_ctx.clone()) {
             desktop
@@ -159,11 +188,9 @@ impl Desktop {
             // No wallpaper: the app covers the whole page.
             return desktop;
         }
-        // Open something on first boot: an empty desktop with no affordance is a worse first
-        // impression than a window the user can close.
-        if let Some(first) = desktop.registry.first().cloned() {
-            desktop.launch(&first, None);
-        }
+        // Whatever this person had open last time. A fresh start opens nothing: the empty
+        // desktop points at the dock.
+        desktop.load_desktop();
         if desktop.background == Background::Image {
             desktop.load_wallpaper();
         }
@@ -205,6 +232,16 @@ impl Desktop {
 
     /// Starts `entry` in a new window, opened on `arg` if there is one (see `App::open`).
     pub fn launch(&mut self, entry: &AppEntry, arg: Option<String>) {
+        self.launch_placed(entry, arg, None);
+    }
+
+    /// [`Self::launch`], at `placed`'s position in a remembered desktop and with its placement.
+    fn launch_placed(
+        &mut self,
+        entry: &AppEntry,
+        arg: Option<String>,
+        placed: Option<(usize, Placement)>,
+    ) {
         let entry = entry.clone();
         let modules = self.modules.clone();
         let inbox = self.inbox.clone();
@@ -216,11 +253,21 @@ impl Desktop {
 
         wasm_bindgen_futures::spawn_local(async move {
             let result = launch_inner(&entry, &modules, &next_id, arg.as_deref()).await;
+            let restored = placed.as_ref().map(|(i, _)| *i);
             let outcome = match result {
-                Ok(window) => Launch::Ready(Box::new(window)),
+                Ok(mut window) => {
+                    if let Some((_, placement)) = placed {
+                        window.placement = placement;
+                    }
+                    Launch::Ready {
+                        window: Box::new(window),
+                        restored,
+                    }
+                }
                 Err(error) => Launch::Failed {
                     name: entry.name.to_owned(),
                     error,
+                    restored,
                 },
             };
             inbox.borrow_mut().push(outcome);
@@ -231,9 +278,16 @@ impl Desktop {
     }
 
     fn drain_inbox(&mut self) {
-        for launch in self.inbox.borrow_mut().drain(..) {
+        let launches: Vec<Launch> = self.inbox.borrow_mut().drain(..).collect();
+        for launch in launches {
+            let restored = match &launch {
+                Launch::Ready { restored, .. } | Launch::Failed { restored, .. } => *restored,
+            };
             match launch {
-                Launch::Ready(mut w) => {
+                Launch::Ready { window: mut w, .. } => {
+                    if let Some(i) = restored {
+                        self.restore_order.push((i, w.instance_id));
+                    }
                     // Two windows of the same app need distinguishable taskbar entries, or the
                     // taskbar stops being a way to find a particular window.
                     let n = self.windows.iter().filter(|x| x.app_id == w.app_id).count();
@@ -242,9 +296,151 @@ impl Desktop {
                     }
                     self.windows.push(*w);
                 }
-                Launch::Failed { name, error } => {
+                Launch::Failed { name, error, .. } => {
                     self.errors.push(format!("{name}: {error}"));
                 }
+            }
+            if restored.is_some() {
+                self.restoring -= 1;
+                if self.restoring == 0 {
+                    self.stack_restored();
+                }
+            }
+        }
+    }
+
+    /// Ask the server for the desktop this person had last time.
+    fn load_desktop(&mut self) {
+        let call = self.shell_call(Method::LoadDesktop, &());
+        self.load_call = Some(call);
+    }
+
+    /// Make one of the shell's own calls, returning its id. Sent with the frame's other calls.
+    fn shell_call<T: serde::Serialize>(&mut self, method: Method, req: &T) -> u32 {
+        let call = self.next_shell_call;
+        self.next_shell_call += 1;
+        let args = postcard::to_allocvec(req).unwrap_or_default();
+        let now_ms = self.egui_ctx.input(|i| i.time) * 1000.0;
+        self.transport.enqueue(
+            PendingKey {
+                instance: SHELL_INSTANCE,
+                call,
+            },
+            method as u16,
+            args,
+            Rc::new(self.shell_calls.clone()),
+            now_ms,
+        );
+        call
+    }
+
+    /// Act on replies to the shell's own calls: open the remembered desktop once it arrives,
+    /// and say so if it couldn't be loaded or saved.
+    fn drain_shell_calls(&mut self) {
+        let batches: Vec<Vec<u8>> = self.shell_calls.queue.borrow_mut().drain(..).collect();
+        for batch in batches {
+            let Ok(events) = ccosel_abi::decode_batch(&batch) else {
+                continue;
+            };
+            for event in events {
+                let is_load = Some(event.call_id) == self.load_call;
+                match (event.kind, is_load) {
+                    (event_kind::RPC_OK, true) => {
+                        self.load_call = None;
+                        match postcard::from_bytes::<DesktopLayout>(event.payload) {
+                            Ok(layout) => self.restore(layout),
+                            Err(_) => self.load_failed("the server's answer didn't make sense"),
+                        }
+                    }
+                    (event_kind::RPC_ERR, true) => {
+                        self.load_call = None;
+                        let (_, detail) = ccosel_abi::event::decode_error(event.payload);
+                        self.load_failed(detail);
+                    }
+                    (event_kind::RPC_ERR, false) => {
+                        let e = "your desktop couldn't be saved; it will be tried again".to_owned();
+                        if !self.errors.contains(&e) {
+                            self.errors.push(e);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    /// Start with nothing open. Nothing is saved this visit either: saving now would replace
+    /// the desktop that couldn't be loaded with whatever happens to be open.
+    fn load_failed(&mut self, why: &str) {
+        self.errors.push(format!(
+            "your desktop from last time couldn't be loaded: {why}"
+        ));
+    }
+
+    /// Reopen the windows of a remembered desktop where they were. An app that no longer
+    /// exists, or a damaged place, is left out.
+    fn restore(&mut self, layout: DesktopLayout) {
+        for (i, saved) in layout.windows.iter().enumerate() {
+            let (Some(entry), Some(rect)) = (find(&saved.app), session::rect_of(saved)) else {
+                continue;
+            };
+            let placement = Placement::restored(rect, saved.minimized, saved.maximized);
+            self.restoring += 1;
+            self.launch_placed(&entry, saved.arg.clone(), Some((i, placement)));
+        }
+        self.autosave.loaded(layout);
+    }
+
+    /// Once every remembered window is open, put them back in the order they were stacked:
+    /// they finish opening in whatever order their apps load.
+    fn stack_restored(&mut self) {
+        let mut order = std::mem::take(&mut self.restore_order);
+        order.sort_unstable();
+        for (_, id) in order {
+            self.egui_ctx
+                .move_to_top(egui::LayerId::new(egui::Order::Middle, window_id(id)));
+        }
+    }
+
+    /// The windows on screen as a layout to remember, back to front.
+    fn current_layout(&self, ctx: &egui::Context) -> DesktopLayout {
+        let stacking: Vec<egui::LayerId> = ctx.memory(|m| m.layer_ids().collect());
+        let mut windows: Vec<&AppWindow<WebInstance>> = self.windows.iter().collect();
+        windows.sort_by_key(|w| {
+            let layer = egui::LayerId::new(egui::Order::Middle, window_id(w.instance_id));
+            stacking.iter().position(|l| *l == layer).unwrap_or(0)
+        });
+        session::layout(windows.into_iter().map(|w| {
+            OnScreen {
+                app: w.app_id,
+                arg: w.launch_arg.as_deref(),
+                rect: w
+                    .placement
+                    .normal_rect()
+                    .or_else(|| ctx.memory(|m| m.area_rect(window_id(w.instance_id)))),
+                minimized: w.placement.minimized,
+                maximized: w.placement.is_maximized(),
+            }
+        }))
+    }
+
+    /// Save the desktop once it has settled after a change. Not while windows are still opening,
+    /// which would save a desktop with some of them missing.
+    fn autosave(&mut self, ctx: &egui::Context, now_ms: f64) {
+        if self.restoring > 0 || *self.pending.borrow() > 0 {
+            return;
+        }
+        let current = self.current_layout(ctx);
+        match self.autosave.tick(now_ms, current) {
+            Save::Nothing => {}
+            Save::At(at) => {
+                // Nothing else may be redrawing by then, and the save must still happen.
+                ctx.request_repaint_after(std::time::Duration::from_millis(
+                    (at - now_ms).max(0.0) as u64 + 1,
+                ));
+            }
+            Save::Now(layout) => {
+                self.shell_call(Method::SaveDesktop, &layout);
             }
         }
     }
@@ -261,6 +457,7 @@ impl Desktop {
         if !replies.is_empty() {
             self.transport.on_replies(replies);
         }
+        self.drain_shell_calls();
         // Expire deadlines and reap calls belonging to windows that have gone.
         self.transport.tick(now_ms);
         self.drain_uploads(now_ms);
@@ -414,6 +611,9 @@ impl Desktop {
             }
         }
         self.sync_media(&ctx);
+        if self.solo.is_none() {
+            self.autosave(&ctx, now_ms);
+        }
     }
 
     /// Lay the browser's players over where apps drew their audio, video and documents this
@@ -628,7 +828,11 @@ impl Desktop {
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
             .show(ui, |ui| {
-                if !self.windows.is_empty() || *self.pending.borrow() > 0 {
+                // Nor while the remembered desktop is on its way: it is about to fill this.
+                if !self.windows.is_empty()
+                    || *self.pending.borrow() > 0
+                    || self.load_call.is_some()
+                {
                     return;
                 }
                 let area = ui.max_rect();

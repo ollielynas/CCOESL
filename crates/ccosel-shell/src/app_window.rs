@@ -43,6 +43,8 @@ pub struct AppWindow<I: AppInstance> {
     pub default_size: [f32; 2],
     /// Minimised or maximised, from the title bar.
     pub placement: Placement,
+    /// What it was opened on, if anything, so a remembered desktop can open it on that again.
+    pub launch_arg: Option<String>,
     instance: I,
     replayer: Replayer,
     /// Responses from the previous frame, handed back to the guest on the next one.
@@ -104,6 +106,7 @@ impl<I: AppInstance> AppWindow<I> {
             open: true,
             default_size: app.default_size,
             placement: Placement::default(),
+            launch_arg: launch_arg.map(str::to_owned),
             instance,
             replayer: Replayer::new(),
             responses: Vec::new(),

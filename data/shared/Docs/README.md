@@ -4,6 +4,11 @@ Welcome. CCOSEL is a desktop that runs in your browser. Apps open in windows, an
 live on the server rather than on the computer you are using, so they are there from any
 machine on the network.
 
+When you are signed in, the desktop remembers which apps you had open and where their windows
+were, and puts them back the next time you open it, on any computer. It saves a few seconds after
+you stop moving things, so the last change before you close the tab may not be kept. Without
+signing in, every visit starts with nothing open.
+
 ## Apps
 
 - [Files](Apps/file-browser.md): browse the server's folders, and upload and download files

@@ -8,6 +8,7 @@ pub mod app_passwords;
 pub mod auth;
 pub mod build_api;
 pub mod dav;
+pub mod desktop;
 pub mod fs_api;
 pub mod idp;
 pub mod image_info;

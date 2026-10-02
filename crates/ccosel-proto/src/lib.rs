@@ -15,6 +15,7 @@ extern crate alloc;
 
 pub mod account;
 pub mod build;
+pub mod desktop;
 pub mod fs;
 pub mod info;
 pub mod scratch;
@@ -45,6 +46,8 @@ pub enum Method {
     ListAppPasswords = 13,
     CreateAppPassword = 14,
     RevokeAppPassword = 15,
+    LoadDesktop = 16,
+    SaveDesktop = 17,
 }
 
 impl Method {
@@ -65,6 +68,8 @@ impl Method {
             13 => Some(Self::ListAppPasswords),
             14 => Some(Self::CreateAppPassword),
             15 => Some(Self::RevokeAppPassword),
+            16 => Some(Self::LoadDesktop),
+            17 => Some(Self::SaveDesktop),
             _ => None,
         }
     }
