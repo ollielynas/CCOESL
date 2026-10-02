@@ -53,6 +53,17 @@ pub mod event_kind {
     /// path for the Viewer. Sent at most once, before the first frame, and only when the app was
     /// opened on something.
     pub const LAUNCH: u32 = 5;
+    /// Facts about the page the app runs in, which only the shell can know. `call_id` is zero
+    /// and the payload is UTF-8 `key=value` lines (see [`encode_page_info`] and
+    /// [`page_info`]). Sent once, before the first frame. The keys today:
+    ///
+    /// - `origin`: the page's origin as the browser has it, such as `https://example.com`
+    ///   or `http://192.168.1.20:8777`. Behind a tunnel or proxy this is the public address,
+    ///   which the server itself may not know.
+    ///
+    /// Unknown keys are ignored, so a newer shell can add facts without a new kind and without
+    /// breaking older apps; and an app built before this kind existed ignores the whole event.
+    pub const PAGE_INFO: u32 = 6;
 }
 
 /// Why a call failed.
@@ -199,6 +210,35 @@ pub fn decode_error(payload: &[u8]) -> (u32, &str) {
     let code = u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
     let detail = core::str::from_utf8(&payload[4..]).unwrap_or("");
     (code, detail)
+}
+
+/// Encode a `PAGE_INFO` payload from `(key, value)` pairs. A pair whose key or value would
+/// break the line format (a newline anywhere, `=` in the key, an empty key) is left out rather
+/// than allowed to corrupt the others.
+pub fn encode_page_info(facts: &[(&str, &str)]) -> alloc::vec::Vec<u8> {
+    let mut out = alloc::vec::Vec::new();
+    for (key, value) in facts {
+        if key.is_empty() || key.contains(['=', '\n']) || value.contains('\n') {
+            continue;
+        }
+        out.extend_from_slice(key.as_bytes());
+        out.push(b'=');
+        out.extend_from_slice(value.as_bytes());
+        out.push(b'\n');
+    }
+    out
+}
+
+/// The value of `key` in a `PAGE_INFO` payload, if it is there and not empty. `None` for a
+/// payload that is not UTF-8.
+pub fn page_info<'a>(payload: &'a [u8], key: &str) -> Option<&'a str> {
+    core::str::from_utf8(payload)
+        .ok()?
+        .lines()
+        .filter_map(|line| line.split_once('='))
+        .find(|(k, _)| *k == key)
+        .map(|(_, v)| v)
+        .filter(|v| !v.is_empty())
 }
 
 /// One edit to a text field, as the shell reports it to the guest: replace the byte range
