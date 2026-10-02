@@ -290,3 +290,97 @@ async fn serves_a_rendered_figure_over_http_and_nothing_else() {
     assert_eq!(status, 200);
     assert_eq!(&body[..4], b"\x89PNG");
 }
+
+/// GET `path` with `extra` header lines: the status, the response's headers (as `name: value`
+/// lines, names lower-cased) and the body.
+async fn get_with(addr: SocketAddr, path: &str, extra: &str) -> (u16, String, Vec<u8>) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let head = format!("GET {path} HTTP/1.1\r\nHost: {addr}\r\n{extra}Connection: close\r\n\r\n");
+    stream.write_all(head.as_bytes()).await.unwrap();
+    let mut raw = Vec::new();
+    stream.read_to_end(&mut raw).await.unwrap();
+    let split = raw
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .expect("no header terminator");
+    // Names are case-insensitive, so lower-cased to look up; values are kept as sent.
+    let head = String::from_utf8_lossy(&raw[..split])
+        .lines()
+        .map(|l| match l.split_once(':') {
+            Some((name, value)) => format!("{}:{value}", name.to_lowercase()),
+            None => l.to_owned(),
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let status = head[9..12].parse().unwrap();
+    (status, head, raw[split + 4..].to_vec())
+}
+
+fn header<'h>(head: &'h str, name: &str) -> Option<&'h str> {
+    head.lines()
+        .find_map(|l| l.strip_prefix(name)?.strip_prefix(':'))
+        .map(str::trim)
+}
+
+/// The shell and its apps live at URLs every build reuses. A browser that has the previous
+/// build must be made to fetch this one, or it runs an old shell against new apps.
+#[tokio::test]
+async fn a_browser_with_an_earlier_build_gets_this_one() {
+    let (addr, root) = spawn().await;
+    let file = root.join("hello.txt");
+
+    // First load: kept, but only after checking with the server first.
+    let (status, head, body) = get_with(addr, "/hello.txt", "").await;
+    assert_eq!((status, body.as_slice()), (200, b"hi".as_slice()));
+    assert_eq!(header(&head, "cache-control"), Some("no-cache"), "{head}");
+    let tag = header(&head, "etag")
+        .expect("a tag to check against")
+        .to_owned();
+    let modified = header(&head, "last-modified").map(str::to_owned);
+
+    // Checked and still current: not sent again.
+    let check = format!("If-None-Match: {tag}\r\n");
+    let (status, head, body) = get_with(addr, "/hello.txt", &check).await;
+    assert_eq!(status, 304, "{head}");
+    assert!(body.is_empty());
+
+    // A new build replaces it, with an older date than the copy the browser holds, as a build
+    // restored from a cache can have. The browser's check, by tag or by date, must not pass.
+    let old = std::time::SystemTime::now() - std::time::Duration::from_secs(3 * 24 * 3600);
+    fs::remove_file(&file).unwrap();
+    fs::write(&file, b"new build").unwrap();
+    fs::File::options()
+        .write(true)
+        .open(&file)
+        .unwrap()
+        .set_modified(old)
+        .unwrap();
+    let mut check = format!("If-None-Match: {tag}\r\n");
+    if let Some(date) = &modified {
+        check.push_str(&format!("If-Modified-Since: {date}\r\n"));
+    }
+    let (status, head, body) = get_with(addr, "/hello.txt", &check).await;
+    assert_eq!(status, 200, "{head}");
+    assert_eq!(body, b"new build");
+    assert_ne!(header(&head, "etag"), Some(tag.as_str()));
+}
+
+#[tokio::test]
+async fn the_boot_page_is_checked_too_and_missing_files_are_not_tagged() {
+    let (addr, root) = spawn().await;
+    fs::write(root.join("index.html"), b"<!doctype html>").unwrap();
+    let (status, head, _) = get_with(addr, "/", "").await;
+    assert_eq!(status, 200, "{head}");
+    assert_eq!(header(&head, "cache-control"), Some("no-cache"));
+    assert!(header(&head, "etag").is_some());
+
+    let (status, head, _) = get_with(addr, "/dist/nothing.wasm", "").await;
+    assert_eq!(status, 404);
+    assert!(header(&head, "etag").is_none());
+    // Nothing outside the web folder is reached, or tagged, by stepping out of it.
+    let (status, head, _) = get_with(addr, "/../../../../etc/hostname", "").await;
+    assert_ne!(status, 200, "{head}");
+    assert!(header(&head, "etag").is_none());
+}

@@ -14,6 +14,7 @@ pub mod rpc;
 pub mod scratch;
 pub mod stats;
 pub mod upload_api;
+pub mod web_files;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -25,7 +26,6 @@ use axum::middleware;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Extension, Router};
-use tower_http::services::ServeDir;
 
 use access::User;
 use auth::AuthState;
@@ -114,14 +114,10 @@ pub fn app(jail: Jail, web_dir: PathBuf, auth: AuthState) -> Router {
     Router::new()
         .merge(protected)
         .merge(auth::router())
-        .fallback_service(
-            // Precompressed assets are served as-is when the client accepts them: compressing
-            // a 5 MB shell on every request would be absurd, and `xtask` can do it once at
-            // build time.
-            ServeDir::new(web_dir)
-                .precompressed_br()
-                .precompressed_gzip(),
-        )
+        .fallback(move |req: axum::extract::Request| {
+            let web = web_dir.clone();
+            async move { web_files::serve(&web, req).await }
+        })
         .with_state(state)
 }
 
