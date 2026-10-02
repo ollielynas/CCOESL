@@ -1,5 +1,5 @@
 use ccosel_proto::fs::{DirEntry, DirListing, FileText};
-use ccosel_proto::octave::{ErrorAt, Series, Variable};
+use ccosel_proto::octave::{ErrorAt, Hidden, Series, Variable};
 use ccosel_sdk::testing::{Harness, rpc_error};
 
 use ccosel_sdk::icons;
@@ -181,14 +181,115 @@ fn a_poll_that_fails_is_reported() {
     assert!(h.app.log.last().unwrap().1.starts_with("error: lost track"));
 }
 
+/// A poll's reply in which `lines` lines, numbered from `first`, are due: the first 10 and the
+/// last 40, the rest hidden, as the server sends a flood.
+fn flood(first: u32, lines: u32) -> OctaveStatus {
+    let mut output = String::new();
+    for k in (first..first + 10).chain(first + lines - 40..first + lines) {
+        output.push_str(&format!("line {k}\n"));
+    }
+    OctaveStatus {
+        output,
+        hidden: Some(Hidden {
+            after: 10,
+            lines: lines - 50,
+        }),
+        next: first + lines,
+        ..OctaveStatus::default()
+    }
+}
+
+/// The log after the command that ran, as text: hidden-lines markers as `[N hidden]`.
+fn shown(h: &Harness<Octave>) -> Vec<String> {
+    (h.app.log.iter().skip(1))
+        .map(|(k, l)| match k {
+            LineKind::Hidden { lines } => format!("[{lines} hidden]"),
+            _ => l.clone(),
+        })
+        .collect()
+}
+
 #[test]
-fn truncated_output_is_flagged() {
-    let mut h = running("1");
-    let mut status = done("", session(vec![], vec![]));
-    status.output_truncated = true;
+fn a_flood_of_output_shows_its_start_a_count_and_its_end() {
+    let mut h = running("for k = 0:999, disp(k), end");
+    h.reply::<OctavePoll>(&flood(0, 1000));
+    h.frame();
+    let got = shown(&h);
+    assert_eq!(got.len(), 51);
+    assert_eq!((got[0].as_str(), got[9].as_str()), ("line 0", "line 9"));
+    assert_eq!(got[10], "[950 hidden]");
+    assert_eq!(
+        (got[11].as_str(), got[50].as_str()),
+        ("line 960", "line 999")
+    );
+    h.frame();
+    assert!(h.has_text(". 950 lines hidden"));
+}
+
+#[test]
+fn a_flood_that_goes_on_grows_one_marker_and_shows_only_the_latest_lines() {
+    let mut h = running("while true, disp(rand), end");
+    h.reply::<OctavePoll>(&flood(0, 1000));
+    h.frame();
+    h.frame();
+    h.reply::<OctavePoll>(&flood(1000, 1000));
+    h.frame();
+    let got = shown(&h);
+    // Still the first ten, one marker, and forty lines: now the latest.
+    assert_eq!(got.len(), 51);
+    assert_eq!(got[0], "line 0");
+    assert_eq!(got[10], "[1950 hidden]");
+    assert_eq!(
+        (got[11].as_str(), got[50].as_str()),
+        ("line 1960", "line 1999")
+    );
+
+    // It ends with a few more lines, which follow on as they are.
+    h.frame();
+    h.reply::<OctavePoll>(&OctaveStatus {
+        output: "line 2000\nline 2001\n".to_owned(),
+        next: 2002,
+        ..OctaveStatus::default()
+    });
+    h.frame();
+    let got = shown(&h);
+    assert_eq!(got.len(), 53);
+    assert_eq!(got.last().map(String::as_str), Some("line 2001"));
+
+    // Another flood after that is a new one, with a marker of its own.
+    h.frame();
+    h.reply::<OctavePoll>(&flood(2002, 500));
+    h.frame();
+    let markers = shown(&h).iter().filter(|l| l.ends_with("hidden]")).count();
+    assert_eq!(markers, 2);
+}
+
+#[test]
+fn a_figure_in_a_flood_keeps_its_place() {
+    // Drawn after line 500, inside what was hidden: it goes after the marker.
+    let mut h = running("demo");
+    let mut status = flood(0, 1000);
+    status.prompts = vec![OctavePrompt {
+        at: 500,
+        ..live_figure(1, 1, 10)
+    }];
     h.reply::<OctavePoll>(&status);
     h.frame();
-    assert!(h.app.log.last().unwrap().1.contains("limit"));
+    let got = shown(&h);
+    assert_eq!(got[10], "[950 hidden]");
+    assert_eq!(got[11], figure_url(1, 1, 10));
+    assert_eq!(got[12], "line 960");
+    // With something else after its marker, the next flood gets a marker of its own.
+    h.frame();
+    h.reply::<OctavePoll>(&OctaveStatus {
+        prompts: status.prompts.clone(),
+        ..flood(1000, 1000)
+    });
+    h.frame();
+    assert_eq!(
+        shown(&h).iter().filter(|l| l.ends_with("hidden]")).count(),
+        2
+    );
 }
 
 #[test]
@@ -1334,11 +1435,11 @@ fn a_figure_drawn_mid_script_is_shown_before_the_question_about_it() {
     let mut h = running("test_popup");
     h.reply::<OctavePoll>(&OctaveStatus {
         output: "  [PASS] window can be resized\n".to_owned(),
-        next: 31,
+        next: 1,
         prompts: vec![
             OctavePrompt {
                 id: 1,
-                at: 31,
+                at: 1,
                 kind: PromptKind::Figure {
                     number: 1,
                     image: 1 << 31,
@@ -1347,7 +1448,7 @@ fn a_figure_drawn_mid_script_is_shown_before_the_question_about_it() {
                 },
             },
             OctavePrompt {
-                at: 31,
+                at: 1,
                 ..input_prompt(2, "\n  Do you see a window with a sine wave? (y/n): ")
             },
         ],
@@ -1412,7 +1513,7 @@ fn a_figure_redrawn_with_nothing_printed_between_updates_in_place() {
     // Something printed: the next frame goes after it, and the earlier ones stay as they were.
     h.reply::<OctavePoll>(&OctaveStatus {
         output: "step 2\n".to_owned(),
-        next: 7,
+        next: 1,
         prompts: vec![
             live_figure(1, 1, 10),
             live_figure(2, 1, 11),
@@ -1421,7 +1522,7 @@ fn a_figure_redrawn_with_nothing_printed_between_updates_in_place() {
             live_figure(5, 2, 14),
             // Drawn after "step 2" was printed.
             OctavePrompt {
-                at: 7,
+                at: 1,
                 ..live_figure(6, 1, 15)
             },
         ],
@@ -1466,8 +1567,8 @@ fn output_and_figures_keep_their_order_within_one_poll() {
     let mut h = running("demo");
     h.reply::<OctavePoll>(&OctaveStatus {
         output: "drew 1\ndrew 2\n".to_owned(),
-        next: 14,
-        prompts: vec![figure_at(1, 0, 10), figure_at(2, 7, 11)],
+        next: 2,
+        prompts: vec![figure_at(1, 0, 10), figure_at(2, 1, 11)],
         ..OctaveStatus::default()
     });
     h.frame();
@@ -1487,11 +1588,11 @@ fn output_and_figures_keep_their_order_within_one_poll() {
 #[test]
 fn a_prompt_past_the_output_so_far_waits_for_the_output_before_it() {
     let mut h = running("demo");
-    // The figure was made after 8 bytes, but this poll's output has only got to 3.
+    // The figure was made after 2 lines, but this poll's output has only got to 1.
     h.reply::<OctavePoll>(&OctaveStatus {
         output: "ab\n".to_owned(),
-        next: 3,
-        prompts: vec![figure_at(1, 8, 10)],
+        next: 1,
+        prompts: vec![figure_at(1, 2, 10)],
         ..OctaveStatus::default()
     });
     h.frame();
@@ -1499,8 +1600,8 @@ fn a_prompt_past_the_output_so_far_waits_for_the_output_before_it() {
     h.frame();
     h.reply::<OctavePoll>(&OctaveStatus {
         output: "cdef\n".to_owned(),
-        next: 8,
-        prompts: vec![figure_at(1, 8, 10)],
+        next: 2,
+        prompts: vec![figure_at(1, 2, 10)],
         ..OctaveStatus::default()
     });
     h.frame();

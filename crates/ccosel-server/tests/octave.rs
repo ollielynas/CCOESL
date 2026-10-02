@@ -55,15 +55,21 @@ fn run(octave: &Octave, jail: &Jail, user: Option<&str>, seq: u32, input: Octave
 fn wait(octave: &Octave, user: Option<&str>, seq: u32) -> OctaveStatus {
     let deadline = Instant::now() + Duration::from_secs(60);
     let mut output = String::new();
+    let mut from = 0;
     loop {
         let req = OctavePollReq {
             client: 1,
             seq,
-            from: output.len() as u32,
+            from,
         };
         let mut status = octave.poll(user, &req).unwrap();
         output.push_str(&status.output);
-        assert_eq!(status.next as usize, output.len());
+        let hidden = status.hidden.map_or(0, |h| h.lines);
+        assert_eq!(
+            status.next,
+            from + status.output.lines().count() as u32 + hidden
+        );
+        from = status.next;
         if status.finished {
             status.output = output;
             return status;
@@ -1243,4 +1249,120 @@ fn real_octave_says_where_an_error_is() {
     // A success says nothing.
     run(&octave, &jail, None, 5, OctaveInput::Code("ok = 1;"));
     assert!(wait(&octave, None, 5).result.unwrap().error_at.is_none());
+}
+
+mod output {
+    use ccosel_proto::octave::{
+        Hidden, KEPT_FIRST_LINES, KEPT_LATEST_LINES, MAX_LINE_BYTES, REPLY_FIRST_LINES,
+        REPLY_LAST_LINES,
+    };
+    use ccosel_server::octave_api::Output;
+
+    fn printed(n: usize) -> Output {
+        let mut out = Output::default();
+        for k in 1..=n {
+            out.push(&format!("line {k}"));
+        }
+        out
+    }
+
+    fn lines(text: &str) -> Vec<&str> {
+        text.lines().collect()
+    }
+
+    #[test]
+    fn a_little_output_is_sent_whole() {
+        let out = printed(30);
+        let (text, hidden) = out.since(0);
+        assert_eq!(lines(&text).len(), 30);
+        assert_eq!(hidden, None);
+        let (text, hidden) = out.since(25);
+        assert_eq!(
+            lines(&text),
+            ["line 26", "line 27", "line 28", "line 29", "line 30"]
+        );
+        assert_eq!(hidden, None);
+        assert_eq!(out.since(30), (String::new(), None));
+    }
+
+    #[test]
+    fn a_flood_is_sent_as_its_start_a_count_and_its_end() {
+        let out = printed(150);
+        let (text, hidden) = out.since(0);
+        let got = lines(&text);
+        assert_eq!(got.len(), REPLY_FIRST_LINES + REPLY_LAST_LINES);
+        assert_eq!(got[0], "line 1");
+        assert_eq!(got[REPLY_FIRST_LINES - 1], "line 10");
+        assert_eq!(got[REPLY_FIRST_LINES], "line 111");
+        assert_eq!(got.last(), Some(&"line 150"));
+        assert_eq!(
+            hidden,
+            Some(Hidden {
+                after: REPLY_FIRST_LINES as u32,
+                lines: 100,
+            })
+        );
+    }
+
+    #[test]
+    fn however_much_is_printed_the_server_keeps_the_start_and_the_end() {
+        let out = printed(100_000);
+        assert_eq!(out.total(), 100_000);
+        let (text, hidden) = out.since(0);
+        let got = lines(&text);
+        assert_eq!((got[0], *got.last().unwrap()), ("line 1", "line 100000"));
+        assert_eq!(hidden.unwrap().lines as usize, 100_000 - got.len());
+        // Asked from inside what was dropped: what is left, the dropped part counted.
+        let (text, hidden) = out.since(KEPT_FIRST_LINES + 10);
+        let got = lines(&text);
+        assert!(got.len() <= REPLY_LAST_LINES, "{}", got.len());
+        assert_eq!(*got.last().unwrap(), "line 100000");
+        assert_eq!(hidden.unwrap().after, 0);
+        // Asked from near the end, within what is kept: those lines, whole.
+        let near = 100_000 - KEPT_LATEST_LINES + 450;
+        let (text, hidden) = out.since(near);
+        assert_eq!(lines(&text).len(), 50);
+        assert_eq!(hidden, None);
+    }
+
+    #[test]
+    fn a_very_long_line_is_cut_short() {
+        let mut out = Output::default();
+        out.push(&"é".repeat(MAX_LINE_BYTES));
+        let (text, _) = out.since(0);
+        let line = text.trim_end_matches('\n');
+        assert!(line.len() <= MAX_LINE_BYTES + '…'.len_utf8());
+        assert!(line.ends_with('…'));
+    }
+}
+
+/// Real Octave, when this machine has it: a loop printing thousands of lines finishes, with its
+/// first and last lines, and the ones between counted.
+#[test]
+fn real_octave_floods_are_counted_not_sent() {
+    let (jail, support) = setup("real-flood");
+    let octave = Octave::detect(support);
+    if !octave.available() {
+        eprintln!("octave-cli is not installed; skipped");
+        return;
+    }
+    run(
+        &octave,
+        &jail,
+        None,
+        1,
+        OctaveInput::Code("for k = 1:20000, printf(\"line %d\\n\", k); end"),
+    );
+    // Wait for it to finish, then ask for everything at once, as a window opened late would.
+    let start = Instant::now();
+    while !status(&octave, 1).finished {
+        assert!(start.elapsed() < Duration::from_secs(60));
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let all = status(&octave, 1);
+    assert_eq!(all.next, 20_000);
+    let lines: Vec<&str> = all.output.lines().collect();
+    assert_eq!(lines.len(), 50);
+    assert_eq!((lines[0], lines[49]), ("line 1", "line 20000"));
+    assert_eq!(all.hidden.unwrap().lines, 19_950);
 }

@@ -14,7 +14,7 @@
 //! network, exactly like building a project in the Compiler (see `ARCHITECTURE.md`). Octave
 //! is optional for that reason as much as for its size: without it, `run` answers `false`.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -24,10 +24,11 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use ccosel_proto::octave::{
-    Axes, DEFAULT_LIMIT_MS, ErrorAt, Figure, MAX_LIMIT_MS, MAX_OUTPUT_BYTES, MAX_PROMPTS,
-    MessageIcon, OctaveAction, OctaveAnswerReq, OctaveControlReq, OctaveInput, OctavePollReq,
-    OctavePrompt, OctaveResult, OctaveRunReq, OctaveStatus, PromptAnswer, PromptKind, Series,
-    Variable,
+    Axes, DEFAULT_LIMIT_MS, ErrorAt, Figure, Hidden, KEPT_FIRST_LINES, KEPT_LATEST_LINES,
+    MAX_LIMIT_MS, MAX_LINE_BYTES, MAX_PROMPTS, MessageIcon, OctaveAction, OctaveAnswerReq,
+    OctaveControlReq, OctaveInput, OctavePollReq, OctavePrompt, OctaveResult, OctaveRunReq,
+    OctaveStatus, PromptAnswer, PromptKind, REPLY_FIRST_LINES, REPLY_LAST_LINES, REPLY_MAX_LINES,
+    Series, Variable,
 };
 use ccosel_proto::server_error;
 
@@ -424,10 +425,96 @@ struct Job {
     finished_at: Mutex<Option<Instant>>,
 }
 
+/// A job's output, as lines: the first ones for good, then a gap of lines dropped to bound
+/// memory, then the latest. Line `i` of everything the job printed is `head[i]`, or in the
+/// gap, or `latest[i - head.len() - gap]`.
 #[derive(Default)]
-struct Output {
-    text: String,
-    truncated: bool,
+pub struct Output {
+    head: Vec<String>,
+    gap: usize,
+    latest: VecDeque<String>,
+}
+
+impl Output {
+    /// How many lines the job has printed, kept or not.
+    pub fn total(&self) -> usize {
+        self.head.len() + self.gap + self.latest.len()
+    }
+
+    pub fn push(&mut self, line: &str) {
+        let line = cap_line(line);
+        if self.gap == 0 && self.latest.is_empty() && self.head.len() < KEPT_FIRST_LINES {
+            self.head.push(line);
+            return;
+        }
+        self.latest.push_back(line);
+        if self.latest.len() > KEPT_LATEST_LINES {
+            self.latest.pop_front();
+            self.gap += 1;
+        }
+    }
+
+    /// Line `i`, if it was kept.
+    fn get(&self, i: usize) -> Option<&str> {
+        match i.checked_sub(self.head.len()) {
+            None => Some(&self.head[i]),
+            Some(after) => self
+                .latest
+                .get(after.checked_sub(self.gap)?)
+                .map(String::as_str),
+        }
+    }
+
+    /// The lines from `from` on, for a reply: all of them when there are few enough, else the
+    /// first and the last, with the lines between them (and any the server dropped) hidden.
+    pub fn since(&self, from: usize) -> (String, Option<Hidden>) {
+        let total = self.total();
+        let from = from.min(total);
+        let flood = total - from > REPLY_MAX_LINES;
+        let (first, last) = if flood {
+            (REPLY_FIRST_LINES, REPLY_LAST_LINES)
+        } else {
+            (usize::MAX, usize::MAX)
+        };
+        let mut text = String::new();
+        // From the start, up to `first` lines, stopping at the gap.
+        let mut i = from;
+        while i < total && i - from < first {
+            let Some(line) = self.get(i) else { break };
+            text.push_str(line);
+            text.push('\n');
+            i += 1;
+        }
+        let shown = i - from;
+        // From the end, up to `last` lines, back to where the first part stopped or the gap.
+        let mut j = total;
+        while j > i && total - j < last && self.get(j - 1).is_some() {
+            j -= 1;
+        }
+        for k in j..total {
+            text.push_str(self.get(k).unwrap_or_default());
+            text.push('\n');
+        }
+        let hidden = (j > i).then(|| Hidden {
+            after: shown as u32,
+            lines: (j - i) as u32,
+        });
+        (text, hidden)
+    }
+}
+
+/// `line`, cut short at [`MAX_LINE_BYTES`] with "…" if it is longer.
+fn cap_line(line: &str) -> String {
+    if line.len() <= MAX_LINE_BYTES {
+        return line.to_owned();
+    }
+    let mut end = MAX_LINE_BYTES;
+    while !line.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut cut = line[..end].to_owned();
+    cut.push('…');
+    cut
 }
 
 impl Job {
@@ -451,16 +538,7 @@ impl Job {
     }
 
     fn push_line(&self, line: &str) {
-        let mut out = self.output.lock().unwrap();
-        if out.truncated {
-            return;
-        }
-        if out.text.len() + line.len() + 1 > MAX_OUTPUT_BYTES {
-            out.truncated = true;
-            return;
-        }
-        out.text.push_str(line);
-        out.text.push('\n');
+        self.output.lock().unwrap().push(line);
     }
 
     fn snapshot(&self, from: usize) -> OctaveStatus {
@@ -468,17 +546,14 @@ impl Job {
         // `finished` never misses the last lines.
         let result = self.result.lock().unwrap().clone();
         let out = self.output.lock().unwrap();
-        let mut from = from.min(out.text.len());
-        while !out.text.is_char_boundary(from) {
-            from -= 1;
-        }
+        let (output, hidden) = out.since(from);
         OctaveStatus {
             finished: result.is_some(),
             elapsed_ms: self.started.elapsed().as_millis() as u64,
             limit_ms: self.limit.lock().unwrap().as_millis() as u64,
-            output: out.text[from..].to_owned(),
-            next: out.text.len() as u32,
-            output_truncated: out.truncated,
+            output,
+            hidden,
+            next: out.total() as u32,
             result,
             prompts: self.prompts.lock().unwrap().clone(),
         }
@@ -486,7 +561,7 @@ impl Job {
 
     fn push_prompt(&self, mut prompt: OctavePrompt) {
         // Output and prompts come from Octave in one stream, in order: this is where it was.
-        prompt.at = self.output.lock().unwrap().text.len() as u32;
+        prompt.at = self.output.lock().unwrap().total() as u32;
         let mut prompts = self.prompts.lock().unwrap();
         if prompts.len() < MAX_PROMPTS {
             prompts.push(prompt);

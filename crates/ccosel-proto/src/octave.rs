@@ -8,7 +8,8 @@
 //!   however long the job then runs.
 //! - [`OctavePoll`] asks how the job is going. It carries only `(client, seq, from)`, so polling
 //!   at a few hertz costs a few bytes each way, and replies carry only the output produced
-//!   since `from`.
+//!   since `from`, and no more than [`REPLY_MAX_LINES`] of it: a script printing thousands of
+//!   lines a second costs a few dozen a poll, the rest counted as [`Hidden`].
 //!
 //! - [`OctaveControl`] changes a running job: moves its time limit, or stops it.
 //! - [`OctaveAnswer`] answers a job's [`OctavePrompt`]: the file a `uigetfile` asked for, or
@@ -24,8 +25,21 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Coalesce, Command, Effect, Method, Query, Rpc};
 
-/// The most output one job keeps. Later output is dropped and the job reports it was.
-pub const MAX_OUTPUT_BYTES: usize = 256 * 1024;
+/// Output is counted in lines, each kept to at most this many bytes (a longer one is cut short
+/// with "…"). With the counts below, it bounds what a job keeps however much it prints.
+pub const MAX_LINE_BYTES: usize = 2000;
+
+/// A job keeps its first lines for good, and its latest; the ones between are dropped, and
+/// counted, as soon as there are more than this many after the first.
+pub const KEPT_FIRST_LINES: usize = 50;
+pub const KEPT_LATEST_LINES: usize = 500;
+
+/// A poll's reply carries at most this many lines. When more are due, it carries the first
+/// [`REPLY_FIRST_LINES`] and the last [`REPLY_LAST_LINES`] of them, and says how many it left
+/// out: a flood of output is shown as its start, a count, and its end.
+pub const REPLY_MAX_LINES: usize = 100;
+pub const REPLY_FIRST_LINES: usize = 10;
+pub const REPLY_LAST_LINES: usize = 40;
 
 /// How long a job may run before the server stops it, unless [`OctaveControl`] extends it.
 pub const DEFAULT_LIMIT_MS: u64 = 10 * 60 * 1000;
@@ -82,7 +96,7 @@ impl Command for OctaveRun {}
 pub struct OctavePollReq {
     pub client: u32,
     pub seq: u32,
-    /// How many bytes of this job's output the app already has.
+    /// How many lines of this job's output the app already has (or has been told were hidden).
     pub from: u32,
 }
 
@@ -204,16 +218,25 @@ pub struct OctaveStatus {
     pub elapsed_ms: u64,
     /// When, counting from the job's start, the server will stop it.
     pub limit_ms: u64,
-    /// Output from byte `from` onwards.
+    /// Output from line `from` onwards, each line ending in a newline; with a gap, if any were
+    /// [`hidden`](Self::hidden).
     pub output: String,
-    /// The output offset to ask from next time.
+    /// Lines left out of `output`: too many to send at once, or dropped by the server.
+    pub hidden: Option<Hidden>,
+    /// The line to ask from next time.
     pub next: u32,
-    /// The job produced more than [`MAX_OUTPUT_BYTES`], and the rest was dropped.
-    pub output_truncated: bool,
     /// Present exactly when `finished`.
     pub result: Option<OctaveResult>,
     /// Every dialog the job has asked the app for so far, oldest first.
     pub prompts: Vec<OctavePrompt>,
+}
+
+/// Lines of output left out of a reply: where, and how many.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Hidden {
+    /// How many of the reply's lines come before the gap.
+    pub after: u32,
+    pub lines: u32,
 }
 
 /// A dialog a running job wants shown, from `msgbox`, `uigetfile` and the like, which have no
@@ -222,7 +245,7 @@ pub struct OctaveStatus {
 pub struct OctavePrompt {
     /// Its number within the job, for [`OctaveAnswer`].
     pub id: u32,
-    /// How many bytes of the job's output came before it, so the app can put it in the right
+    /// How many lines of the job's output came before it, so the app can put it in the right
     /// place among the output: output and prompts arrive in separate lists.
     pub at: u32,
     pub kind: PromptKind,

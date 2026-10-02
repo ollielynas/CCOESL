@@ -51,6 +51,10 @@ pub enum LineKind {
     Input,
     Output,
     Error,
+    /// Lines of output too many to show: `lines` of them, left out here.
+    Hidden {
+        lines: u32,
+    },
     /// A figure the command before it drew, where desktop Octave would have popped up a
     /// window: the line's text is its image's URL, this its number and pixel size.
     Figure {
@@ -205,6 +209,9 @@ pub struct Octave {
     pub asking: Option<Asking>,
     /// Where the last run's error is in the editor's text, if it is in it.
     pub editor_error: Option<EditorError>,
+    /// While output floods in: how many lines at the end of the log are the latest flood
+    /// reply's last lines, after its hidden-lines marker. The next flood reply replaces them.
+    flood: Option<usize>,
     /// A job has reported the session's state at least once. Until then the app doesn't know
     /// the working folder or the variables, which isn't the same as there being none.
     pub synced: bool,
@@ -242,6 +249,7 @@ impl Default for Octave {
             picker: None,
             asking: None,
             editor_error: None,
+            flood: None,
             synced: false,
         }
     }
@@ -425,6 +433,8 @@ impl Octave {
     }
 
     fn push_log(&mut self, kind: LineKind, line: &str) {
+        // Anything else in the window ends a flood: the next one gets a marker of its own.
+        self.flood = None;
         self.log.push((kind, line.to_owned()));
         if self.log.len() > MAX_LOG {
             let excess = self.log.len() - MAX_LOG;
@@ -465,12 +475,6 @@ impl Octave {
 
     /// The job is over: its output is already in (see `follow`).
     fn finish(&mut self, status: &OctaveStatus) {
-        if status.output_truncated {
-            self.push_log(
-                LineKind::Error,
-                "error: output past the server's limit was dropped",
-            );
-        }
         if let Some(result) = &status.result {
             self.session = result.clone();
             self.synced = true;
@@ -559,27 +563,92 @@ impl Octave {
     /// a line was printed goes above it. A prompt made after this poll's output ended waits for
     /// the next poll, which will have the output before it.
     fn take_output_and_prompts(&mut self, start: u32, status: &OctaveStatus) {
-        let text = status.output.as_str();
+        // Each line with its newline: a last one without is unfinished, and `take_output`
+        // holds it until the rest arrives.
+        let lines: Vec<&str> = status.output.split_inclusive('\n').collect();
+        let gap = status.hidden.filter(|h| h.lines > 0);
+        let gap_at = gap.map_or(usize::MAX, |g| g.after as usize);
+        let gap_lines = gap.map_or(0, |g| g.lines as usize);
+        // The output line `k` of this reply is.
+        let line_no = |k: usize| start as usize + k + if k >= gap_at { gap_lines } else { 0 };
         let seen = self.job.as_ref().map_or(0, |j| j.prompts_seen);
-        let mut done = 0;
-        let mut taken = seen;
-        for prompt in status.prompts.get(seen..).unwrap_or_default() {
-            let upto = prompt.at.saturating_sub(start) as usize;
-            if upto > text.len() && !status.finished {
-                break;
+        let new = status.prompts.get(seen..).unwrap_or_default();
+        let due = |p: &&OctavePrompt| p.at <= status.next || status.finished;
+        let prompts: Vec<&OctavePrompt> = new.iter().take_while(due).collect();
+
+        // More of a flood that is still on screen: count this reply's first lines and the
+        // last reply's last lines into its marker, and show this reply's last lines instead.
+        if let (Some(gap), Some(tail), true) = (gap, self.flood, prompts.is_empty())
+            && self.extend_flood(tail, gap.after + gap.lines)
+        {
+            for line in &lines[gap_at.min(lines.len())..] {
+                self.take_line(line);
             }
-            let upto = upto.clamp(done, text.len());
-            if text.is_char_boundary(upto) {
-                self.take_output(&text[done..upto], false);
-                done = upto;
+            self.flood = Some(lines.len().saturating_sub(gap_at));
+            return;
+        }
+
+        let mut k = 0;
+        let mut gap_done = gap.is_none();
+        // Something other than its last lines after the gap: then a flood can't carry on.
+        let mut prompt_after_gap = false;
+        let emit_until = |this: &mut Self, until: usize, k: &mut usize, gap_done: &mut bool| {
+            loop {
+                if !*gap_done && *k == gap_at {
+                    // The gap is between line `start + gap_at` and the one after the hidden.
+                    if until <= start as usize + gap_at {
+                        return;
+                    }
+                    this.push_log(
+                        LineKind::Hidden {
+                            lines: gap_lines as u32,
+                        },
+                        "",
+                    );
+                    *gap_done = true;
+                    continue;
+                }
+                if *k >= lines.len() || line_no(*k) >= until {
+                    return;
+                }
+                this.take_line(lines[*k]);
+                *k += 1;
             }
+        };
+        for prompt in &prompts {
+            emit_until(self, prompt.at as usize, &mut k, &mut gap_done);
             self.take_prompt(prompt);
-            taken += 1;
+            prompt_after_gap |= gap_done && gap.is_some();
         }
+        emit_until(self, usize::MAX, &mut k, &mut gap_done);
         if let Some(job) = &mut self.job {
-            job.prompts_seen = taken;
+            job.prompts_seen = seen + prompts.len();
         }
-        self.take_output(&text[done..], status.finished);
+        // A flood with nothing after its marker but its last lines: the next reply can carry on.
+        if gap.is_some() && !prompt_after_gap {
+            self.flood = Some(lines.len().saturating_sub(gap_at));
+        }
+    }
+
+    /// Add `more` lines to the hidden-lines marker that the last `tail` lines of the log follow,
+    /// and take those lines away: they are now hidden too. False if the log doesn't end that way.
+    fn extend_flood(&mut self, tail: usize, more: u32) -> bool {
+        let Some(at) = self.log.len().checked_sub(tail + 1) else {
+            return false;
+        };
+        let LineKind::Hidden { lines } = self.log[at].0 else {
+            return false;
+        };
+        self.log[at].0 = LineKind::Hidden {
+            lines: lines + tail as u32 + more,
+        };
+        self.log.truncate(at + 1);
+        true
+    }
+
+    /// A line of the running job's output, with its newline, wherever its output goes.
+    fn take_line(&mut self, line: &str) {
+        self.take_output(line, false);
     }
 
     /// Show what a prompt asks for: a message, a picker, a question, or a figure drawn.
@@ -1230,6 +1299,18 @@ impl Octave {
                 }
                 LineKind::Error => {
                     ui.styled(line, TextStyle::CODE | TextStyle::ITALIC);
+                }
+                LineKind::Hidden { lines } => {
+                    let mut said = String::from(". ");
+                    said.push_str(&itoa(u64::from(*lines)));
+                    said.push_str(if *lines == 1 {
+                        " line hidden"
+                    } else {
+                        " lines hidden"
+                    });
+                    for text in [".", said.as_str(), "."] {
+                        ui.styled(text, TextStyle::CODE | TextStyle::WEAK);
+                    }
                 }
                 LineKind::Figure {
                     number,

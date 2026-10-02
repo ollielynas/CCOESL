@@ -23,6 +23,22 @@ a figure is drawn again with nothing printed since, its picture is updated where
 window would be, so an animation plays in one place instead of filling the window. Click **Figure N · open in the
 Figures tab** below it to see it larger, with every other figure.
 
+A command that prints a great deal, such as a loop printing thousands of lines, isn't sent
+to you line by line: the window shows its first lines, then how many were left out, then its
+latest lines, like this:
+
+```
+line 1
+.
+. 4950 lines hidden
+.
+line 4961
+```
+
+While it goes on printing, the count goes up and the lines under it are the latest. To keep
+all of it, have the script write to a file instead (`fprintf` to a file, or `diary`). Very long
+lines are cut short with "…".
+
 The output scrolls on its own and keeps the newest line in view. Scroll up to read back; it stops
 following new output until you scroll to the bottom again.
 

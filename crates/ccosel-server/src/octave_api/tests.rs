@@ -78,27 +78,28 @@ fn report_caps_what_it_carries() {
 }
 
 #[test]
-fn output_is_sent_from_where_the_app_is_up_to() {
+fn output_is_sent_from_the_line_the_app_is_up_to() {
     let job = Job::new(JOB_TIMEOUT);
     job.push_line("héllo");
+    job.push_line("there");
     let s = job.snapshot(0);
-    assert_eq!(s.output, "héllo\n");
+    assert_eq!((s.output.as_str(), s.next), ("héllo\nthere\n", 2));
     assert!(!s.finished);
-    // Mid-character: back up to the start of it rather than split it.
-    let s = job.snapshot(2);
-    assert_eq!(s.output, "éllo\n");
+    let s = job.snapshot(1);
+    assert_eq!(s.output, "there\n");
     let s = job.snapshot(1000);
-    assert_eq!((s.output.as_str(), s.next), ("", 7));
+    assert_eq!((s.output.as_str(), s.next), ("", 2));
 }
 
 #[test]
-fn output_stops_at_the_cap() {
+fn a_flood_keeps_the_job_small_and_its_reply_short() {
     let job = Job::new(JOB_TIMEOUT);
     let line = "x".repeat(1000);
-    for _ in 0..(MAX_OUTPUT_BYTES / 1000 + 5) {
+    for _ in 0..100_000 {
         job.push_line(&line);
     }
     let s = job.snapshot(0);
-    assert!(s.output_truncated);
-    assert!(s.output.len() <= MAX_OUTPUT_BYTES);
+    assert_eq!(s.next, 100_000);
+    assert_eq!(s.output.lines().count(), 50);
+    assert_eq!(s.hidden.map(|h| h.lines), Some(100_000 - 50));
 }
