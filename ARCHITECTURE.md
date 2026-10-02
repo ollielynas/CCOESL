@@ -138,6 +138,12 @@ Compiled `WebAssembly.Module`s are cached per app id, so a second window of the 
 the fetch and the compile — the expensive half of a launch. That cache is where IndexedDB will
 slot in to make it free across sessions too.
 
+The desktop is remembered per signed-in person: which windows are open, what they were opened
+on, where, and in what order (`crates/ccosel-shell/src/session.rs`). The shell compares the
+windows with the last save every frame and saves once they have differed for five seconds, so a
+drag costs one request, not one per frame. The server keeps each layout in `<jail>/.desktops`,
+which `access::perms` puts out of everyone's reach. A fresh desktop opens nothing.
+
 Closing a window drops the instance. That is the only way to reclaim a guest's memory: wasm
 linear memory cannot shrink, so a live instance holds its high-water mark forever.
 
