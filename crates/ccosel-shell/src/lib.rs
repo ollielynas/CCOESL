@@ -21,6 +21,7 @@ mod http_wire;
 mod image_loader;
 mod media;
 mod registry;
+mod session;
 mod theme;
 mod upload;
 

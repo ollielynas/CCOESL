@@ -832,6 +832,7 @@ dependencies = [
  "js-sys",
  "log",
  "postcard",
+ "serde",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-bindgen-test",

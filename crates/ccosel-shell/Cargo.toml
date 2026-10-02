@@ -21,6 +21,7 @@ ccosel-host-web = { path = "../ccosel-host-web" }
 ccosel-proto = { workspace = true }
 ccosel-transport = { workspace = true }
 postcard = { workspace = true }
+serde = { workspace = true }
 egui = { workspace = true }
 egui-phosphor = "0.14"
 # Not inherited from the workspace: the web build wants none of eframe's defaults (wgpu,
