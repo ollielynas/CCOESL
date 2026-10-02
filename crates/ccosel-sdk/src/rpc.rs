@@ -433,6 +433,32 @@ mod tests {
         }
     }
 
+    /// What an app built before an event kind existed does with it: the SDK of the day sent
+    /// every kind it did not know to the request cache, where `call_id` zero matches nothing.
+    /// That is what lets the shell add kinds such as `PAGE_INFO` without an ABI bump.
+    #[test]
+    fn an_unknown_event_for_no_call_changes_nothing() {
+        let rpc = RpcCtx::new();
+        rpc.begin_frame();
+        rpc.get::<ListDir>(&req("/a"));
+        let call_id = rpc.take_outbox()[0].call_id;
+        assert_ne!(call_id, 0, "call ids start at one, so zero is never a call");
+
+        rpc.deliver(&Event {
+            kind: 0xffff,
+            call_id: 0,
+            payload: b"origin=http://example.test\n",
+        });
+        rpc.begin_frame();
+        assert!(matches!(rpc.get::<ListDir>(&req("/a")), Poll::Pending));
+        assert!(rpc.take_outbox().is_empty(), "nor is anything re-sent");
+
+        let payload = listing(&["still.md"]);
+        rpc.deliver(&ok_event(call_id, &payload));
+        rpc.begin_frame();
+        assert!(matches!(rpc.get::<ListDir>(&req("/a")), Poll::Ready(_)));
+    }
+
     #[test]
     fn a_reply_resolves_the_slot() {
         let rpc = RpcCtx::new();

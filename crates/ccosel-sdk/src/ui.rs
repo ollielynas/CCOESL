@@ -43,6 +43,33 @@ impl FrameCtx {
     }
 }
 
+/// Facts about the page the app runs in, which only the shell knows: they arrive once, before
+/// the first frame (see `event_kind::PAGE_INFO`). Unlike [`FrameCtx`] they do not change from
+/// frame to frame.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PageInfo {
+    origin: Option<String>,
+}
+
+impl PageInfo {
+    /// The page's origin as the browser has it, such as `https://example.com` or
+    /// `http://192.168.1.20:8777`: what to put in front of a path for a link that works from
+    /// another machine. Behind a tunnel this is its public address.
+    ///
+    /// `None` until the shell has said, which an older shell never does, so an app must still
+    /// work without it.
+    pub fn origin(&self) -> Option<&str> {
+        self.origin.as_deref()
+    }
+
+    /// Take what a `PAGE_INFO` event says. Keys it does not mention keep their values.
+    pub(crate) fn apply(&mut self, payload: &[u8]) {
+        if let Some(origin) = ccosel_abi::event::page_info(payload, "origin") {
+            self.origin = Some(String::from(origin));
+        }
+    }
+}
+
 /// A handle for emitting widgets into a scope.
 ///
 /// Shaped like `egui::Ui`, but it records rather than draws. Nesting works by reborrowing the
@@ -59,11 +86,12 @@ pub struct Ui<'a> {
     last_id: u64,
     ctx: FrameCtx,
     rpc: &'a RpcCtx,
+    page: &'a PageInfo,
 }
 
 impl<'a> Ui<'a> {
     /// Begin a frame. The shell calls this; apps receive the `Ui` already built.
-    pub fn root(rec: &'a mut Recorder, ctx: FrameCtx, rpc: &'a RpcCtx) -> Self {
+    pub fn root(rec: &'a mut Recorder, ctx: FrameCtx, rpc: &'a RpcCtx, page: &'a PageInfo) -> Self {
         rec.begin_frame();
         Self {
             rec,
@@ -73,7 +101,13 @@ impl<'a> Ui<'a> {
             last_id: ids::ROOT,
             ctx,
             rpc,
+            page,
         }
+    }
+
+    /// The page the app runs in, such as its [origin](PageInfo::origin).
+    pub fn page(&self) -> &'a PageInfo {
+        self.page
     }
 
     /// Talk to the server.
@@ -114,6 +148,7 @@ impl<'a> Ui<'a> {
             last_id: id,
             ctx: self.ctx,
             rpc: self.rpc,
+            page: self.page,
         };
         add(&mut child)
     }
@@ -146,6 +181,7 @@ impl<'a> Ui<'a> {
                 last_id: id,
                 ctx: self.ctx,
                 rpc: self.rpc,
+                page: self.page,
             };
             add(&mut child)
         };
@@ -251,6 +287,7 @@ impl<'a> Ui<'a> {
                 last_id: id,
                 ctx: self.ctx,
                 rpc: self.rpc,
+                page: self.page,
             };
             add(&mut child)
         };

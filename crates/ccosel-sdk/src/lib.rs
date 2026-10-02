@@ -34,7 +34,7 @@ pub use ccosel_abi::{Align, Color32, MediaKind, Pos2, Rect, ScopeKind, TextStyle
 pub use recorder::Recorder;
 pub use response::Response;
 pub use rpc::{CallId, Poll, RpcCtx, RpcError};
-pub use ui::{FrameCtx, Text, Ui};
+pub use ui::{FrameCtx, PageInfo, Text, Ui};
 
 /// Implemented by every CCOSEL app.
 pub trait App {

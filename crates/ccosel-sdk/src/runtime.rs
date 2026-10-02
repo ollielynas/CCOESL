@@ -11,7 +11,7 @@ use ccosel_abi::{ABI_VERSION, FrameInput, FrameOutput, RespRecord};
 use crate::App;
 use crate::recorder::Recorder;
 use crate::rpc::RpcCtx;
-use crate::ui::Ui;
+use crate::ui::{PageInfo, Ui};
 
 /// Holds an app and its recording state for the lifetime of the module.
 pub struct Runtime<A: App> {
@@ -21,6 +21,7 @@ pub struct Runtime<A: App> {
     saved: ccosel_abi::Slice,
     responses: Vec<RespRecord>,
     rpc: RpcCtx,
+    page: PageInfo,
 }
 
 impl<A: App> Runtime<A> {
@@ -32,6 +33,7 @@ impl<A: App> Runtime<A> {
             saved: ccosel_abi::Slice::default(),
             responses: Vec::new(),
             rpc: RpcCtx::new(),
+            page: PageInfo::default(),
         }
     }
 
@@ -59,7 +61,7 @@ impl<A: App> Runtime<A> {
         self.rpc.begin_frame();
         {
             let ctx = crate::FrameCtx::from_input(&input);
-            let mut ui = Ui::root(&mut self.rec, ctx, &self.rpc);
+            let mut ui = Ui::root(&mut self.rec, ctx, &self.rpc, &self.page);
             self.app.update(&mut ui);
         }
         // Hand the shell anything the app asked for. Fire-and-forget: the replies come back
@@ -104,7 +106,7 @@ impl<A: App> Runtime<A> {
         // replies would leave slots in flight forever, and the app has no way to recover.
         if let Ok(events) = ccosel_abi::event::decode_batch(bytes) {
             for event in &events {
-                if let Some(arg) = deliver(&self.rpc, &mut self.rec, event) {
+                if let Some(arg) = deliver(&self.rpc, &mut self.rec, &mut self.page, event) {
                     self.app.open(arg);
                 }
             }
@@ -126,12 +128,13 @@ impl<A: App> Runtime<A> {
 }
 
 /// Route one event from the shell: RPC replies to the request cache, text edits to the
-/// recorder, which applies them when the app draws the field. A launch argument is returned,
-/// for the caller to hand to [`App::open`]. Shared with the test harness, so tests exercise the
-/// same routing as a real module.
+/// recorder, which applies them when the app draws the field, and page facts to `page`. A
+/// launch argument is returned, for the caller to hand to [`App::open`]. Shared with the test
+/// harness, so tests exercise the same routing as a real module.
 pub(crate) fn deliver<'e>(
     rpc: &RpcCtx,
     rec: &mut Recorder,
+    page: &mut PageInfo,
     event: &ccosel_abi::Event<'e>,
 ) -> Option<&'e str> {
     use ccosel_abi::event::event_kind;
@@ -143,6 +146,7 @@ pub(crate) fn deliver<'e>(
         }
         // Not UTF-8 is not a path anyone could have meant: open on nothing instead.
         event_kind::LAUNCH => return core::str::from_utf8(event.payload).ok(),
+        event_kind::PAGE_INFO => page.apply(event.payload),
         _ => rpc.deliver(event),
     }
     None
