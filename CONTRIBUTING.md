@@ -105,19 +105,19 @@ Some numbers are part of the wire ABI: `Method` in `ccosel-proto`, `OpCode` in
 **new** one, give it a randomly generated value, not the next sequential number. Sequential
 ids collide the moment two branches both append; random ones do not.
 
-Generate the value with a real CSPRNG. Do not invent a number that looks random — that is
+Generate the value from a real RNG. Do not invent a number that looks random — that is
 how parallel agents end up picking the same id:
 
 ```sh
-python3 -c 'import secrets; print(secrets.randbelow(65536))'   # u16, for Method
-python3 -c 'import secrets; print(secrets.randbelow(256))'     # u8, for OpCode
+python3 -c 'import random; print(random.randint(0, 65535))'   # u16, for Method
+python3 -c 'import random; print(random.randint(0, 255))'     # u8, for OpCode
 ```
 
 or with Node:
 
 ```sh
-node -e 'console.log(require("crypto").randomInt(65536))'
-node -e 'console.log(require("crypto").randomInt(256))'
+node -e 'console.log(Math.floor(Math.random() * 65536))'
+node -e 'console.log(Math.floor(Math.random() * 256))'
 ```
 
 For `OpCode`, the value must fall outside the reserved ranges listed in
