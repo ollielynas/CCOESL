@@ -23,6 +23,11 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 rand = "0.8"
 kamadak-exif = "0.6.1"
 imagesize = "0.15.0"
+dav-server = { version = "0.11", default-features = false }
+sha2 = "0.10"
+base64 = "0.22"
+futures-util = "0.3"
+bytes = "1"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "fs"] }

@@ -208,8 +208,8 @@ navigate 2, return 2. Three windows (two File Browsers plus the Clock) totalled 
 
 ## Who may see what
 
-Permissions live on the **server** and cover every route (`/rpc`, `/files`, `/upload`), so no
-app can get around them and none has to reimplement them. They are set per folder in an
+Permissions live on the **server** and cover every route (`/rpc`, `/files`, `/upload`,
+`/dav`), so no app or client can get around them and none has to reimplement them. They are set per folder in an
 `.access` file (`read:` and `write:` lines naming users, `@users` or `*`) and inherited by
 everything below it until a folder sets its own. With no `.access` anywhere, everything is open,
 as before. `/home/{user}` is built in and private to its owner. `.access` files themselves are
@@ -221,6 +221,23 @@ sign-in session, so it is the Keycloak login. With login turned off, every calle
 they have no home folder, and only folders open to `*` are theirs to use. Apps ask the server what they
 may do (`Access`, `FileText::writable`) so they can hide buttons that would fail, but the
 server re-checks every write.
+
+WebDAV (`/dav`, `ccosel-server/src/dav.rs`) is the one route that takes something other than
+the session cookie: HTTP Basic with an app password (`app_passwords.rs`), which is all a
+mounted drive can send, and never the cookie, whose `SameSite=Lax` does not cover methods
+like `DELETE`. It becomes the same `User`. `dav-server` speaks the protocol over a file system
+that sends every call through `Jail`, never its own `LocalFs`. WebDAV also brings operations
+nothing else had, with these rules:
+
+- **Delete** needs write on the entry, on the folder it is in, and on every folder inside it,
+  hidden ones included, so a folder whose `.access` grants less cannot go with its parent.
+- **Move** needs what delete needs on the source, and write where it lands.
+- **Copy** needs read on all of the source, so a copy is never quietly incomplete, and write
+  where it lands.
+- **Replacing** something at the destination needs what deleting it needs.
+
+`dav-server` carries out a folder delete or copy one entry at a time, so each is checked whole
+before it starts and refused whole, not stopped halfway.
 
 ## Replay, concretely
 

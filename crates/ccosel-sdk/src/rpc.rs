@@ -371,6 +371,9 @@ pub fn method_name(method: u32) -> String {
         Some(Method::Access) => "access",
         Some(Method::Search) => "search",
         Some(Method::ImageInfo) => "image_info",
+        Some(Method::ListAppPasswords) => "list_app_passwords",
+        Some(Method::CreateAppPassword) => "create_app_password",
+        Some(Method::RevokeAppPassword) => "revoke_app_password",
         None => "unknown",
     };
     String::from(name)

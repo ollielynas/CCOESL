@@ -834,3 +834,144 @@ async fn a_signed_in_session_is_the_user_permissions_are_checked_for() {
     // A folder is not a file, but it is *hers*: not found, rather than forbidden.
     assert_eq!(files.status(), reqwest::StatusCode::NOT_FOUND);
 }
+
+/// Sends one call to `/rpc` with `cookie`, returning the decoded reply or the error code.
+async fn rpc_call<M: ccosel_proto::Rpc>(
+    client: &reqwest::Client,
+    addr: std::net::SocketAddr,
+    cookie: &str,
+    req: &M::Req<'_>,
+) -> Result<M::Reply, u32> {
+    let args = postcard::to_allocvec(req).unwrap();
+    let batch = vec![ccosel_proto::WireRequest {
+        seq: 1,
+        method: M::METHOD as u16,
+        args: &args,
+    }];
+    let bytes = client
+        .post(format!("http://{addr}/rpc"))
+        .header(reqwest::header::COOKIE, cookie)
+        .body(postcard::to_allocvec(&batch).unwrap())
+        .send()
+        .await
+        .unwrap()
+        .bytes()
+        .await
+        .unwrap();
+    let replies: Vec<ccosel_proto::WireReply> = postcard::from_bytes(&bytes).unwrap();
+    match replies[0].result {
+        ccosel_proto::WireResult::Ok(payload) => Ok(postcard::from_bytes(payload).unwrap()),
+        ccosel_proto::WireResult::Err { code, .. } => Err(code),
+    }
+}
+
+#[tokio::test]
+async fn webdav_takes_an_app_password_made_in_a_session_but_never_the_session_itself() {
+    use ccosel_proto::account::{
+        CreateAppPassword, CreateAppPasswordReq, ListAppPasswords, RevokeAppPassword,
+        RevokeAppPasswordReq,
+    };
+
+    let provider = spawn_mock_provider("alice", false).await;
+    let addr = spawn_app(AuthState::new(Some(oauth_config_for(&provider)))).await;
+    let client = no_redirect_client();
+    let cookie = signed_in_cookie(&client, addr).await;
+    let propfind = || {
+        client
+            .request(
+                reqwest::Method::from_bytes(b"PROPFIND").unwrap(),
+                format!("http://{addr}/dav/home/"),
+            )
+            .header("depth", "1")
+    };
+
+    // A live session is not a way in: another site could make a signed-in browser send it.
+    let with_cookie = propfind()
+        .header(reqwest::header::COOKIE, &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(with_cookie.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+    let made = rpc_call::<CreateAppPassword>(
+        &client,
+        addr,
+        &cookie,
+        &CreateAppPasswordReq { name: "Laptop" },
+    )
+    .await
+    .unwrap();
+    let listed = rpc_call::<ListAppPasswords>(&client, addr, &cookie, &())
+        .await
+        .unwrap();
+    assert_eq!(listed, std::slice::from_ref(&made.info));
+    assert_eq!(
+        rpc_call::<CreateAppPassword>(&client, addr, &cookie, &CreateAppPasswordReq { name: "" })
+            .await,
+        Err(ccosel_proto::server_error::MALFORMED)
+    );
+
+    // The app password is alice, exactly as her session is: her home folder and nobody else's.
+    let listing = propfind()
+        .basic_auth("alice", Some(&made.password))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(listing.status(), reqwest::StatusCode::MULTI_STATUS);
+    let body = listing.text().await.unwrap();
+    assert!(body.contains("/dav/home/alice/"), "{body}");
+
+    rpc_call::<RevokeAppPassword>(
+        &client,
+        addr,
+        &cookie,
+        &RevokeAppPasswordReq { id: &made.info.id },
+    )
+    .await
+    .unwrap();
+    let revoked = propfind()
+        .basic_auth("alice", Some(&made.password))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(revoked.status(), reqwest::StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        rpc_call::<RevokeAppPassword>(
+            &client,
+            addr,
+            &cookie,
+            &RevokeAppPasswordReq { id: &made.info.id },
+        )
+        .await,
+        Err(ccosel_proto::server_error::NOT_FOUND)
+    );
+}
+
+#[tokio::test]
+async fn anonymous_callers_have_no_app_passwords_to_manage() {
+    use ccosel_proto::account::{
+        CreateAppPassword, CreateAppPasswordReq, ListAppPasswords, RevokeAppPassword,
+        RevokeAppPasswordReq,
+    };
+
+    // Login off: every caller is anonymous.
+    let addr = spawn_app(AuthState::default()).await;
+    let client = reqwest::Client::new();
+    let denied = Err(ccosel_proto::server_error::DENIED);
+    assert_eq!(
+        rpc_call::<ListAppPasswords>(&client, addr, "", &())
+            .await
+            .map(|_| ()),
+        denied
+    );
+    assert_eq!(
+        rpc_call::<CreateAppPassword>(&client, addr, "", &CreateAppPasswordReq { name: "x" })
+            .await
+            .map(|_| ()),
+        denied
+    );
+    assert_eq!(
+        rpc_call::<RevokeAppPassword>(&client, addr, "", &RevokeAppPasswordReq { id: "x" }).await,
+        denied
+    );
+}
