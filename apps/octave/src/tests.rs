@@ -1077,6 +1077,7 @@ fn prompting(prompts: Vec<OctavePrompt>) -> Harness<Octave> {
 fn message_prompt(id: u32, icon: MessageIcon, title: &str, text: &str) -> OctavePrompt {
     OctavePrompt {
         id,
+        at: 0,
         kind: PromptKind::Message {
             icon,
             title: title.to_owned(),
@@ -1118,6 +1119,7 @@ fn a_message_box_is_shown_until_ok() {
 fn open_prompt(filter: &str, start: &str) -> OctavePrompt {
     OctavePrompt {
         id: 1,
+        at: 0,
         kind: PromptKind::OpenFile {
             title: "Pick data".to_owned(),
             filter: filter.to_owned(),
@@ -1247,6 +1249,7 @@ fn the_picker_closes_when_its_job_ends() {
 fn input_prompt(id: u32, text: &str) -> OctavePrompt {
     OctavePrompt {
         id,
+        at: 0,
         kind: PromptKind::Input {
             prompt: text.to_owned(),
         },
@@ -1335,6 +1338,7 @@ fn a_figure_drawn_mid_script_is_shown_before_the_question_about_it() {
         prompts: vec![
             OctavePrompt {
                 id: 1,
+                at: 31,
                 kind: PromptKind::Figure {
                     number: 1,
                     image: 1 << 31,
@@ -1342,7 +1346,10 @@ fn a_figure_drawn_mid_script_is_shown_before_the_question_about_it() {
                     height: 384,
                 },
             },
-            input_prompt(2, "\n  Do you see a window with a sine wave? (y/n): "),
+            OctavePrompt {
+                at: 31,
+                ..input_prompt(2, "\n  Do you see a window with a sine wave? (y/n): ")
+            },
         ],
         ..OctaveStatus::default()
     });
@@ -1368,6 +1375,7 @@ fn a_figure_drawn_mid_script_is_shown_before_the_question_about_it() {
 fn live_figure(id: u32, number: u32, image: u32) -> OctavePrompt {
     OctavePrompt {
         id,
+        at: 0,
         kind: PromptKind::Figure {
             number,
             image,
@@ -1411,7 +1419,11 @@ fn a_figure_redrawn_with_nothing_printed_between_updates_in_place() {
             live_figure(3, 2, 12),
             live_figure(4, 1, 13),
             live_figure(5, 2, 14),
-            live_figure(6, 1, 15),
+            // Drawn after "step 2" was printed.
+            OctavePrompt {
+                at: 7,
+                ..live_figure(6, 1, 15)
+            },
         ],
         ..OctaveStatus::default()
     });
@@ -1438,4 +1450,63 @@ fn the_figure_a_finished_command_shows_updates_its_last_frame_too() {
     h.reply::<OctavePoll>(&done("", rendered((640, 480))));
     h.frame();
     assert_eq!(figure_lines(&h), [(2, figure_url(1, 2, 2))]);
+}
+
+/// `live_figure`, made after `at` bytes of output.
+fn figure_at(id: u32, at: u32, image: u32) -> OctavePrompt {
+    OctavePrompt {
+        at,
+        ..live_figure(id, 1, image)
+    }
+}
+
+#[test]
+fn output_and_figures_keep_their_order_within_one_poll() {
+    // A frame, its caption, the next frame, its caption: all in one poll.
+    let mut h = running("demo");
+    h.reply::<OctavePoll>(&OctaveStatus {
+        output: "drew 1\ndrew 2\n".to_owned(),
+        next: 14,
+        prompts: vec![figure_at(1, 0, 10), figure_at(2, 7, 11)],
+        ..OctaveStatus::default()
+    });
+    h.frame();
+    let lines: Vec<String> = h.app.log.iter().skip(1).map(|(_, l)| l.clone()).collect();
+    assert_eq!(
+        lines,
+        [
+            figure_url(1, 1, 10),
+            "drew 1".to_owned(),
+            figure_url(1, 1, 11),
+            "drew 2".to_owned()
+        ],
+        "both frames kept, each above its caption"
+    );
+}
+
+#[test]
+fn a_prompt_past_the_output_so_far_waits_for_the_output_before_it() {
+    let mut h = running("demo");
+    // The figure was made after 8 bytes, but this poll's output has only got to 3.
+    h.reply::<OctavePoll>(&OctaveStatus {
+        output: "ab\n".to_owned(),
+        next: 3,
+        prompts: vec![figure_at(1, 8, 10)],
+        ..OctaveStatus::default()
+    });
+    h.frame();
+    assert!(figure_lines(&h).is_empty(), "not yet");
+    h.frame();
+    h.reply::<OctavePoll>(&OctaveStatus {
+        output: "cdef\n".to_owned(),
+        next: 8,
+        prompts: vec![figure_at(1, 8, 10)],
+        ..OctaveStatus::default()
+    });
+    h.frame();
+    let lines: Vec<String> = h.app.log.iter().skip(1).map(|(_, l)| l.clone()).collect();
+    assert_eq!(
+        lines,
+        ["ab".to_owned(), "cdef".to_owned(), figure_url(1, 1, 10)]
+    );
 }

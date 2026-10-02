@@ -483,7 +483,9 @@ impl Job {
         }
     }
 
-    fn push_prompt(&self, prompt: OctavePrompt) {
+    fn push_prompt(&self, mut prompt: OctavePrompt) {
+        // Output and prompts come from Octave in one stream, in order: this is where it was.
+        prompt.at = self.output.lock().unwrap().text.len() as u32;
         let mut prompts = self.prompts.lock().unwrap();
         if prompts.len() < MAX_PROMPTS {
             prompts.push(prompt);
@@ -700,6 +702,7 @@ impl Session {
         images.insert(image, Arc::new(bytes));
         Some(OctavePrompt {
             id,
+            at: 0,
             kind: PromptKind::Figure {
                 number,
                 image,
@@ -833,7 +836,8 @@ pub fn parse_prompt(line: &str, jail_root: &Path) -> Option<OctavePrompt> {
         },
         _ => return None,
     };
-    Some(OctavePrompt { id, kind })
+    // `at` is filled in when the job takes it (`Job::push_prompt`).
+    Some(OctavePrompt { id, at: 0, kind })
 }
 
 /// A `FIGURE` prompt line from `__ccosel_live__`: its number, the figure's number, and the file

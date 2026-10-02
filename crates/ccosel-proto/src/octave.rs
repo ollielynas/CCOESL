@@ -207,6 +207,9 @@ pub struct OctaveStatus {
 pub struct OctavePrompt {
     /// Its number within the job, for [`OctaveAnswer`].
     pub id: u32,
+    /// How many bytes of the job's output came before it, so the app can put it in the right
+    /// place among the output: output and prompts arrive in separate lists.
+    pub at: u32,
     pub kind: PromptKind,
 }
 

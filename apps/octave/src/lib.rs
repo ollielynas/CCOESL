@@ -503,15 +503,41 @@ impl Octave {
         }
     }
 
-    /// Show the dialogs the running job has asked for since the last poll.
-    fn take_prompts(&mut self, prompts: &[OctavePrompt]) {
-        let Some(job) = &mut self.job else {
+    /// A poll's output, which starts `start` bytes into the job's, and the prompts the job has
+    /// made since the last one, each put in its place among the output: a figure drawn before
+    /// a line was printed goes above it. A prompt made after this poll's output ended waits for
+    /// the next poll, which will have the output before it.
+    fn take_output_and_prompts(&mut self, start: u32, status: &OctaveStatus) {
+        let text = status.output.as_str();
+        let seen = self.job.as_ref().map_or(0, |j| j.prompts_seen);
+        let mut done = 0;
+        let mut taken = seen;
+        for prompt in status.prompts.get(seen..).unwrap_or_default() {
+            let upto = prompt.at.saturating_sub(start) as usize;
+            if upto > text.len() && !status.finished {
+                break;
+            }
+            let upto = upto.clamp(done, text.len());
+            if text.is_char_boundary(upto) {
+                self.take_output(&text[done..upto], false);
+                done = upto;
+            }
+            self.take_prompt(prompt);
+            taken += 1;
+        }
+        if let Some(job) = &mut self.job {
+            job.prompts_seen = taken;
+        }
+        self.take_output(&text[done..], status.finished);
+    }
+
+    /// Show what a prompt asks for: a message, a picker, a question, or a figure drawn.
+    fn take_prompt(&mut self, prompt: &OctavePrompt) {
+        let Some(job) = &self.job else {
             return;
         };
-        let new = prompts.get(job.prompts_seen..).unwrap_or_default();
-        job.prompts_seen = job.prompts_seen.max(prompts.len());
         let seq = job.seq;
-        for prompt in new {
+        {
             match &prompt.kind {
                 PromptKind::Message { icon, title, text } => {
                     self.messages_shown += 1;
@@ -768,14 +794,14 @@ impl Octave {
                 // A poll with no new output repeats the last one's key: drop the answer so the
                 // next frame really asks again rather than reading this copy.
                 ui.rpc().invalidate::<OctavePoll>(&req);
+                let mut start = 0;
                 if let Some(job) = &mut self.job {
+                    start = job.received;
                     job.received = status.next;
                     job.elapsed_ms = status.elapsed_ms;
                     job.limit_ms = status.limit_ms;
                 }
-                // Output first: a figure or a question comes after what was printed before it.
-                self.take_output(&status.output, status.finished);
-                self.take_prompts(&status.prompts);
+                self.take_output_and_prompts(start, &status);
                 if status.finished {
                     self.finish(&status);
                 }
