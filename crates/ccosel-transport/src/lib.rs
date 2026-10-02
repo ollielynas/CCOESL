@@ -81,12 +81,15 @@ fn policy(method: u16) -> (Coalesce, u32) {
         Some(Method::Access) => (Coalesce::ByArgs, 4_000),
         Some(Method::Search) => (Coalesce::ByArgs, 8_000),
         Some(Method::ImageInfo) => (Coalesce::ByArgs, 8_000),
+        Some(Method::ListAppPasswords) => (Coalesce::ByArgs, 4_000),
         Some(Method::LoadDesktop) => (Coalesce::ByArgs, 8_000),
         // A save replaces the last one: never merged, never retried on its own.
         Some(Method::SaveDesktop) => (Coalesce::None, 8_000),
         // Writes: two identical saves are two saves, so they are never merged.
         Some(Method::WriteFile) => (Coalesce::None, 15_000),
         Some(Method::CreateDir) => (Coalesce::None, 8_000),
+        Some(Method::CreateAppPassword) => (Coalesce::None, 8_000),
+        Some(Method::RevokeAppPassword) => (Coalesce::None, 8_000),
         None => (Coalesce::None, 4_000),
     }
 }

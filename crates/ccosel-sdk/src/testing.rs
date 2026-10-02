@@ -23,7 +23,9 @@ use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
-use ccosel_abi::event::{Event, TextDelta, encode_error, encode_text_delta, event_kind};
+use ccosel_abi::event::{
+    Event, TextDelta, encode_error, encode_page_info, encode_text_delta, event_kind,
+};
 use ccosel_abi::{Cmd, Decoder, MediaKind, RespRecord, ResponseFlags, ScopeKind, TextStyle};
 
 /// The codes [`Harness::fail`] takes, re-exported so an app's tests need no `ccosel-abi`
@@ -33,7 +35,7 @@ use ccosel_proto::Rpc;
 use serde::Serialize;
 
 use crate::rpc::OutCall;
-use crate::{App, FrameCtx, Recorder, RpcCtx, Ui};
+use crate::{App, FrameCtx, PageInfo, Recorder, RpcCtx, Ui};
 
 pub struct Harness<A: App> {
     /// The app under test. Public so a test can set up or inspect its state directly.
@@ -42,6 +44,8 @@ pub struct Harness<A: App> {
     pub ctx: FrameCtx,
     rec: Recorder,
     rpc: RpcCtx,
+    /// What the "shell" has said about the page. Empty until [`Harness::set_origin`].
+    page: PageInfo,
     clicks: Vec<RespRecord>,
     /// Per upload button id, the `aux` the "shell" reports in its response every frame, as the
     /// real shell does: a finished count for `UploadFolder`, a folder id for `UploadProject`.
@@ -60,6 +64,7 @@ impl<A: App> Harness<A> {
             ctx: FrameCtx::default(),
             rec: Recorder::new(),
             rpc: RpcCtx::new(),
+            page: PageInfo::default(),
             clicks: Vec::new(),
             uploads_finished: Vec::new(),
             calls: Vec::new(),
@@ -90,7 +95,7 @@ impl<A: App> Harness<A> {
         self.rec.set_responses(responses);
         self.rpc.begin_frame();
         {
-            let mut ui = Ui::root(&mut self.rec, self.ctx, &self.rpc);
+            let mut ui = Ui::root(&mut self.rec, self.ctx, &self.rpc, &self.page);
             self.app.update(&mut ui);
         }
         self.calls.extend(self.rpc.take_outbox());
@@ -109,9 +114,23 @@ impl<A: App> Harness<A> {
             call_id: 0,
             payload: arg.as_bytes(),
         };
-        if let Some(arg) = crate::runtime::deliver(&self.rpc, &mut self.rec, &event) {
+        if let Some(arg) = crate::runtime::deliver(&self.rpc, &mut self.rec, &mut self.page, &event)
+        {
             self.app.open(arg);
         }
+    }
+
+    /// Plays the shell telling the app the page's origin, as it does before the first frame:
+    /// [`Ui::page`](crate::Ui::page) reports it from the next frame on. Without this, an app
+    /// sees no origin, as it would under a shell too old to send one.
+    pub fn set_origin(&mut self, origin: &str) {
+        let payload = encode_page_info(&[("origin", origin)]);
+        let event = Event {
+            kind: event_kind::PAGE_INFO,
+            call_id: 0,
+            payload: &payload,
+        };
+        crate::runtime::deliver(&self.rpc, &mut self.rec, &mut self.page, &event);
     }
 
     /// Mirror the shell's text bookkeeping: take the guest's `set`s, and adopt its version for
@@ -182,6 +201,7 @@ impl<A: App> Harness<A> {
         crate::runtime::deliver(
             &self.rpc,
             &mut self.rec,
+            &mut self.page,
             &Event {
                 kind: event_kind::TEXT_DELTA,
                 call_id: 0,
@@ -500,6 +520,7 @@ impl<A: App> Harness<A> {
         crate::runtime::deliver(
             &self.rpc,
             &mut self.rec,
+            &mut self.page,
             &Event {
                 kind,
                 call_id: call.call_id,

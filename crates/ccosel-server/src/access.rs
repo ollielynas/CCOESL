@@ -26,6 +26,19 @@
 //! `.access` files are invisible through the API: not listed, not readable, not writable. They
 //! are configuration for whoever runs the server, not content.
 //!
+//! Read and write are all there is, so operations made of several steps are defined by them
+//! (see `fs_api::Jail::check_removable` and its neighbours, used by WebDAV):
+//!
+//! - **Removing** something needs write on it, on the folder it is in, and for a folder, on
+//!   every folder inside it, including any the caller cannot see. So `/home/{user}` itself,
+//!   in `/home` which nobody may change, stays put, and a folder whose `.access` grants less
+//!   than its parent's cannot be removed along with the parent.
+//! - **Moving** needs what removing needs at the source, and write at the destination. What
+//!   moves keeps any `.access` inside it and otherwise takes on the destination's rules.
+//! - **Copying** needs read on all of the source, every folder inside it included, and write
+//!   at the destination. `.access` files are not copied.
+//! - **Replacing** what is already at a destination needs what removing it needs.
+//!
 //! Who the caller is comes from a [`User`] request extension, which `auth::require_session`
 //! sets from the sign-in session. With login turned off, every caller is anonymous.
 

@@ -4,8 +4,10 @@
 //! there is no CORS configuration anywhere in this project.
 
 pub mod access;
+pub mod app_passwords;
 pub mod auth;
 pub mod build_api;
+pub mod dav;
 pub mod desktop;
 pub mod fs_api;
 pub mod idp;
@@ -24,7 +26,7 @@ use axum::extract::{DefaultBodyLimit, Path as AxPath, Query, State};
 use axum::http::{StatusCode, header};
 use axum::middleware;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{any, get, post};
 use axum::{Extension, Router};
 use tower_http::services::{ServeDir, ServeFile};
 
@@ -55,6 +57,8 @@ pub struct AppState {
     pub stats: Arc<stats::Stats>,
     /// Temporary project folders. See `scratch`.
     pub scratch: Arc<scratch::Scratch>,
+    /// WebDAV at `/dav`. See `dav`.
+    pub dav: dav_server::DavHandler<Option<String>>,
 }
 
 /// Build the router. Separated from `serve` so tests can drive it on an ephemeral port.
@@ -82,9 +86,11 @@ pub fn app(jail: Jail, web_dir: PathBuf, auth: AuthState) -> Router {
             }
         });
     }
+    let jail = Arc::new(jail);
     let state = AppState {
         scratch,
-        jail: Arc::new(jail),
+        dav: dav::handler(jail.clone()),
+        jail,
         auth,
         jobs: Arc::new(build_api::Jobs::new()),
         stats: Arc::new(stats::Stats::new()),
@@ -106,6 +112,17 @@ pub fn app(jail: Jail, web_dir: PathBuf, auth: AuthState) -> Router {
             auth::require_session,
         ));
 
+    // WebDAV signs in with an app password, never the session cookie: see `dav`. So it has a
+    // guard of its own instead of `require_session`.
+    let webdav = Router::new()
+        .route(dav::PREFIX, any(dav::handle))
+        .route(&format!("{}/", dav::PREFIX), any(dav::handle))
+        .route(&format!("{}/{{*path}}", dav::PREFIX), any(dav::handle))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            dav::require_app_password,
+        ));
+
     // `/app/{id}` is the boot page again: the shell reads the id from the address and shows that
     // one app on its own. Any id gets the page, so a new app has one without touching this, and
     // the shell is what says an id names no app. Public, like the page at `/`.
@@ -113,6 +130,7 @@ pub fn app(jail: Jail, web_dir: PathBuf, auth: AuthState) -> Router {
 
     Router::new()
         .merge(protected)
+        .merge(webdav)
         .merge(auth::router())
         .route_service("/app/{id}", boot_page.clone())
         .route_service("/app/{id}/", boot_page)
@@ -245,6 +263,11 @@ pub async fn serve(
 ) -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
     println!("CCOSEL serving http://{addr}/");
-    axum::serve(listener, app(jail, web_dir, auth)).await?;
+    // With each connection's address, which `dav` counts failed sign-ins against.
+    axum::serve(
+        listener,
+        app(jail, web_dir, auth).into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await?;
     Ok(())
 }

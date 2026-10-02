@@ -43,8 +43,11 @@ pub enum Method {
     Access = 10,
     Search = 11,
     ImageInfo = 12,
-    LoadDesktop = 13,
-    SaveDesktop = 14,
+    ListAppPasswords = 13,
+    CreateAppPassword = 14,
+    RevokeAppPassword = 15,
+    LoadDesktop = 16,
+    SaveDesktop = 17,
 }
 
 impl Method {
@@ -62,8 +65,11 @@ impl Method {
             10 => Some(Self::Access),
             11 => Some(Self::Search),
             12 => Some(Self::ImageInfo),
-            13 => Some(Self::LoadDesktop),
-            14 => Some(Self::SaveDesktop),
+            13 => Some(Self::ListAppPasswords),
+            14 => Some(Self::CreateAppPassword),
+            15 => Some(Self::RevokeAppPassword),
+            16 => Some(Self::LoadDesktop),
+            17 => Some(Self::SaveDesktop),
             _ => None,
         }
     }
@@ -161,4 +167,7 @@ pub mod server_error {
     pub const TOO_LARGE: u32 = 10;
     /// `CreateDir`, or creating a file, where something already exists.
     pub const EXISTS: u32 = 11;
+    /// Over a limit on how many of something a caller may have (see
+    /// `account::MAX_APP_PASSWORDS`).
+    pub const LIMIT: u32 = 12;
 }
