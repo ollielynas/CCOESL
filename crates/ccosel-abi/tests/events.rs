@@ -6,7 +6,7 @@
 
 use ccosel_abi::event::{
     EventError, TextDelta, decode_batch, decode_error, decode_text_delta, encode_batch,
-    encode_error, encode_text_delta, event_kind, rpc_error,
+    encode_error, encode_page_info, encode_text_delta, event_kind, page_info, rpc_error,
 };
 
 #[test]
@@ -122,4 +122,49 @@ fn arbitrary_bytes_never_panic() {
         let _ = decode_batch(&buf);
         state = state.wrapping_add(1);
     }
+}
+
+#[test]
+fn page_info_round_trips_and_ignores_what_it_does_not_know() {
+    let bytes = encode_page_info(&[("origin", "https://example.test:8443"), ("theme", "x")]);
+    assert_eq!(
+        page_info(&bytes, "origin"),
+        Some("https://example.test:8443")
+    );
+    assert_eq!(page_info(&bytes, "theme"), Some("x"));
+    assert_eq!(page_info(&bytes, "missing"), None);
+    // A value may itself contain `=`; only the first one splits.
+    let bytes = encode_page_info(&[("q", "a=b")]);
+    assert_eq!(page_info(&bytes, "q"), Some("a=b"));
+    // Lines a newer shell adds, or that make no sense, do not stop the rest being read.
+    let bytes = b"future-key=1\nno equals sign\norigin=http://h\n";
+    assert_eq!(page_info(bytes, "origin"), Some("http://h"));
+}
+
+#[test]
+fn page_info_refuses_what_would_break_its_format() {
+    let bytes = encode_page_info(&[
+        ("origin", "http://a\nevil=1"),
+        ("k=ey", "v"),
+        ("", "v"),
+        ("ok", "yes"),
+    ]);
+    assert_eq!(bytes, b"ok=yes\n");
+    assert_eq!(page_info(&bytes, "evil"), None);
+    // An empty value is no value, and bytes that are not UTF-8 are no page info at all.
+    assert_eq!(page_info(b"origin=\n", "origin"), None);
+    assert_eq!(page_info(&[0xff, b'='], "origin"), None);
+    assert_eq!(page_info(b"", "origin"), None);
+}
+
+#[test]
+fn page_info_has_a_kind_of_its_own() {
+    let kinds = [
+        event_kind::RPC_OK,
+        event_kind::RPC_ERR,
+        event_kind::TEXT_DELTA,
+        event_kind::RESTORED,
+        event_kind::LAUNCH,
+    ];
+    assert!(!kinds.contains(&event_kind::PAGE_INFO));
 }
