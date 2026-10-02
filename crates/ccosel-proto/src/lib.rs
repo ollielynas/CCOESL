@@ -41,9 +41,10 @@ pub enum Method {
     CreateDir = 9,
     Access = 10,
     Search = 11,
-    ListAppPasswords = 12,
-    CreateAppPassword = 13,
-    RevokeAppPassword = 14,
+    ImageInfo = 12,
+    ListAppPasswords = 13,
+    CreateAppPassword = 14,
+    RevokeAppPassword = 15,
 }
 
 impl Method {
@@ -60,9 +61,10 @@ impl Method {
             9 => Some(Self::CreateDir),
             10 => Some(Self::Access),
             11 => Some(Self::Search),
-            12 => Some(Self::ListAppPasswords),
-            13 => Some(Self::CreateAppPassword),
-            14 => Some(Self::RevokeAppPassword),
+            12 => Some(Self::ImageInfo),
+            13 => Some(Self::ListAppPasswords),
+            14 => Some(Self::CreateAppPassword),
+            15 => Some(Self::RevokeAppPassword),
             _ => None,
         }
     }

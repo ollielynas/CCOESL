@@ -6,7 +6,7 @@
 //! frame instead.
 
 use crate::MAX_SCOPE_DEPTH;
-use crate::geom::{Align, Layout, ScopeKind, TextStyle, Vec2};
+use crate::geom::{Align, Layout, MediaKind, ScopeKind, TextStyle, Vec2};
 use crate::opcode::OpCode;
 
 /// One decoded command, borrowing its strings from the command buffer.
@@ -99,6 +99,33 @@ pub enum Cmd<'a> {
         id: u64,
         text: &'a str,
         selected: bool,
+    },
+    /// See `OpCode::OpenApp`. `app` is an app id from the shell's catalog.
+    OpenApp {
+        id: u64,
+        label: &'a str,
+        app: &'a str,
+        arg: &'a str,
+    },
+    /// See `OpCode::CopyLink`. `path` starts with `/`.
+    CopyLink {
+        id: u64,
+        label: &'a str,
+        path: &'a str,
+    },
+    /// See `OpCode::Media`. `src` is a URL the browser loads, like `Image`'s. A size component
+    /// of `0` or less is the shell's choice: the row's width, and a height to suit `kind`.
+    Media {
+        id: u64,
+        src: &'a str,
+        kind: MediaKind,
+        size: Vec2,
+    },
+    /// A read-only counterpart of `TextEditMulti`, with the same fields and protocol.
+    TextView {
+        id: u64,
+        version: u32,
+        set: Option<&'a str>,
     },
 }
 
@@ -244,6 +271,27 @@ impl<'a> Decoder<'a> {
                 let (id, version, set) = self.text_edit()?;
                 Cmd::TextEditMulti { id, version, set }
             }
+            OpCode::TextView => {
+                let (id, version, set) = self.text_edit()?;
+                Cmd::TextView { id, version, set }
+            }
+            OpCode::OpenApp => Cmd::OpenApp {
+                id: self.u64()?,
+                label: self.str()?,
+                app: self.str()?,
+                arg: self.str()?,
+            },
+            OpCode::CopyLink => Cmd::CopyLink {
+                id: self.u64()?,
+                label: self.str()?,
+                path: self.str()?,
+            },
+            OpCode::Media => Cmd::Media {
+                id: self.u64()?,
+                src: self.str()?,
+                kind: MediaKind::from_u8(self.u8()?).ok_or(DecodeError::InvalidEnum)?,
+                size: Vec2::new(self.f32()?, self.f32()?),
+            },
             OpCode::Styled => Cmd::Styled {
                 id: self.u64()?,
                 text: self.str()?,

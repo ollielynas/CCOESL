@@ -39,6 +39,7 @@ pub const CHECK_SQUARE: &str = "\u{E186}";
 pub const SQUARE: &str = "\u{E45E}";
 pub const CODE_BLOCK: &str = "\u{EAFE}";
 pub const QUOTES: &str = "\u{E660}";
+pub const INFO: &str = "\u{E2CE}";
 
 #[cfg(test)]
 mod tests {
@@ -76,5 +77,6 @@ mod tests {
         assert_eq!(super::SQUARE, p::SQUARE);
         assert_eq!(super::CODE_BLOCK, p::CODE_BLOCK);
         assert_eq!(super::QUOTES, p::QUOTES);
+        assert_eq!(super::INFO, p::INFO);
     }
 }

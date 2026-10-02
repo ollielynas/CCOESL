@@ -206,3 +206,30 @@ impl Rpc for Search {
 }
 
 impl Query for Search {}
+
+/// What a picture says about itself: its size in pixels, and what the camera recorded (EXIF).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImageInfoReply {
+    /// `None` when the server can't read the picture's header.
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    /// What the camera recorded, as `(label, value)` in the order to show them, such as
+    /// `("Camera", "Apple iPhone 15 Pro")` or `("Taken", "2024-05-01 12:34:56")`. Only what the
+    /// picture actually has: empty for one with no EXIF, such as a screenshot.
+    pub fields: Vec<(String, String)>,
+}
+
+/// Read a picture's size and EXIF details, for the Viewer. The server reads them because the
+/// app never holds the picture's bytes: the browser decodes it.
+pub struct ImageInfo;
+
+impl Rpc for ImageInfo {
+    const METHOD: Method = Method::ImageInfo;
+    const COALESCE: Coalesce = Coalesce::ByArgs;
+    const EFFECT: Effect = Effect::Idempotent;
+    const DEADLINE_MS: u32 = 8_000;
+    type Req<'a> = PathReq<'a>;
+    type Reply = ImageInfoReply;
+}
+
+impl Query for ImageInfo {}

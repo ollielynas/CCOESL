@@ -26,6 +26,12 @@ pub enum ScopeKind {
     /// A region that scrolls on its own, filling the rest of the window's height. Two side by
     /// side (a sidebar and a page) scroll independently.
     Scroll = 7,
+    /// A right-click menu on the widget emitted just before this scope. Its children are the
+    /// menu's entries, and are only drawn (and only respond) while the menu is open.
+    ContextMenu = 8,
+    /// A table: each child scope is a row, and each widget in a row is a cell. Cells line up in
+    /// columns as wide as their widest cell, and a table wider than the window scrolls sideways.
+    Table = 9,
 }
 
 impl ScopeKind {
@@ -39,6 +45,30 @@ impl ScopeKind {
             5 => Some(Self::Sidebar),
             6 => Some(Self::Indent),
             7 => Some(Self::Scroll),
+            8 => Some(Self::ContextMenu),
+            9 => Some(Self::Table),
+            _ => None,
+        }
+    }
+}
+
+/// What a `Media` command shows. The browser does the playing, so which formats work is up to
+/// the browser.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum MediaKind {
+    Video = 0,
+    Audio = 1,
+    /// A document the browser displays itself, such as a PDF.
+    Document = 2,
+}
+
+impl MediaKind {
+    pub const fn from_u8(v: u8) -> Option<Self> {
+        match v {
+            0 => Some(Self::Video),
+            1 => Some(Self::Audio),
+            2 => Some(Self::Document),
             _ => None,
         }
     }

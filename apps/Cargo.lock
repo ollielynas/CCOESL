@@ -211,3 +211,11 @@ name = "unicode-ident"
 version = "1.0.25"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ab72a15cf68d77cb0987d3684aa8a45c5ef827e8cb49ee2f30bfd7ba2feb519f"
+
+[[package]]
+name = "viewer"
+version = "0.1.0"
+dependencies = [
+ "ccosel-proto",
+ "ccosel-sdk",
+]

@@ -312,37 +312,101 @@ fn a_finished_upload_re_lists_the_folder_once() {
 }
 
 #[test]
-fn every_file_gets_a_download_link_and_folders_do_not() {
+fn every_file_has_a_right_click_menu_and_folders_do_not() {
     let h = browsing(sample());
+    // One menu each for `notes.md` and `link`, nothing for the folder.
+    assert_eq!(
+        h.context_menu_items(),
+        [
+            OPEN_WITH_VIEWER,
+            SHARE_WITH_VIEWER,
+            DOWNLOAD,
+            OPEN_WITH_VIEWER,
+            SHARE_WITH_VIEWER,
+            DOWNLOAD
+        ]
+    );
+    assert_eq!(
+        h.open_apps(),
+        [
+            (
+                OPEN_WITH_VIEWER.to_owned(),
+                "viewer".to_owned(),
+                "/notes.md".to_owned()
+            ),
+            (
+                OPEN_WITH_VIEWER.to_owned(),
+                "viewer".to_owned(),
+                "/link".to_owned()
+            ),
+        ]
+    );
+    assert_eq!(
+        h.copy_links()[0],
+        (
+            SHARE_WITH_VIEWER.to_owned(),
+            "/app/viewer?open=%2Fnotes.md".to_owned()
+        )
+    );
+    // Download moved into the menu: there is no Download button on the row any more.
     assert_eq!(
         h.open_urls(),
-        vec![
-            ("Download".to_owned(), "/files/notes.md".to_owned()),
-            ("Download".to_owned(), "/files/link".to_owned()),
+        [
+            (DOWNLOAD.to_owned(), "/files/notes.md".to_owned()),
+            (DOWNLOAD.to_owned(), "/files/link".to_owned()),
         ]
+    );
+    assert!(!h.has_button("Download"));
+}
+
+#[test]
+fn a_file_in_a_folder_is_opened_and_shared_by_its_whole_path() {
+    let mut h = browsing(sample());
+    press(&mut h, "docs");
+    h.reply::<ListDir>(&listing(vec![entry("a b.txt", EntryKind::File, 3)]));
+    h.frame();
+    answer_access(&mut h, false, None);
+    h.frame();
+    assert_eq!(
+        h.open_apps(),
+        [(
+            OPEN_WITH_VIEWER.to_owned(),
+            "viewer".to_owned(),
+            "/docs/a b.txt".to_owned()
+        )]
+    );
+    assert_eq!(
+        h.copy_links(),
+        [(
+            SHARE_WITH_VIEWER.to_owned(),
+            "/app/viewer?open=%2Fdocs%2Fa%20b.txt".to_owned()
+        )]
+    );
+    assert_eq!(
+        h.open_urls(),
+        [(DOWNLOAD.to_owned(), "/files/docs/a%20b.txt".to_owned())]
     );
 }
 
 #[test]
-fn download_urls_are_percent_encoded_per_segment() {
-    assert_eq!(download_url("/", "notes.md"), "/files/notes.md");
-    assert_eq!(
-        download_url("/Documents", "notes #1.md"),
-        "/files/Documents/notes%20%231.md"
-    );
-    assert_eq!(
-        download_url("/a b/c?d", "e&f=g%h"),
-        "/files/a%20b/c%3Fd/e%26f%3Dg%25h"
-    );
-    assert_eq!(
-        download_url("/café/", "résumé.pdf"),
-        "/files/caf%C3%A9/r%C3%A9sum%C3%A9.pdf"
-    );
+fn join_puts_one_slash_between() {
+    assert_eq!(join("/", "a"), "/a");
+    assert_eq!(join("/docs", "a"), "/docs/a");
+    assert_eq!(join("/docs/", "a"), "/docs/a");
 }
 
 #[test]
 fn the_labels_use_the_sdk_icons() {
     assert_eq!(SHARED_TAB, format!("{}  Shared", icons::USERS));
+    assert_eq!(
+        OPEN_WITH_VIEWER,
+        format!("{}  Open with Viewer", icons::EYE)
+    );
+    assert_eq!(
+        SHARE_WITH_VIEWER,
+        format!("{}  Share with Viewer", icons::LINK)
+    );
+    assert_eq!(DOWNLOAD, format!("{}  Download", icons::DOWNLOAD_SIMPLE));
     assert_eq!(MINE_TAB, format!("{}  My files", icons::HOUSE));
     assert_eq!(CAN_CHANGE, format!("{}  Can change", icons::PENCIL_SIMPLE));
     assert_eq!(READ_ONLY, format!("{}  Read-only", icons::LOCK_SIMPLE));

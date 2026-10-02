@@ -12,6 +12,7 @@ machine on the network.
 - [Server](Apps/server-dashboard.md): live graphs of how the server is doing
 - [Compiler](Apps/rust-compiler.md): build a Rust project on the server and download the result
 - [Account](Apps/account.md): see who you are signed in as, sign out, and make app passwords
+- [Viewer](Apps/viewer.md): look at pictures, music, videos, PDFs and text files, and share them
 
 You can also [open your files as a drive](WebDAV.md) on your own computer, with WebDAV.
 

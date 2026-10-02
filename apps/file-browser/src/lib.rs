@@ -9,7 +9,7 @@
 //! request cache keys on the request itself — so changing `self.path` *is* the re-request.
 
 use ccosel_proto::fs::{Access, EntryKind, ListDir, ListDirReq, PathReq};
-use ccosel_sdk::{App, Poll, Text, TextStyle, Ui};
+use ccosel_sdk::{App, Poll, Text, TextStyle, Ui, url};
 
 /// The two file systems a person has: what is shared on the server, and their own folder.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -355,6 +355,13 @@ impl App for FileBrowser {
                                     }
                                 }
                                 if !entry.is_dir() {
+                                    ui.tooltip("Right-click to open, share or download it");
+                                    let path = join(&self.path, &entry.name);
+                                    // Attached to the name just drawn, so right-clicking the
+                                    // file is what opens it.
+                                    ui.context_menu(|ui| file_menu(ui, &path));
+                                }
+                                if !entry.is_dir() {
                                     ui.label(format!("· {}", human_size(entry.size)).as_str());
                                 }
                                 // Everything listed can be read, so the one thing to say is
@@ -363,10 +370,6 @@ impl App for FileBrowser {
                                     ui.label(CAN_CHANGE);
                                 } else {
                                     ui.label(READ_ONLY);
-                                }
-                                if !entry.is_dir() {
-                                    // Opened by the shell in a new tab.
-                                    ui.open_url("Download", &download_url(&self.path, &entry.name));
                                 }
                             });
                         });
@@ -412,24 +415,34 @@ impl App for FileBrowser {
     }
 }
 
-/// `/files/<path>/<name>`, each segment percent-encoded, so a name like `notes #1.md` or
-/// `a?b.txt` asks for that file rather than cutting the URL short at the `#` or `?`.
-pub fn download_url(dir: &str, name: &str) -> String {
-    const HEX: &[u8; 16] = b"0123456789ABCDEF";
-    let mut url = String::from("/files");
-    for segment in dir.split('/').filter(|s| !s.is_empty()).chain([name]) {
-        url.push('/');
-        for &b in segment.as_bytes() {
-            if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
-                url.push(b as char);
-            } else {
-                url.push('%');
-                url.push(HEX[usize::from(b >> 4)] as char);
-                url.push(HEX[usize::from(b & 0xF)] as char);
-            }
-        }
+/// The labels of a file's right-click menu, and what a test clicks.
+pub const OPEN_WITH_VIEWER: &str = "\u{E220}  Open with Viewer";
+pub const SHARE_WITH_VIEWER: &str = "\u{E2E2}  Share with Viewer";
+pub const DOWNLOAD: &str = "\u{E20C}  Download";
+
+/// What can be done with a file: open it in the Viewer, copy a link that opens it there, or
+/// download it. The shell does each, so this only says which.
+fn file_menu(ui: &mut Ui<'_>, path: &str) {
+    ui.open_app(OPEN_WITH_VIEWER, VIEWER, path);
+    ui.copy_link(SHARE_WITH_VIEWER, &url::app_link(VIEWER, path));
+    ui.tooltip(
+        "Copy a link that opens this file in the Viewer. Whoever follows it signs in first, and \
+         sees it only if they may.",
+    );
+    // Opened by the shell in a new tab.
+    ui.open_url(DOWNLOAD, &url::file_url(path));
+}
+
+/// The Viewer's id in the shell's catalog.
+const VIEWER: &str = "viewer";
+
+/// `dir/name`, with exactly one `/` between them.
+fn join(dir: &str, name: &str) -> String {
+    if dir.ends_with('/') {
+        format!("{dir}{name}")
+    } else {
+        format!("{dir}/{name}")
     }
-    url
 }
 
 #[cfg(test)]
