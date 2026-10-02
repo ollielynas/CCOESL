@@ -27,7 +27,9 @@ use serde::{Deserialize, Serialize};
 /// `ccosel_abi::ABI_VERSION`, which governs the guest↔shell boundary.
 pub const PROTO_VERSION: u32 = 1;
 
-/// Numeric method ids are wire ABI: append, never renumber.
+/// Numeric method ids are wire ABI: never renumber existing ones. New ids are randomly
+/// generated (see "Wire IDs" in CONTRIBUTING.md) so parallel branches do not collide on
+/// the next sequential number.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(u16)]
 pub enum Method {
