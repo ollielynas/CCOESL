@@ -1190,7 +1190,7 @@ fn uigetfile_picks_a_file_from_the_shared_files() {
         client: 1,
         seq: 1,
         prompt: 1,
-        path: Some("/home/alice/data.csv"),
+        answer: PromptAnswer::File(Some("/home/alice/data.csv")),
     }));
     h.reply::<OctaveAnswer>(&());
     h.frame();
@@ -1208,7 +1208,7 @@ fn uigetfile_can_be_cancelled() {
         client: 1,
         seq: 1,
         prompt: 1,
-        path: None,
+        answer: PromptAnswer::File(None),
     }));
 }
 
@@ -1242,4 +1242,86 @@ fn the_picker_closes_when_its_job_ends() {
     h.reply::<OctavePoll>(&done("error: Stopped.\n", session(vec![], vec![])));
     h.frame();
     assert!(h.app.picker.is_none());
+}
+
+fn input_prompt(id: u32, text: &str) -> OctavePrompt {
+    OctavePrompt {
+        id,
+        kind: PromptKind::Input {
+            prompt: text.to_owned(),
+        },
+    }
+}
+
+#[test]
+fn input_is_answered_at_the_prompt() {
+    let question = "\n  Do you see a window with a sine wave? (y/n): ";
+    let mut h = prompting(vec![input_prompt(1, question)]);
+    // The question's last line takes the prompt's place; the earlier ones are in the log.
+    assert!(h.has_label("  Do you see a window with a sine wave? (y/n): "));
+    assert!(!h.has_label(">>"));
+    assert_eq!(h.app.log.last(), Some(&(LineKind::Output, String::new())));
+    assert!(h.has_label(&label(icons::CHAT_TEXT, "Waiting for your answer")));
+    // A job is running, but an answer can be sent.
+    assert!(!h.is_disabled(&label(icons::PLAY, "Run")));
+
+    h.type_text(1, "y");
+    h.press_enter(1);
+    h.frame();
+    assert!(h.has_call::<OctaveAnswer>(&OctaveAnswerReq {
+        client: 1,
+        seq: 1,
+        prompt: 1,
+        answer: PromptAnswer::Text("y"),
+    }));
+    assert_eq!(h.app.input.as_str(), "");
+    // An answer isn't a command.
+    assert_eq!(h.app.history, ["script"]);
+    h.reply::<OctaveAnswer>(&());
+    h.frame();
+    assert!(h.app.asking.is_none());
+    assert_eq!(
+        h.app.log.last(),
+        Some(&(
+            LineKind::Output,
+            "  Do you see a window with a sine wave? (y/n): y".to_owned()
+        ))
+    );
+    h.frame();
+    assert!(h.has_label(">>"));
+    assert!(
+        h.is_disabled(&label(icons::PLAY, "Run")),
+        "the job still runs"
+    );
+}
+
+#[test]
+fn an_answer_that_fails_is_reported_and_can_be_sent_again() {
+    let mut h = prompting(vec![input_prompt(1, "K>> ")]);
+    assert!(h.has_label("K>> "));
+    h.type_text(1, "x = 1");
+    h.frame();
+    h.click(&label(icons::PLAY, "Run"));
+    h.frame();
+    h.fail::<OctaveAnswer>(rpc_error::SERVER);
+    h.frame();
+    assert!(
+        h.app
+            .log
+            .iter()
+            .any(|(_, l)| l.starts_with("error: could not answer: "))
+    );
+    assert!(h.app.asking.is_some(), "still asked");
+    h.frame();
+    assert!(!h.is_disabled(&label(icons::PLAY, "Run")));
+}
+
+#[test]
+fn a_question_ends_with_its_job() {
+    let mut h = prompting(vec![input_prompt(1, "? ")]);
+    h.reply::<OctavePoll>(&done("error: Stopped.\n", session(vec![], vec![])));
+    h.frame();
+    assert!(h.app.asking.is_none());
+    h.frame();
+    assert!(h.has_label(">>"));
 }

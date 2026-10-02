@@ -26,7 +26,7 @@ use std::time::{Duration, Instant};
 use ccosel_proto::octave::{
     Axes, DEFAULT_LIMIT_MS, Figure, MAX_LIMIT_MS, MAX_OUTPUT_BYTES, MAX_PROMPTS, MessageIcon,
     OctaveAction, OctaveAnswerReq, OctaveControlReq, OctaveInput, OctavePollReq, OctavePrompt,
-    OctaveResult, OctaveRunReq, OctaveStatus, PromptKind, Series, Variable,
+    OctaveResult, OctaveRunReq, OctaveStatus, PromptAnswer, PromptKind, Series, Variable,
 };
 use ccosel_proto::server_error;
 
@@ -272,8 +272,8 @@ impl Octave {
         job.images.lock().unwrap().get(&number).cloned()
     }
 
-    /// Answer a `uigetfile` that job `(client, seq)` is waiting on, with a file the caller may
-    /// read, or with Cancel. Octave is given the file's real path.
+    /// Answer a prompt job `(client, seq)` is waiting on: a `uigetfile` with a file the caller
+    /// may read (Octave is given its real path) or with Cancel, or an `input` with text.
     pub fn answer(
         &self,
         jail: &Jail,
@@ -288,19 +288,23 @@ impl Octave {
             .get(&key)
             .cloned()
             .ok_or(server_error::NOT_FOUND)?;
-        let waiting = job
-            .prompts
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|p| p.id == req.prompt && matches!(p.kind, PromptKind::OpenFile { .. }));
+        // The prompt, and an answer of the kind it asked for.
+        let fits = job.prompts.lock().unwrap().iter().any(|p| {
+            p.id == req.prompt
+                && matches!(
+                    (&p.kind, &req.answer),
+                    (PromptKind::OpenFile { .. }, PromptAnswer::File(_))
+                        | (PromptKind::Input { .. }, PromptAnswer::Text(_))
+                )
+        });
         let dir = job.dir.get().ok_or(server_error::NOT_FOUND)?;
-        if !waiting || job.result.lock().unwrap().is_some() {
+        if !fits || job.result.lock().unwrap().is_some() {
             return Err(server_error::NOT_FOUND);
         }
-        let text = match req.path {
-            None => String::new(),
-            Some(path) => {
+        let text = match req.answer {
+            PromptAnswer::Text(text) => text.to_owned(),
+            PromptAnswer::File(None) => String::new(),
+            PromptAnswer::File(Some(path)) => {
                 let real = jail.authorize(path, user, Need::Read)?;
                 if !real.is_file() {
                     return Err(server_error::NOT_FOUND);
@@ -762,6 +766,7 @@ pub fn parse_prompt(line: &str, jail_root: &Path) -> Option<OctavePrompt> {
             title: next(),
             text: next(),
         },
+        "INPUT" => PromptKind::Input { prompt: next() },
         "OPENFILE" => PromptKind::OpenFile {
             title: next(),
             filter: next(),

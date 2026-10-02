@@ -42,10 +42,18 @@ Figures here have no windows of their own. `waitfor` and `uiwait`, which wait fo
 be closed, carry on at once with a warning. A loop that waits for every window to close, such as
 `while ! isempty(get(0, "children")), pause(0.2); end`, never finishes on its own: stop it.
 
+When a script asks a question with `input`, the question takes the place of **>>** at the
+prompt, and the top of the window says **:chat_text: Waiting for your answer**. Type the answer
+and press Enter. With `input(question, "s")` the script gets exactly what you typed; otherwise
+it is worked out as Octave, so `3 * 2` gives 6, and it can use the script's variables. An empty
+answer gives `[]`. The question and your answer stay in the command window, as in a terminal.
+
+`keyboard` stops the script at a **K>>** prompt: each line you type there runs with the
+script's variables. Type `return` (or `dbcont`) to carry on with the script, or `dbquit` to stop
+it there.
+
 A few commands work differently here, because there is no terminal behind the window:
 
-- `input` and `keyboard` can't be answered. A script that calls one stops there with an error
-  saying so. Set the value in the script instead.
 - `exit` and `quit` don't end Octave. The script ends there and your variables are kept; it
   counts as an error only if it gave a status other than 0, such as `exit(1)`. Use
   **:arrow_clockwise: Restart** to start again from empty.

@@ -11,7 +11,8 @@
 //!   since `from`.
 //!
 //! - [`OctaveControl`] changes a running job: moves its time limit, or stops it.
-//! - [`OctaveAnswer`] answers a job's [`OctavePrompt`]: the file a `uigetfile` asked for.
+//! - [`OctaveAnswer`] answers a job's [`OctavePrompt`]: the file a `uigetfile` asked for, or
+//!   what was typed for an `input`.
 //!
 //! `(client, seq)` names a job. `client` is a number a window picks for itself so two windows
 //! of the same user, sharing one session, do not collide; `seq` goes up by one per run. Running
@@ -216,7 +217,14 @@ pub enum PromptKind {
         title: String,
         text: String,
     },
-    /// `uigetfile`: pick a file. The job waits for an [`OctaveAnswer`].
+    /// `input`, or a line at `keyboard`'s `K>>`: type an answer at the Command Window's prompt.
+    /// The job waits for an [`OctaveAnswer`] with [`PromptAnswer::Text`].
+    Input {
+        /// What `input` was given to ask, which may run over several lines.
+        prompt: String,
+    },
+    /// `uigetfile`: pick a file. The job waits for an [`OctaveAnswer`] with
+    /// [`PromptAnswer::File`].
     OpenFile {
         title: String,
         /// Patterns such as `*.m`, joined by `;`. `*` for any file.
@@ -290,13 +298,21 @@ pub struct OctaveAnswerReq<'a> {
     pub seq: u32,
     /// [`OctavePrompt::id`].
     pub prompt: u32,
-    /// The file picked, as a jail path, or `None` for Cancel.
     #[serde(borrow)]
-    pub path: Option<&'a str>,
+    pub answer: PromptAnswer<'a>,
 }
 
-/// Answer prompt `prompt` of job `(client, seq)`, which is waiting for it. The server checks
-/// the caller may read the file, and hands Octave its real path.
+/// An answer to a prompt, of the kind it asked for.
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PromptAnswer<'a> {
+    /// For [`PromptKind::OpenFile`]: the file picked, as a jail path, or `None` for Cancel.
+    File(#[serde(borrow)] Option<&'a str>),
+    /// For [`PromptKind::Input`]: what was typed.
+    Text(#[serde(borrow)] &'a str),
+}
+
+/// Answer prompt `prompt` of job `(client, seq)`, which is waiting for it. For a file, the server
+/// checks the caller may read it, and hands Octave its real path.
 pub struct OctaveAnswer;
 
 impl Rpc for OctaveAnswer {

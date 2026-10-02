@@ -21,7 +21,7 @@ use ccosel_proto::fs::{
 use ccosel_proto::octave::{
     Axes, DEFAULT_LIMIT_MS, Figure, MessageIcon, OctaveAction, OctaveAnswer, OctaveAnswerReq,
     OctaveControl, OctaveControlReq, OctaveInput, OctavePoll, OctavePollReq, OctavePrompt,
-    OctaveResult, OctaveRun, OctaveRunReq, OctaveStatus, PromptKind, figure_url,
+    OctaveResult, OctaveRun, OctaveRunReq, OctaveStatus, PromptAnswer, PromptKind, figure_url,
 };
 use ccosel_sdk::{App, CallId, CodeLang, Poll, Text, TextStyle, Ui, Vec2, icons};
 
@@ -108,6 +108,23 @@ pub struct Message {
     pub text: String,
 }
 
+/// An `input` (or a `keyboard` line) a job is waiting on, answered at the prompt.
+pub struct Asking {
+    pub seq: u32,
+    pub prompt: u32,
+    /// What it asked, which may run over several lines: the last is shown at the prompt.
+    pub text: String,
+    /// The answer on its way, and what it was.
+    sending: Option<(CallId, String)>,
+}
+
+impl Asking {
+    /// The line shown in place of `>>`.
+    fn label(&self) -> &str {
+        self.text.rsplit('\n').next().unwrap_or_default()
+    }
+}
+
 /// The file picker a job's `uigetfile` is waiting on.
 pub struct Picker {
     pub seq: u32,
@@ -171,6 +188,8 @@ pub struct Octave {
     messages_shown: u32,
     /// The file picker a running `uigetfile` waits on.
     pub picker: Option<Picker>,
+    /// The `input` a running job waits on, answered at the Command Window's prompt.
+    pub asking: Option<Asking>,
     /// A job has reported the session's state at least once. Until then the app doesn't know
     /// the working folder or the variables, which isn't the same as there being none.
     pub synced: bool,
@@ -206,6 +225,7 @@ impl Default for Octave {
             messages: Vec::new(),
             messages_shown: 0,
             picker: None,
+            asking: None,
             synced: false,
         }
     }
@@ -443,8 +463,9 @@ impl Octave {
         let Some(job) = self.job.take() else {
             return;
         };
-        // Nothing waits on the picker any more.
+        // Nothing waits on the picker, or for an answer, any more.
         self.picker = None;
+        self.asking = None;
         self.refresh_tree = true;
         if job.target == Target::Render {
             self.rendered = Some(job.seq);
@@ -482,6 +503,24 @@ impl Octave {
                         text: text.clone(),
                     });
                 }
+                PromptKind::Input { prompt: text } => {
+                    // Like a terminal: every line of the question but the last goes in the
+                    // command window; the last is shown at the prompt, where the answer goes.
+                    let lines: Vec<&str> = text.split('\n').collect();
+                    let earlier: Vec<String> = (lines[..lines.len() - 1].iter())
+                        .map(|l| (*l).to_owned())
+                        .collect();
+                    for line in earlier {
+                        self.push_log(LineKind::Output, &line);
+                    }
+                    self.asking = Some(Asking {
+                        seq,
+                        prompt: prompt.id,
+                        text: text.clone(),
+                        sending: None,
+                    });
+                    self.tab = Tab::Command;
+                }
                 PromptKind::OpenFile {
                     title,
                     filter,
@@ -512,6 +551,54 @@ impl Octave {
                         status: String::new(),
                     });
                 }
+            }
+        }
+    }
+
+    /// Send what is at the prompt as the answer to the `input` waiting on it.
+    fn answer(&mut self, ui: &mut Ui<'_>) {
+        let client = self.client.unwrap_or(1);
+        let Some(asking) = &mut self.asking else {
+            return;
+        };
+        if asking.sending.is_some() {
+            return;
+        }
+        let text = self.input.as_str().to_owned();
+        let call = ui.rpc().send::<OctaveAnswer>(&OctaveAnswerReq {
+            client,
+            seq: asking.seq,
+            prompt: asking.prompt,
+            answer: PromptAnswer::Text(&text),
+        });
+        asking.sending = Some((call, text));
+        self.input.set("");
+    }
+
+    /// See whether an answer to `input` was taken: the question and answer go in the command
+    /// window, as a terminal would leave them.
+    fn input_answered(&mut self, ui: &mut Ui<'_>) {
+        let Some(asking) = &mut self.asking else {
+            return;
+        };
+        let Some((call, _)) = &asking.sending else {
+            return;
+        };
+        match ui.rpc().outcome::<OctaveAnswer>(*call) {
+            Poll::Pending => {}
+            Poll::Ready(_) => {
+                let mut line = asking.label().to_owned();
+                if let Some((_, text)) = &asking.sending {
+                    line.push_str(text);
+                }
+                self.asking = None;
+                self.push_log(LineKind::Output, &line);
+            }
+            Poll::Failed(err) => {
+                asking.sending = None;
+                let mut msg = String::from("error: could not answer: ");
+                msg.push_str(err.message());
+                self.push_log(LineKind::Error, &msg);
             }
         }
     }
@@ -735,7 +822,12 @@ impl Octave {
             ui.label(&label(icons::HOURGLASS, "Starting Octave…"));
             return;
         }
-        ui.label(&label(icons::HOURGLASS, "Running…"));
+        if self.asking.is_some() {
+            ui.label(&label(icons::CHAT_TEXT, "Waiting for your answer"));
+            ui.tooltip("The script asked a question: answer it at the Command Window's prompt");
+        } else {
+            ui.label(&label(icons::HOURGLASS, "Running…"));
+        }
         let mut time = clock(job.elapsed_ms);
         time.push_str(" of ");
         time.push_str(&clock(job.limit_ms));
@@ -969,22 +1061,32 @@ impl Octave {
     fn command_window(&mut self, ui: &mut Ui<'_>, act: &mut Vec<Action>) {
         let log = &self.log;
         let input = &mut self.input;
-        let idle = self.job.is_none();
+        // An `input` waiting for an answer takes the prompt over, as it would in a terminal.
+        let asking = self.asking.as_ref();
+        let idle = self.job.is_none() || asking.is_some_and(|a| a.sending.is_none());
         let mut open_figures = false;
         ui.scroll_with_footer(
             |ui| Self::console(ui, log, &mut open_figures),
             |ui| {
-                ui.label(">>");
+                ui.label(asking.map_or(">>", Asking::label));
                 if ui.text_edit(input).submitted() {
                     act.push(Action::Submit);
                 }
-                // Typing ahead is fine while a job runs; running it waits until that one ends.
-                ui.tooltip("Type Octave code here and press Enter to run it");
+                ui.tooltip(if asking.is_some() {
+                    "The script is waiting for your answer: type it here and press Enter"
+                } else {
+                    // Typing ahead is fine while a job runs; running it waits until it ends.
+                    "Type Octave code here and press Enter to run it"
+                });
                 ui.enabled(idle, |ui| {
                     if ui.button(&label(icons::PLAY, "Run")).clicked() {
                         act.push(Action::Submit);
                     }
-                    ui.tooltip(LIMIT_TIP);
+                    ui.tooltip(if asking.is_some() {
+                        "Send your answer"
+                    } else {
+                        LIMIT_TIP
+                    });
                 });
                 if ui.button(icons::CARET_UP).clicked() {
                     act.push(Action::Older);
@@ -1217,6 +1319,7 @@ impl Octave {
     fn act(&mut self, ui: &mut Ui<'_>, action: Action) {
         match action {
             Action::Tab(tab) => self.tab = tab,
+            Action::Submit if self.asking.is_some() => self.answer(ui),
             Action::Submit => {
                 let code = self.input.as_str().to_owned();
                 self.submit(ui, &code);
@@ -1337,7 +1440,7 @@ impl Octave {
                         client,
                         seq: picker.seq,
                         prompt: picker.prompt,
-                        path: path.as_deref(),
+                        answer: PromptAnswer::File(path.as_deref()),
                     }));
                 }
             }
@@ -1595,6 +1698,7 @@ impl App for Octave {
         }
         self.controlled(ui);
         self.answered(ui);
+        self.input_answered(ui);
         self.follow(ui);
         self.load(ui);
         self.saved(ui);

@@ -608,9 +608,8 @@ fn real_octave_renders_a_surface() {
     assert_eq!(ccosel_server::octave_api::png_size(&png), Some((w, h)));
 }
 
-/// Real Octave, when this machine has it: `exit` and `input` would end the session or wait
-/// forever. Each ends the script instead, an error unless it was `exit` with status 0, and the
-/// session and its variables stay.
+/// Real Octave, when this machine has it: `exit` and `quit` would end the session. Each ends
+/// the script instead, an error unless the status was 0, and the session and its variables stay.
 #[test]
 fn real_octave_survives_exit_and_input() {
     let (jail, support) = setup("real-exit");
@@ -629,13 +628,6 @@ fn real_octave_survives_exit_and_input() {
         ),
         (2, "quit", "quit(0): the script ends here", false),
         (3, "exit(3)", "exit(3): the script ends here", true),
-        (
-            4,
-            "c = input(\"? \", \"s\");",
-            "input can't be answered here",
-            true,
-        ),
-        (5, "keyboard", "keyboard can't be answered here", true),
     ] {
         run(&octave, &jail, None, seq, OctaveInput::Code(code));
         let status = wait(&octave, None, seq);
@@ -791,7 +783,7 @@ fn a_prompt_line_becomes_a_dialog_for_the_app() {
 /// path, or for Cancel.
 #[test]
 fn real_octave_asks_the_app_for_dialogs() {
-    use ccosel_proto::octave::{MessageIcon, OctaveAnswerReq, PromptKind};
+    use ccosel_proto::octave::{MessageIcon, OctaveAnswerReq, PromptAnswer, PromptKind};
     let (jail, support) = setup("real-dialogs");
     let octave = Octave::detect(support);
     if !octave.available() {
@@ -862,7 +854,7 @@ fn real_octave_asks_the_app_for_dialogs() {
             client: 1,
             seq,
             prompt: prompt.id,
-            path,
+            answer: PromptAnswer::File(path),
         };
         octave.answer(&jail, None, &answer).unwrap();
         wait(&octave, None, seq)
@@ -881,7 +873,7 @@ fn real_octave_asks_the_app_for_dialogs() {
         client: 1,
         seq: 4,
         prompt,
-        path,
+        answer: PromptAnswer::File(path),
     };
     assert!(
         octave
@@ -908,9 +900,112 @@ fn real_octave_asks_the_app_for_dialogs() {
                 client: 1,
                 seq: 1,
                 prompt: 1,
-                path: None,
+                answer: PromptAnswer::File(None),
             }
         ),
         Err(server_error::NOT_FOUND)
+    );
+}
+
+/// Real Octave, when this machine has it: `input` asks the app, and gets what was typed, as
+/// text or evaluated in the script's workspace; `keyboard` runs typed lines until `return`.
+#[test]
+fn real_octave_asks_the_app_for_input() {
+    use ccosel_proto::octave::{OctaveAnswerReq, PromptAnswer, PromptKind};
+    let (jail, support) = setup("real-input");
+    let octave = Octave::detect(support);
+    if !octave.available() {
+        eprintln!("octave-cli is not installed; skipped");
+        return;
+    }
+    // Answer each prompt the job asks, in turn, then wait for it to finish.
+    let converse = |seq: u32, code: &str, answers: &[&str]| {
+        run(&octave, &jail, None, seq, OctaveInput::Code(code));
+        let mut prompts = Vec::new();
+        for answer in answers {
+            let start = Instant::now();
+            let prompt = loop {
+                let asked = status(&octave, seq).prompts;
+                if asked.len() > prompts.len() {
+                    break asked[prompts.len()].clone();
+                }
+                assert!(start.elapsed() < Duration::from_secs(30), "never asked");
+                std::thread::sleep(Duration::from_millis(30));
+            };
+            let req = OctaveAnswerReq {
+                client: 1,
+                seq,
+                prompt: prompt.id,
+                answer: PromptAnswer::Text(answer),
+            };
+            octave.answer(&jail, None, &req).unwrap();
+            prompts.push(prompt.kind);
+        }
+        (wait(&octave, None, seq), prompts)
+    };
+
+    let (done, prompts) = converse(
+        1,
+        "a = input(\"Name? \", \"s\"); n = input(\"How many?\\n> \"); e = input(\"\"); printf(\"%s %d %d\\n\", a, n, isempty(e))",
+        &["Ada", "3 * 2", ""],
+    );
+    assert_eq!(done.output.trim(), "Ada 6 1", "{}", done.output);
+    assert_eq!(
+        prompts[1],
+        PromptKind::Input {
+            prompt: "How many?\n> ".to_owned()
+        }
+    );
+    // The answer is evaluated where `input` was called: it sees the script's variables.
+    let (done, _) = converse(2, "b = input(\"? \")", &["n + 1"]);
+    assert!(done.output.contains("b = 7"), "{}", done.output);
+    assert!(!done.result.unwrap().error);
+
+    // keyboard: lines run in the script's workspace until `return`.
+    let (done, prompts) = converse(
+        3,
+        "k = 1; keyboard; disp(k)",
+        &["k = k + 41;", "disp(k * 0 + 99)", "return"],
+    );
+    assert_eq!(
+        prompts[0],
+        PromptKind::Input {
+            prompt: "K>> ".to_owned()
+        }
+    );
+    assert_eq!(done.output.trim(), "99\n42", "{}", done.output);
+    let (done, _) = converse(4, "keyboard; disp(\"not here\")", &["dbquit"]);
+    assert!(
+        done.output.contains("dbquit: the script stopped here"),
+        "{}",
+        done.output
+    );
+    assert!(!done.output.contains("not here"));
+
+    // A file answer for an input doesn't fit it.
+    run(
+        &octave,
+        &jail,
+        None,
+        5,
+        OctaveInput::Code("x = input(\"? \")"),
+    );
+    while status(&octave, 5).prompts.is_empty() {
+        std::thread::sleep(Duration::from_millis(30));
+    }
+    let wrong = OctaveAnswerReq {
+        client: 1,
+        seq: 5,
+        prompt: 1,
+        answer: PromptAnswer::File(None),
+    };
+    assert_eq!(
+        octave.answer(&jail, None, &wrong),
+        Err(server_error::NOT_FOUND)
+    );
+    control(&octave, 5, OctaveAction::Stop).unwrap();
+    assert!(
+        !wait(&octave, None, 5).result.unwrap().ended,
+        "Stop works while it waits"
     );
 }
