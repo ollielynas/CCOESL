@@ -6,6 +6,7 @@
 pub mod access;
 pub mod auth;
 pub mod build_api;
+pub mod desktop;
 pub mod fs_api;
 pub mod idp;
 pub mod image_info;

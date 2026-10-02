@@ -11,6 +11,7 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use ccosel_proto::account::Account;
 use ccosel_proto::build::CompileReq;
+use ccosel_proto::desktop::DesktopLayout;
 use ccosel_proto::fs::{ListDirReq, PathReq, SearchReq, WriteFileReq};
 use ccosel_proto::info::ServerInfoReply;
 use ccosel_proto::{Method, PROTO_VERSION, WireReply, WireRequest, WireResult, server_error};
@@ -145,6 +146,10 @@ async fn dispatch(
         Method::Access => run::<PathReq, _>(req, |a| (jail.access(a.path, user), a.path)),
         Method::Search => run::<SearchReq, _>(req, |a| (jail.search(&a, user), a.path)),
         Method::ImageInfo => run::<PathReq, _>(req, |a| (jail.image_info(a.path, user), a.path)),
+        Method::LoadDesktop => encode(&crate::desktop::load(jail.root(), user)),
+        Method::SaveDesktop => run::<DesktopLayout, _>(req, |layout| {
+            (crate::desktop::save(jail.root(), user, &layout), "")
+        }),
     }
 }
 

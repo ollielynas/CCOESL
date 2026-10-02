@@ -15,6 +15,7 @@ extern crate alloc;
 
 pub mod account;
 pub mod build;
+pub mod desktop;
 pub mod fs;
 pub mod info;
 pub mod scratch;
@@ -42,6 +43,8 @@ pub enum Method {
     Access = 10,
     Search = 11,
     ImageInfo = 12,
+    LoadDesktop = 13,
+    SaveDesktop = 14,
 }
 
 impl Method {
@@ -59,6 +62,8 @@ impl Method {
             10 => Some(Self::Access),
             11 => Some(Self::Search),
             12 => Some(Self::ImageInfo),
+            13 => Some(Self::LoadDesktop),
+            14 => Some(Self::SaveDesktop),
             _ => None,
         }
     }

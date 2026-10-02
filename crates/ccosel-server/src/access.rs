@@ -97,6 +97,11 @@ pub fn components(requested: &str) -> Result<Vec<String>, u32> {
 
 /// What `user` may do with the path `parts` (from [`components`]) under `root`.
 pub fn perms(root: &Path, parts: &[String], user: Option<&str>) -> Perms {
+    // Everyone's saved desktops: only the server's own code, for the caller's own file, reads
+    // these (see `crate::desktop`).
+    if parts.first().is_some_and(|p| p == crate::desktop::DIR) {
+        return Perms::NONE;
+    }
     if parts.first().is_some_and(|p| p == HOME) {
         return match parts.get(1) {
             // `/home` itself: listable by anyone signed in (the listing is filtered down to

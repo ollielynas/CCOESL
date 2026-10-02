@@ -371,6 +371,8 @@ pub fn method_name(method: u32) -> String {
         Some(Method::Access) => "access",
         Some(Method::Search) => "search",
         Some(Method::ImageInfo) => "image_info",
+        Some(Method::LoadDesktop) => "load_desktop",
+        Some(Method::SaveDesktop) => "save_desktop",
         None => "unknown",
     };
     String::from(name)
