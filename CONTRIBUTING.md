@@ -98,6 +98,31 @@ Real examples: `apps/clock/src/tests.rs` (time as an input) and `apps/file-brows
      the app does.
 4. Give the app real state to test: clippy rejects `MyApp::default()` on a unit struct.
 
+## Wire IDs
+
+Some numbers are part of the wire ABI: `Method` in `ccosel-proto`, `OpCode` in
+`ccosel-abi`. Values already on `main` are frozen — never renumber them. When you introduce a
+**new** one, give it a randomly generated value, not the next sequential number. Sequential
+ids collide the moment two branches both append; random ones do not.
+
+Generate the value from a real RNG. Do not invent a number that looks random — that is
+how parallel agents end up picking the same id:
+
+```sh
+python3 -c 'import random; print(random.randint(0, 65535))'   # u16, for Method
+python3 -c 'import random; print(random.randint(0, 255))'     # u8, for OpCode
+```
+
+or with Node:
+
+```sh
+node -e 'console.log(Math.floor(Math.random() * 65536))'
+node -e 'console.log(Math.floor(Math.random() * 256))'
+```
+
+For `OpCode`, the value must fall outside the reserved ranges listed in
+`crates/ccosel-abi/src/opcode.rs`. Re-run the command if it lands inside one.
+
 ## Tickets
 
 Work is tracked as GitHub issues. Use one of the task forms:

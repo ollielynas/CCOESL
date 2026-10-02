@@ -1,7 +1,8 @@
 //! Command stream opcodes.
 //!
 //! Numeric values are part of the ABI: a cached app module compiled against version N must
-//! still decode correctly. Add new opcodes, never renumber existing ones.
+//! still decode correctly. Never renumber existing ones. New opcodes get a randomly
+//! generated value outside the reserved ranges (see "Wire IDs" in CONTRIBUTING.md).
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
