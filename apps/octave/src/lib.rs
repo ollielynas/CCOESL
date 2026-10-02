@@ -484,6 +484,25 @@ impl Octave {
         }
     }
 
+    /// Put figure `number`'s image, at `url`, in the command window. If the window ends in
+    /// figures, with nothing printed since, and this figure is one of them, its image there is
+    /// updated instead, as its window would be: a drawing loop redraws in place rather than
+    /// filling the window with frames.
+    fn show_figure(&mut self, number: u32, width: u32, height: u32, url: String) {
+        let kind = LineKind::Figure {
+            number,
+            width,
+            height,
+        };
+        let trailing = (self.log.iter_mut().rev())
+            .take_while(|(k, _)| matches!(k, LineKind::Figure { .. }))
+            .find(|(k, _)| matches!(k, LineKind::Figure { number: n, .. } if *n == number));
+        match trailing {
+            Some(entry) => *entry = (kind, url),
+            None => self.push_log(kind, &url),
+        }
+    }
+
     /// Show the dialogs the running job has asked for since the last poll.
     fn take_prompts(&mut self, prompts: &[OctavePrompt]) {
         let Some(job) = &mut self.job else {
@@ -510,13 +529,8 @@ impl Octave {
                     height,
                 } => {
                     // Drawn partway through, where a desktop window would be showing it.
-                    let kind = LineKind::Figure {
-                        number: *number,
-                        width: *width,
-                        height: *height,
-                    };
                     let url = figure_url(self.client.unwrap_or(1), seq, *image);
-                    self.push_log(kind, &url);
+                    self.show_figure(*number, *width, *height, url);
                 }
                 PromptKind::Input { prompt: text } => {
                     // Like a terminal: every line of the question but the last goes in the
@@ -654,12 +668,7 @@ impl Octave {
         for number in core::mem::take(&mut self.inline) {
             let fig = self.session.figures.iter().find(|f| f.number == number);
             if let Some((width, height)) = fig.and_then(|f| f.image) {
-                let kind = LineKind::Figure {
-                    number,
-                    width,
-                    height,
-                };
-                self.push_log(kind, &figure_url(client, seq, number));
+                self.show_figure(number, width, height, figure_url(client, seq, number));
             }
         }
     }

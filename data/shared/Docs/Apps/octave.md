@@ -18,7 +18,9 @@ A command that draws a figure, such as `plot(x, sin(x))` or `surf(peaks)`, shows
 the command, where Octave on a desktop would pop up a window. A script that is still running
 shows what it has drawn so far at the moments a window would update: at `drawnow` (at most
 once a second, so a drawing loop stays fast), at `pause`, and before it asks you anything. So a
-script that draws a figure and then asks whether you can see it shows the figure first. Click **Figure N · open in the
+script that draws a figure and then asks whether you can see it shows the figure first. When
+a figure is drawn again with nothing printed since, its picture is updated where it is, as a
+window would be, so an animation plays in one place instead of filling the window. Click **Figure N · open in the
 Figures tab** below it to see it larger, with every other figure.
 
 The output scrolls on its own and keeps the newest line in view. Scroll up to read back; it stops

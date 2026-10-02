@@ -1364,3 +1364,78 @@ fn a_figure_drawn_mid_script_is_shown_before_the_question_about_it() {
     assert_eq!(h.images(), [(url, Vec2::new(480.0, 360.0))]);
     assert!(h.has_label("  Do you see a window with a sine wave? (y/n): "));
 }
+
+fn live_figure(id: u32, number: u32, image: u32) -> OctavePrompt {
+    OctavePrompt {
+        id,
+        kind: PromptKind::Figure {
+            number,
+            image,
+            width: 400,
+            height: 300,
+        },
+    }
+}
+
+/// The figure entries in the log, as (figure number, image URL).
+fn figure_lines(h: &Harness<Octave>) -> Vec<(u32, String)> {
+    (h.app.log.iter())
+        .filter_map(|(k, url)| match k {
+            LineKind::Figure { number, .. } => Some((*number, url.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_figure_redrawn_with_nothing_printed_between_updates_in_place() {
+    let url = |image: u32| figure_url(1, 1, image);
+    // Frames of figure 1, then of figures 1 and 2 together, with nothing printed between.
+    let mut h = prompting(vec![
+        live_figure(1, 1, 10),
+        live_figure(2, 1, 11),
+        live_figure(3, 2, 12),
+        live_figure(4, 1, 13),
+        live_figure(5, 2, 14),
+    ]);
+    assert_eq!(figure_lines(&h), [(1, url(13)), (2, url(14))]);
+    let lines = h.app.log.len();
+
+    // Something printed: the next frame goes after it, and the earlier ones stay as they were.
+    h.reply::<OctavePoll>(&OctaveStatus {
+        output: "step 2\n".to_owned(),
+        next: 7,
+        prompts: vec![
+            live_figure(1, 1, 10),
+            live_figure(2, 1, 11),
+            live_figure(3, 2, 12),
+            live_figure(4, 1, 13),
+            live_figure(5, 2, 14),
+            live_figure(6, 1, 15),
+        ],
+        ..OctaveStatus::default()
+    });
+    h.frame();
+    assert_eq!(figure_lines(&h), [(1, url(13)), (2, url(14)), (1, url(15))]);
+    assert_eq!(h.app.log.len(), lines + 2);
+    assert_eq!(h.app.log[lines].1, "step 2");
+}
+
+#[test]
+fn the_figure_a_finished_command_shows_updates_its_last_frame_too() {
+    // Shown live while it ran, then drawn once more by the render after it ended.
+    let mut h = running("for k = 1:3, plot(k); drawnow; end");
+    h.reply::<OctavePoll>(&OctaveStatus {
+        prompts: vec![live_figure(1, 2, 1 << 31)],
+        ..OctaveStatus::default()
+    });
+    h.frame();
+    h.frame();
+    h.reply::<OctavePoll>(&done("", session(vec![], vec![drawn(waves())])));
+    h.frame();
+    h.reply::<OctaveRun>(&true);
+    h.frame();
+    h.reply::<OctavePoll>(&done("", rendered((640, 480))));
+    h.frame();
+    assert_eq!(figure_lines(&h), [(2, figure_url(1, 2, 2))]);
+}
