@@ -137,8 +137,9 @@ pub struct Figure {
     pub image: Option<(u32, u32)>,
 }
 
-/// Where the PNG of figure `number`, drawn by render job `(client, seq)`, is served. Only to
-/// the user whose job it was, and only while the server remembers the job.
+/// Where the PNG of figure `number`, drawn by render job `(client, seq)`, is served; or, with a
+/// [`PromptKind::Figure`]'s `image` as `number`, the figure drawn partway through job `seq`.
+/// Only to the user whose job it was, and only while the server remembers the job.
 pub fn figure_url(client: u32, seq: u32, number: u32) -> String {
     // By hand rather than `format!`, which would pull the formatting machinery into every app
     // that links this.
@@ -216,6 +217,15 @@ pub enum PromptKind {
         icon: MessageIcon,
         title: String,
         text: String,
+    },
+    /// Not a question: a figure the job drew, as it looked at a `drawnow`, a `pause` or a
+    /// question, where a desktop window would have shown it then. The app shows it in the
+    /// Command Window, from [`figure_url`] with `image` in place of the figure's number.
+    Figure {
+        number: u32,
+        image: u32,
+        width: u32,
+        height: u32,
     },
     /// `input`, or a line at `keyboard`'s `K>>`: type an answer at the Command Window's prompt.
     /// The job waits for an [`OctaveAnswer`] with [`PromptAnswer::Text`].

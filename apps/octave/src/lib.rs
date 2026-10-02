@@ -446,8 +446,8 @@ impl Octave {
         }
     }
 
+    /// The job is over: its output is already in (see `follow`).
     fn finish(&mut self, status: &OctaveStatus) {
-        self.take_output(&status.output, true);
         if status.output_truncated {
             self.push_log(
                 LineKind::Error,
@@ -502,6 +502,21 @@ impl Octave {
                         title: title.clone(),
                         text: text.clone(),
                     });
+                }
+                PromptKind::Figure {
+                    number,
+                    image,
+                    width,
+                    height,
+                } => {
+                    // Drawn partway through, where a desktop window would be showing it.
+                    let kind = LineKind::Figure {
+                        number: *number,
+                        width: *width,
+                        height: *height,
+                    };
+                    let url = figure_url(self.client.unwrap_or(1), seq, *image);
+                    self.push_log(kind, &url);
                 }
                 PromptKind::Input { prompt: text } => {
                     // Like a terminal: every line of the question but the last goes in the
@@ -749,11 +764,11 @@ impl Octave {
                     job.elapsed_ms = status.elapsed_ms;
                     job.limit_ms = status.limit_ms;
                 }
+                // Output first: a figure or a question comes after what was printed before it.
+                self.take_output(&status.output, status.finished);
                 self.take_prompts(&status.prompts);
                 if status.finished {
                     self.finish(&status);
-                } else {
-                    self.take_output(&status.output, false);
                 }
             }
             Poll::Failed(err) => {

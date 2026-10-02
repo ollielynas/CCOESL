@@ -1325,3 +1325,42 @@ fn a_question_ends_with_its_job() {
     h.frame();
     assert!(h.has_label(">>"));
 }
+
+#[test]
+fn a_figure_drawn_mid_script_is_shown_before_the_question_about_it() {
+    let mut h = running("test_popup");
+    h.reply::<OctavePoll>(&OctaveStatus {
+        output: "  [PASS] window can be resized\n".to_owned(),
+        next: 31,
+        prompts: vec![
+            OctavePrompt {
+                id: 1,
+                kind: PromptKind::Figure {
+                    number: 1,
+                    image: 1 << 31,
+                    width: 512,
+                    height: 384,
+                },
+            },
+            input_prompt(2, "\n  Do you see a window with a sine wave? (y/n): "),
+        ],
+        ..OctaveStatus::default()
+    });
+    h.frame();
+    h.frame();
+    let url = "/octave/figure/1/1/2147483648.png".to_owned();
+    let kinds: Vec<LineKind> = h.app.log.iter().map(|(k, _)| *k).collect();
+    // The output so far, then the figure, then the question's first (empty) line.
+    let figure = LineKind::Figure {
+        number: 1,
+        width: 512,
+        height: 384,
+    };
+    assert_eq!(
+        kinds,
+        [LineKind::Input, LineKind::Output, figure, LineKind::Output]
+    );
+    assert_eq!(h.app.log[2].1, url);
+    assert_eq!(h.images(), [(url, Vec2::new(480.0, 360.0))]);
+    assert!(h.has_label("  Do you see a window with a sine wave? (y/n): "));
+}

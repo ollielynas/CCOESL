@@ -45,11 +45,20 @@ const RUNNER: &str = include_str!("octave/__ccosel_run__.m");
 /// `have_window_system` says true, since figures are shown, so scripts don't skip their plots.
 /// `msgbox`, `errordlg`, `warndlg`, `helpdlg` and `uigetfile` become dialogs in the app, through
 /// `__ccosel_prompt__`, which asks for one and, for `uigetfile`, waits for the answer.
-const SHADOWS: [(&str, &str); 13] = [
+///
+/// `drawnow` and `pause` show what a script has drawn so far, through `__ccosel_live__`, as a
+/// desktop's windows would show it while the script runs; a bare `pause` asks to press Enter.
+const SHADOWS: [(&str, &str); 16] = [
     (
         "__ccosel_prompt__.m",
         include_str!("octave/__ccosel_prompt__.m"),
     ),
+    (
+        "__ccosel_live__.m",
+        include_str!("octave/__ccosel_live__.m"),
+    ),
+    ("drawnow.m", include_str!("octave/drawnow.m")),
+    ("pause.m", include_str!("octave/pause.m")),
     ("msgbox.m", include_str!("octave/msgbox.m")),
     ("errordlg.m", include_str!("octave/errordlg.m")),
     ("warndlg.m", include_str!("octave/warndlg.m")),
@@ -94,6 +103,14 @@ const JOB_RETENTION: Duration = Duration::from_secs(10 * 60);
 
 /// How long a render job's images are kept after it, for the command window's scrollback.
 const IMAGE_RETENTION: Duration = Duration::from_secs(2 * 60 * 60);
+
+/// Live figures (`PromptKind::Figure`) are kept under image numbers from here up, apart from a
+/// render job's, which are kept under their figure numbers.
+const LIVE_IMAGES: u32 = 1 << 31;
+
+/// The most live figures one job keeps. Past that, a script drawing in a loop shows no more
+/// of them until it ends.
+const MAX_LIVE_IMAGES: usize = 64;
 
 /// The most render jobs a user's images are kept from at once.
 const MAX_RENDERS_KEPT: usize = 64;
@@ -619,7 +636,11 @@ impl Session {
                     Some(" DONE") => break,
                     Some(rest) => match rest.strip_prefix(" PROMPT\t") {
                         Some(fields) => {
-                            if let Some(prompt) = parse_prompt(fields, jail_root) {
+                            let prompt = match live_figure(fields) {
+                                Some((id, number, file)) => self.take_live(job, id, number, file),
+                                None => parse_prompt(fields, jail_root),
+                            };
+                            if let Some(prompt) = prompt {
                                 job.push_prompt(prompt);
                             }
                         }
@@ -651,6 +672,41 @@ impl Session {
             result.error = true;
         }
         result
+    }
+
+    /// Read in a figure `__ccosel_live__` printed to `file`, which must be in this session's
+    /// folder, into `job`'s images, and say where it is. The file is removed either way.
+    fn take_live(&self, job: &Job, id: u32, number: u32, file: &str) -> Option<OctavePrompt> {
+        let path = Path::new(file);
+        let ours = path.parent() == Some(self.dir.as_path())
+            && path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("live-") && n.ends_with(".png"));
+        if !ours {
+            return None;
+        }
+        let small = std::fs::metadata(path).is_ok_and(|m| m.len() <= MAX_IMAGE_BYTES);
+        let bytes = small.then(|| std::fs::read(path).ok()).flatten();
+        let _ = std::fs::remove_file(path);
+        let bytes = bytes?;
+        let (width, height) = png_size(&bytes)?;
+        let mut images = job.images.lock().unwrap();
+        let live = images.keys().filter(|&&k| k >= LIVE_IMAGES).count();
+        if live >= MAX_LIVE_IMAGES {
+            return None;
+        }
+        let image = LIVE_IMAGES + live as u32;
+        images.insert(image, Arc::new(bytes));
+        Some(OctavePrompt {
+            id,
+            kind: PromptKind::Figure {
+                number,
+                image,
+                width,
+                height,
+            },
+        })
     }
 
     /// An empty folder for a render job to print into. Emptied each time, so it holds only the
@@ -778,6 +834,18 @@ pub fn parse_prompt(line: &str, jail_root: &Path) -> Option<OctavePrompt> {
         _ => return None,
     };
     Some(OctavePrompt { id, kind })
+}
+
+/// A `FIGURE` prompt line from `__ccosel_live__`: its number, the figure's number, and the file
+/// it was printed to. `None` for any other kind of prompt.
+fn live_figure(line: &str) -> Option<(u32, u32, &str)> {
+    let mut fields = line.split('\t');
+    let id = fields.next()?.parse().ok()?;
+    if fields.next()? != "FIGURE" {
+        return None;
+    }
+    let number = fields.next()?.parse().ok()?;
+    Some((id, number, fields.next()?))
 }
 
 /// Undo `__ccosel_prompt__`'s escaping.

@@ -8,6 +8,10 @@
 ##
 ## Loaded from the server's support folder: edit this file, not a copy.
 function out = __ccosel_prompt__ (wait, kind, varargin)
+  ## Before asking, show what the script has drawn, as a desktop's windows would be by now.
+  if (! strcmp (kind, "FIGURE"))
+    __ccosel_live__ (true);
+  endif
   n = getappdata (0, "__ccosel_prompts__");
   if (isempty (n))
     n = 0;

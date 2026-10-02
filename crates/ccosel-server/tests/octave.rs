@@ -653,7 +653,7 @@ fn real_octave_survives_exit_and_input() {
 }
 
 /// Real Octave, when this machine has it: which figures a job created or drew into, where a
-/// desktop would have popped up a window; and a figure made visible draws nothing into the
+/// desktop would have popped up a window, whether shown while it ran or at its end; and a figure made visible draws nothing into the
 /// output, nor does waiting for its window to close hang.
 #[test]
 fn real_octave_says_which_figures_a_job_drew() {
@@ -668,12 +668,22 @@ fn real_octave_says_which_figures_a_job_drew() {
         let status = wait(octave, None, seq);
         let result = status.result.unwrap();
         assert!(!result.error, "{code}: {}", status.output);
-        let drawn: Vec<u32> = result
-            .figures
-            .iter()
-            .filter(|f| f.changed)
-            .map(|f| f.number)
+        // Shown while it ran (as `figure()` draws the one before), or changed at the end.
+        let mut drawn: Vec<u32> = (status.prompts.iter())
+            .filter_map(|p| match p.kind {
+                ccosel_proto::octave::PromptKind::Figure { number, .. } => Some(number),
+                _ => None,
+            })
+            .chain(
+                result
+                    .figures
+                    .iter()
+                    .filter(|f| f.changed)
+                    .map(|f| f.number),
+            )
             .collect();
+        drawn.sort_unstable();
+        drawn.dedup();
         (drawn, status.output)
     };
     assert_eq!(
@@ -1008,4 +1018,179 @@ fn real_octave_asks_the_app_for_input() {
         !wait(&octave, None, 5).result.unwrap().ended,
         "Stop works while it waits"
     );
+}
+
+/// The owner's script for testing popup windows, as they ran it in the app: it draws a figure,
+/// asks whether you can see it, then closes it.
+const POPUP_TEST: &str = r#"1;
+ASK_USER = true;
+function results = run_case(results, name, fn)
+  try
+    fn();
+    results.passed += 1;
+    printf("  [PASS] %s\n", name);
+  catch err
+    results.failed += 1;
+    results.failures{end+1} = sprintf("%s: %s", name, err.message);
+    printf("  [FAIL] %s\n         %s\n", name, err.message);
+  end_try_catch
+endfunction
+results = struct("passed", 0, "failed", 0, "failures", {{}});
+printf("Popup window tests (graphics toolkit: %s)\n\n", graphics_toolkit());
+if ! have_window_system()
+  printf("  [SKIP] No window system available (headless?). Popups can't be tested.\n");
+  exit(0);
+endif
+fig = figure("name", "Popup test");
+results = run_case(results, "figure opens", @() assert(isfigure(fig)));
+results = run_case(results, "figure is visible", @() assert(get(fig, "visible"), "on"));
+results = run_case(results, "figure is registered with root", @() assert(any(get(0, "children") == fig)));
+results = run_case(results, "window title is set", @() assert(get(fig, "name"), "Popup test"));
+x = linspace(0, 2*pi, 100);
+h = plot(x, sin(x), "linewidth", 2);
+title("If you can see this, the popup works");
+drawnow;
+results = run_case(results, "axes were created", @() assert(isaxes(gca())));
+results = run_case(results, "line object was drawn", @() assert(strcmp(get(h, "type"), "line") && numel(get(h, "ydata")) == 100));
+set(fig, "position", [100 100 640 480]);
+drawnow;
+pos = get(fig, "position");
+results = run_case(results, "window can be resized", @() assert(pos(3:4), [640 480]));
+if ASK_USER
+  answer = input("\n  Do you see a window with a sine wave? (y/n): ", "s");
+  results = run_case(results, "user confirmed window is visible", @() assert(strcmpi(strtrim(answer), "y"), true));
+else
+  pause(2);
+endif
+close(fig);
+drawnow;
+results = run_case(results, "window closes", @() assert(! isfigure(fig)));
+total = results.passed + results.failed;
+printf("\n%d/%d popup tests passed.\n", results.passed, total);
+if results.failed > 0
+  printf("\nFailures:\n");
+  printf("  - %s\n", results.failures{:});
+  exit(1);
+endif
+"#;
+
+/// Wait until job `seq` has asked `n` prompts, and return them.
+fn prompts_after(octave: &Octave, seq: u32, n: usize) -> Vec<ccosel_proto::octave::OctavePrompt> {
+    let start = Instant::now();
+    loop {
+        let asked = status(octave, seq).prompts;
+        if asked.len() >= n {
+            return asked;
+        }
+        assert!(start.elapsed() < Duration::from_secs(30), "asked {asked:?}");
+        std::thread::sleep(Duration::from_millis(30));
+    }
+}
+
+/// Real Octave, when this machine has it: a figure is shown while the script runs, as a
+/// desktop window would show it, not only once it has finished: here, before the question
+/// that asks whether you can see it.
+#[test]
+fn real_octave_shows_figures_while_the_script_runs() {
+    use ccosel_proto::octave::{OctaveAnswerReq, PromptAnswer, PromptKind};
+    let (jail, support) = setup("real-live");
+    let octave = Octave::detect(support);
+    if !octave.available() {
+        eprintln!("octave-cli is not installed; skipped");
+        return;
+    }
+    run(&octave, &jail, None, 1, OctaveInput::Code(POPUP_TEST));
+    let asked = loop {
+        let asked = prompts_after(&octave, 1, 1);
+        if asked
+            .iter()
+            .any(|p| matches!(p.kind, PromptKind::Input { .. }))
+        {
+            break asked;
+        }
+        std::thread::sleep(Duration::from_millis(30));
+    };
+    // The figure first, then the question about it.
+    let (figure, question) = match (&asked[0].kind, &asked[asked.len() - 1].kind) {
+        (PromptKind::Figure { .. }, PromptKind::Input { prompt }) => (&asked[0], prompt),
+        other => panic!("{other:?}"),
+    };
+    assert!(question.contains("Do you see a window"), "{question}");
+    let PromptKind::Figure {
+        number,
+        image,
+        width,
+        height,
+    } = figure.kind
+    else {
+        unreachable!()
+    };
+    assert_eq!(number, 1);
+    let png = octave.figure(None, 1, 1, image).expect("served");
+    assert_eq!(
+        ccosel_server::octave_api::png_size(&png),
+        Some((width, height))
+    );
+
+    let answer = OctaveAnswerReq {
+        client: 1,
+        seq: 1,
+        prompt: asked[asked.len() - 1].id,
+        answer: PromptAnswer::Text("y"),
+    };
+    octave.answer(&jail, None, &answer).unwrap();
+    let done = wait(&octave, None, 1);
+    assert!(
+        done.output.contains("9/9 popup tests passed."),
+        "{}",
+        done.output
+    );
+    let result = done.result.unwrap();
+    assert!(!result.error, "{}", done.output);
+    // It closed the figure, and nothing else was drawn after it was shown.
+    assert!(result.figures.iter().all(|f| !f.changed));
+}
+
+#[test]
+fn real_octave_shows_a_drawing_loop_without_flooding_and_pause_waits_for_enter() {
+    use ccosel_proto::octave::{OctaveAnswerReq, PromptAnswer, PromptKind};
+    let (jail, support) = setup("real-loop");
+    let octave = Octave::detect(support);
+    if !octave.available() {
+        eprintln!("octave-cli is not installed; skipped");
+        return;
+    }
+    // Twenty frames in well under a second: at most one a second is shown.
+    run(
+        &octave,
+        &jail,
+        None,
+        1,
+        OctaveInput::Code("for k = 1:20, plot(rand(1, 5)); drawnow; end"),
+    );
+    let done = wait(&octave, None, 1);
+    let shown = (done.prompts.iter())
+        .filter(|p| matches!(p.kind, PromptKind::Figure { .. }))
+        .count();
+    assert!((1..=3).contains(&shown), "{shown} shown");
+
+    run(
+        &octave,
+        &jail,
+        None,
+        2,
+        OctaveInput::Code("pause; disp(\"carried on\")"),
+    );
+    let asked = prompts_after(&octave, 2, 1);
+    assert!(
+        matches!(&asked[0].kind, PromptKind::Input { prompt } if prompt.contains("press Enter"))
+    );
+    let answer = OctaveAnswerReq {
+        client: 1,
+        seq: 2,
+        prompt: asked[0].id,
+        answer: PromptAnswer::Text(""),
+    };
+    octave.answer(&jail, None, &answer).unwrap();
+    assert!(wait(&octave, None, 2).output.contains("carried on"));
 }

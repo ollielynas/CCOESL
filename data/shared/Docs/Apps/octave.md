@@ -15,7 +15,10 @@ prompt: `x = 3` shows `x = 3`, and ending a line with `;` keeps it quiet. Errors
 *italics*. The prompt stays ready for the next command, so you can type one after another.
 
 A command that draws a figure, such as `plot(x, sin(x))` or `surf(peaks)`, shows it right under
-the command, where Octave on a desktop would pop up a window. Click **Figure N · open in the
+the command, where Octave on a desktop would pop up a window. A script that is still running
+shows what it has drawn so far at the moments a window would update: at `drawnow` (at most
+once a second, so a drawing loop stays fast), at `pause`, and before it asks you anything. So a
+script that draws a figure and then asks whether you can see it shows the figure first. Click **Figure N · open in the
 Figures tab** below it to see it larger, with every other figure.
 
 The output scrolls on its own and keeps the newest line in view. Scroll up to read back; it stops
@@ -47,6 +50,8 @@ prompt, and the top of the window says **:chat_text: Waiting for your answer**. 
 and press Enter. With `input(question, "s")` the script gets exactly what you typed; otherwise
 it is worked out as Octave, so `3 * 2` gives 6, and it can use the script's variables. An empty
 answer gives `[]`. The question and your answer stay in the command window, as in a terminal.
+
+`pause` on its own, which waits for a key on a desktop, asks you to press Enter instead.
 
 `keyboard` stops the script at a **K>>** prompt: each line you type there runs with the
 script's variables. Type `return` (or `dbcont`) to carry on with the script, or `dbquit` to stop

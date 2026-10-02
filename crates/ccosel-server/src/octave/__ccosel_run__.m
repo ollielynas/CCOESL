@@ -25,6 +25,11 @@ function __ccosel_run__ (kind, file, tag)
   ## Every graphics object there is before the job, so the report can say which figures it
   ## created or drew into: those would have popped up a window on a desktop.
   before = findall (0);
+  ## What was last shown live (`__ccosel_live__`): the report's figures that changed are those
+  ## changed since, so a figure already shown in the Command Window isn't shown again.
+  setappdata (0, "__ccosel_live_before__", before);
+  setappdata (0, "__ccosel_live_count__", 0);
+  setappdata (0, "__ccosel_live_busy__", strcmp (kind, "render"));
   try
     if (strcmp (kind, "file"))
       evalin ("base", sprintf ("run ('%s');", strrep (file, "'", "''")));
@@ -54,7 +59,8 @@ function __ccosel_run__ (kind, file, tag)
   fflush (stderr);
   printf ("%s STATUS\t%d\t%s\n", tag, failed, __ccosel_clean__ (pwd ()));
   __ccosel_vars__ (tag);
-  __ccosel_figs__ (tag, before);
+  setappdata (0, "__ccosel_live_busy__", false);
+  __ccosel_figs__ (tag, getappdata (0, "__ccosel_live_before__"));
   printf ("%s DONE\n", tag);
   fflush (stdout);
 endfunction
