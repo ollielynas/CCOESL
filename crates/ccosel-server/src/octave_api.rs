@@ -24,9 +24,10 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use ccosel_proto::octave::{
-    Axes, DEFAULT_LIMIT_MS, Figure, MAX_LIMIT_MS, MAX_OUTPUT_BYTES, MAX_PROMPTS, MessageIcon,
-    OctaveAction, OctaveAnswerReq, OctaveControlReq, OctaveInput, OctavePollReq, OctavePrompt,
-    OctaveResult, OctaveRunReq, OctaveStatus, PromptAnswer, PromptKind, Series, Variable,
+    Axes, DEFAULT_LIMIT_MS, ErrorAt, Figure, MAX_LIMIT_MS, MAX_OUTPUT_BYTES, MAX_PROMPTS,
+    MessageIcon, OctaveAction, OctaveAnswerReq, OctaveControlReq, OctaveInput, OctavePollReq,
+    OctavePrompt, OctaveResult, OctaveRunReq, OctaveStatus, PromptAnswer, PromptKind, Series,
+    Variable,
 };
 use ccosel_proto::server_error;
 
@@ -950,6 +951,27 @@ pub fn parse_report(lines: &[String], jail_root: &Path) -> OctaveResult {
             "STATUS" => {
                 result.error = next() == "1";
                 result.cwd = jail_path(Path::new(&next()), jail_root);
+            }
+            "ERROR" => {
+                // An empty file is the code the job ran. A file outside the jail (one of
+                // Octave's own, say) is nothing an editor here could have open, so it gets no
+                // place: an empty path would read as "the code the job ran".
+                let file = next();
+                let path = match file.as_str() {
+                    "" => Some(String::new()),
+                    f => Some(jail_path(Path::new(f), jail_root)).filter(|p| !p.is_empty()),
+                };
+                let line = next().parse().unwrap_or(0);
+                let column = next().parse().unwrap_or(0);
+                let message = next();
+                if let Some(path) = path.filter(|_| line > 0) {
+                    result.error_at = Some(ErrorAt {
+                        path,
+                        line,
+                        column,
+                        message,
+                    });
+                }
             }
             "VAR" => {
                 if result.variables.len() == MAX_VARIABLES {

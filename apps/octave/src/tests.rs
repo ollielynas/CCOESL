@@ -1,5 +1,5 @@
 use ccosel_proto::fs::{DirEntry, DirListing, FileText};
-use ccosel_proto::octave::{Series, Variable};
+use ccosel_proto::octave::{ErrorAt, Series, Variable};
 use ccosel_sdk::testing::{Harness, rpc_error};
 
 use ccosel_sdk::icons;
@@ -1508,5 +1508,140 @@ fn a_prompt_past_the_output_so_far_waits_for_the_output_before_it() {
     assert_eq!(
         lines,
         ["ab".to_owned(), "cdef".to_owned(), figure_url(1, 1, 10)]
+    );
+}
+
+/// A finished job's report: an error at `path`, `line`, `column`.
+fn failed_at(path: &str, line: u32, column: u32, message: &str) -> OctaveStatus {
+    let mut result = session(vec![], vec![]);
+    result.error = true;
+    result.error_at = Some(ErrorAt {
+        path: path.to_owned(),
+        line,
+        column,
+        message: message.to_owned(),
+    });
+    let mut out = String::from("error: ");
+    out.push_str(message);
+    out.push('\n');
+    done(&out, result)
+}
+
+/// The editor, holding `text`, run without a file: the job taken and waiting to be polled.
+fn ran_unsaved(text: &str) -> Harness<Octave> {
+    let mut h = editor();
+    h.type_text(2, text);
+    h.frame();
+    h.click(&label(icons::PLAY, "Run"));
+    h.frame();
+    h.reply::<OctaveRun>(&true);
+    h.frame();
+    h
+}
+
+#[test]
+fn an_error_in_the_editors_script_is_marked_there() {
+    let mut h = ran_unsaved("a = 1;\nb = (2 + ;");
+    assert_eq!(h.app.tab, Tab::Command);
+    h.reply::<OctavePoll>(&failed_at("", 2, 10, "parse error"));
+    h.frame();
+    // Back in the editor, with the place said and marked.
+    assert_eq!(h.app.tab, Tab::Editor);
+    let e = h.app.editor_error.clone().expect("marked");
+    assert_eq!((e.line, e.column), (2, 10));
+    h.frame();
+    assert!(h.has_text(&label(icons::X_CIRCLE, "Line 2, column 10: parse error")));
+    // The command window has it too.
+    assert!(h.app.log.iter().any(|(_, l)| l == "error: parse error"));
+
+    // An edit may have moved or fixed it: the mark goes.
+    h.type_text(2, "a = 1;\nb = (2 + 3);");
+    h.frame();
+    h.frame();
+    assert!(h.app.editor_error.is_none());
+    assert!(!h.has_text(&label(icons::X_CIRCLE, "Line 2, column 10: parse error")));
+}
+
+#[test]
+fn a_line_only_error_says_just_the_line_and_a_clean_run_clears_it() {
+    let mut h = ran_unsaved("x = undefined_thing;");
+    h.reply::<OctavePoll>(&failed_at("", 1, 0, "'undefined_thing' undefined"));
+    h.frame();
+    h.frame();
+    assert!(h.has_text(&label(
+        icons::X_CIRCLE,
+        "Line 1: 'undefined_thing' undefined"
+    )));
+    // Run again: the mark goes at once, and stays gone when the run succeeds.
+    h.click(&label(icons::PLAY, "Run"));
+    h.frame();
+    assert!(h.app.editor_error.is_none());
+    h.reply::<OctaveRun>(&true);
+    h.frame();
+    h.reply::<OctavePoll>(&done("", session(vec![], vec![])));
+    h.frame();
+    assert!(h.app.editor_error.is_none());
+}
+
+#[test]
+fn an_error_in_the_file_the_editor_has_open_is_marked_however_it_was_run() {
+    let mut h = editor();
+    h.type_text(1, "/home/alice/fit.m");
+    h.frame();
+    h.click("Command Window");
+    h.frame();
+    h.frame();
+    // Run at the prompt, by name, and failing in the file the editor has open.
+    h.type_text(1, "fit");
+    h.press_enter(1);
+    h.frame();
+    h.reply::<OctaveRun>(&true);
+    h.frame();
+    h.reply::<OctavePoll>(&failed_at("/home/alice/fit.m", 4, 3, "out of bound"));
+    h.frame();
+    assert_eq!(h.app.editor_error.as_ref().map(|e| e.line), Some(4));
+    assert_eq!(
+        h.app.tab,
+        Tab::Command,
+        "not run from the editor: stays here"
+    );
+
+    // One in another file, or in what was typed at the prompt, isn't the editor's.
+    for (seq, path) in [(2, "/home/alice/other.m"), (3, "")] {
+        h.app.editor_error = None;
+        h.type_text(1, "other");
+        h.press_enter(1);
+        h.frame();
+        h.reply::<OctaveRun>(&true);
+        h.frame();
+        h.reply::<OctavePoll>(&failed_at(path, 1, 1, "nope"));
+        h.frame();
+        assert!(h.app.editor_error.is_none(), "{seq} {path:?}");
+    }
+}
+
+#[test]
+fn an_error_in_the_saved_file_the_editor_ran_is_marked() {
+    let mut h = editor();
+    h.type_text(1, "/home/alice/fit.m");
+    h.type_text(2, "a = 1\nb = a(3)");
+    h.frame();
+    h.click(&label(icons::PLAY, "Run"));
+    h.frame();
+    h.reply::<WriteFile>(&());
+    h.frame();
+    h.reply::<OctaveRun>(&true);
+    h.frame();
+    h.reply::<OctavePoll>(&failed_at(
+        "/home/alice/fit.m",
+        2,
+        5,
+        "index (3): out of bound 1",
+    ));
+    h.frame();
+    assert_eq!(h.app.tab, Tab::Editor);
+    assert_eq!(
+        h.app.editor_error.as_ref().map(|e| (e.line, e.column)),
+        Some((2, 5))
     );
 }

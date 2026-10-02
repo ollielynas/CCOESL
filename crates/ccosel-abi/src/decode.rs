@@ -96,6 +96,8 @@ pub enum Cmd<'a> {
         version: u32,
         set: Option<&'a str>,
         lang: CodeLang,
+        /// An error to mark: `(line, column)`, both from 1, with column 0 for the whole line.
+        mark: Option<(u32, u32)>,
     },
     Styled {
         id: u64,
@@ -254,11 +256,17 @@ impl<'a> Decoder<'a> {
             OpCode::TextEditCode => {
                 let (id, version, set) = self.text_edit()?;
                 let lang = CodeLang::from_u8(self.u8()?).ok_or(DecodeError::InvalidEnum)?;
+                let mark = match self.u8()? {
+                    0 => None,
+                    1 => Some((self.u32()?, self.u32()?)),
+                    _ => return Err(DecodeError::InvalidEnum),
+                };
                 Cmd::TextEditCode {
                     id,
                     version,
                     set,
                     lang,
+                    mark,
                 }
             }
             OpCode::Styled => Cmd::Styled {

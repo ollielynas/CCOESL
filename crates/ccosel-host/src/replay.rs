@@ -269,7 +269,8 @@ fn match_scopes(cmds: &[Cmd<'_>]) -> Vec<usize> {
 enum Field {
     Single,
     Multi,
-    Code(CodeLang),
+    /// With an error to mark: `(line, column)`, from 1.
+    Code(CodeLang, Option<(u32, u32)>),
 }
 
 /// Borrowed working set for one replay pass.
@@ -318,7 +319,7 @@ impl Cx<'_> {
         let mut layouter = |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap_width: f32| {
             let text = buf.as_str();
             let spans = match field {
-                Field::Code(lang) => ui.ctx().memory_mut(|m| {
+                Field::Code(lang, _) => ui.ctx().memory_mut(|m| {
                     m.caches
                         .cache::<highlight::LexCache>()
                         .get((text, lang))
@@ -326,7 +327,10 @@ impl Cx<'_> {
                 }),
                 _ => Vec::new(),
             };
-            let job = highlight::layout_job(ui, text, &spans, wrap_width);
+            let mut job = highlight::layout_job(ui, text, &spans, wrap_width);
+            if let Field::Code(_, Some((line, column))) = field {
+                highlight::mark_error(ui, &mut job, line, column);
+            }
             ui.fonts_mut(|f| f.layout_job(job))
         };
         let edit = if multiline {
@@ -336,7 +340,7 @@ impl Cx<'_> {
                 .code_editor()
                 .desired_width(f32::INFINITY)
                 .desired_rows(16);
-            if matches!(field, Field::Code(_)) {
+            if matches!(field, Field::Code(..)) {
                 edit.layouter(&mut layouter)
             } else {
                 edit
@@ -480,8 +484,9 @@ impl Cx<'_> {
                     version,
                     set,
                     lang,
+                    mark,
                 } => {
-                    self.text_edit(ui, id, version, set, Field::Code(lang));
+                    self.text_edit(ui, id, version, set, Field::Code(lang, mark));
                 }
 
                 Cmd::Selectable { id, text, selected } => {

@@ -43,7 +43,7 @@ pub enum OpCode {
     /// A clickable row that shows whether it is the selected one, like an entry in a file tree.
     Selectable = 0x12,
     /// A multi-line text area for source code, coloured by the shell for a `CodeLang`. The
-    /// `TextEditMulti` payload and protocol, then the language.
+    /// `TextEditMulti` payload and protocol, then the language, then an optional error mark.
     TextEditCode = 0x13,
     // 0x40..0x4F reserved for subtree caching (BeginCached / EndCached / CachedRef).
     // Not implemented yet, but the space is reserved so adding it is not an ABI break.

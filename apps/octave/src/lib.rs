@@ -97,6 +97,19 @@ pub struct Job {
     pub stopping: bool,
     /// How many of its prompts (dialogs) the app has already shown.
     prompts_seen: usize,
+    /// Run from the editor: its file's path, or empty for its unsaved text.
+    from_editor: Option<String>,
+}
+
+/// An error the last run left in the editor's text, marked there until it is edited.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EditorError {
+    pub line: u32,
+    /// 0 when Octave gave only the line.
+    pub column: u32,
+    pub message: String,
+    /// The editor text's version when it was marked: any edit since clears it.
+    version: u32,
 }
 
 /// A message a job showed with `msgbox` and kin, until OK is pressed.
@@ -190,6 +203,8 @@ pub struct Octave {
     pub picker: Option<Picker>,
     /// The `input` a running job waits on, answered at the Command Window's prompt.
     pub asking: Option<Asking>,
+    /// Where the last run's error is in the editor's text, if it is in it.
+    pub editor_error: Option<EditorError>,
     /// A job has reported the session's state at least once. Until then the app doesn't know
     /// the working folder or the variables, which isn't the same as there being none.
     pub synced: bool,
@@ -226,6 +241,7 @@ impl Default for Octave {
             messages_shown: 0,
             picker: None,
             asking: None,
+            editor_error: None,
             synced: false,
         }
     }
@@ -383,6 +399,7 @@ impl Octave {
             limit_ms: DEFAULT_LIMIT_MS,
             stopping: false,
             prompts_seen: 0,
+            from_editor: None,
         });
         true
     }
@@ -476,11 +493,45 @@ impl Octave {
         self.rendered = None;
         self.figures_stale = !self.session.figures.is_empty();
         if job.target == Target::Console {
+            self.place_error(job.from_editor.as_deref());
+        }
+        if job.target == Target::Console {
             // Where a desktop would pop up a window, draw the figure into the command window.
             self.inline = (self.session.figures.iter())
                 .filter(|f| f.changed)
                 .map(|f| f.number)
                 .collect();
+        }
+    }
+
+    /// If the job that just ended failed in the editor's text, mark the place there. That is its
+    /// unsaved text, if it was run from the editor; or its file, however it was run. A run from
+    /// the editor that failed there goes back to it, to show where.
+    fn place_error(&mut self, from_editor: Option<&str>) {
+        let open = self.editor_path.as_str().trim();
+        let here = self
+            .session
+            .error_at
+            .as_ref()
+            .filter(|at| match at.path.as_str() {
+                "" => from_editor == Some(""),
+                path => path == open,
+            });
+        match here {
+            Some(at) => {
+                self.editor_error = Some(EditorError {
+                    line: at.line,
+                    column: at.column,
+                    message: at.message.clone(),
+                    version: self.editor.version(),
+                });
+                if from_editor.is_some() {
+                    self.tab = Tab::Editor;
+                }
+            }
+            // A run from the editor that got past its error, or failed somewhere else.
+            None if from_editor.is_some() => self.editor_error = None,
+            None => {}
         }
     }
 
@@ -1226,7 +1277,32 @@ impl Octave {
             ui.styled(&self.editor_status, TextStyle::WEAK);
         }
         // The file scrolls by itself, under its toolbar, rather than the whole window.
-        ui.scroll(|ui| ui.code_editor(&mut self.editor, CodeLang::Octave));
+        // An edit since the error was marked may have moved it, or fixed it.
+        if self
+            .editor_error
+            .as_ref()
+            .is_some_and(|e| e.version != self.editor.version())
+        {
+            self.editor_error = None;
+        }
+        if let Some(e) = &self.editor_error {
+            let mut at = String::from("Line ");
+            at.push_str(&itoa(u64::from(e.line)));
+            if e.column > 0 {
+                at.push_str(", column ");
+                at.push_str(&itoa(u64::from(e.column)));
+            }
+            at.push_str(": ");
+            at.push_str(&e.message);
+            ui.styled(&label(icons::X_CIRCLE, &at), TextStyle::STRONG);
+        }
+        let mark = self.editor_error.as_ref().map(|e| (e.line, e.column));
+        ui.scroll(|ui| match mark {
+            Some((line, column)) => {
+                ui.code_editor_marked(&mut self.editor, CodeLang::Octave, line, column)
+            }
+            None => ui.code_editor(&mut self.editor, CodeLang::Octave),
+        });
     }
 
     fn figures_tab(&self, ui: &mut Ui<'_>, act: &mut Vec<Action>) {
@@ -1341,10 +1417,19 @@ impl Octave {
     fn run_file(&mut self, ui: &mut Ui<'_>, path: String) {
         let mut shown = String::from("run ");
         shown.push_str(&path);
-        if self.start(ui, Run::File(path), Target::Console) {
+        if self.start(ui, Run::File(path.clone()), Target::Console) {
             self.push_log(LineKind::Input, &shown);
             self.tab = Tab::Command;
+            self.ran_from_editor(path);
         }
+    }
+
+    /// The job just started is the editor's file at `path`, or its unsaved text if empty.
+    fn ran_from_editor(&mut self, path: String) {
+        if let Some(job) = &mut self.job {
+            job.from_editor = Some(path);
+        }
+        self.editor_error = None;
     }
 
     fn recall(&mut self, older: bool) {
@@ -1458,6 +1543,7 @@ impl Octave {
                     if self.start(ui, Run::Code(code), Target::Console) {
                         self.push_log(LineKind::Input, UNSAVED_RUN);
                         self.tab = Tab::Command;
+                        self.ran_from_editor(String::new());
                     }
                 } else {
                     self.act(ui, Action::Save { run_after: true });

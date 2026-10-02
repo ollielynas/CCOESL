@@ -133,6 +133,18 @@ you type: keywords such as `if` and `for`, strings, numbers, and comments in ita
 Files you can read but not change (such as the ones in `/Docs`) open read-only: you can run
 them, but not save over them.
 
+
+### Errors
+
+When a script you run from the editor stops with an error, the app goes back to the editor and
+shows where: the line is shaded red and underlined from the point Octave gave, and above the
+editor it says, for example, **:x_circle: Line 3, column 12: syntax error …**. The error is in
+the command window too.
+
+That works for the file you have open however it was run, even by name at the prompt, and for
+unsaved text run from the editor. An error inside another file, such as a function your script
+calls, is marked when that file is the one open. The mark goes as soon as you change the text,
+or run again.
 ## Figures
 
 Plots appear in the **Figures** tab, drawn by Octave itself, exactly as `print` would save

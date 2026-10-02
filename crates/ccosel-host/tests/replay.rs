@@ -1096,6 +1096,7 @@ fn a_code_editor_colours_its_text_and_still_takes_typing() {
             version: 1,
             set,
             lang: ccosel_abi::CodeLang::Octave,
+            mark: None,
         }])
     };
     let colours = |full: &egui::FullOutput| -> Vec<egui::Color32> {
@@ -1169,4 +1170,68 @@ fn a_long_row_is_cut_short_rather_than_widening_its_sidebar() {
     assert!(row[2] <= 250.0, "the row ends inside the sidebar: {row:?}");
     let page = find(&recs, 75).rect;
     assert!(page[0] < 270.0, "the page still starts beside it: {page:?}");
+}
+
+#[test]
+fn a_code_editor_marks_the_line_an_error_is_on() {
+    let ctx = egui::Context::default();
+    let mut r = Replayer::new();
+    let text = "a = 1;\nb = (2 + ;\nc = 3;";
+    let field = |mark| {
+        encode(&[Cmd::TextEditCode {
+            id: 61,
+            version: 1,
+            set: Some(text),
+            lang: ccosel_abi::CodeLang::Octave,
+            mark,
+        }])
+    };
+    // The editor's text, as (bytes, shaded, underlined) runs.
+    let mut runs = |mark| {
+        let mut full = ctx.run_ui(raw_input(), |ui| {
+            r.replay(ui, APP, &field(mark)).unwrap();
+        });
+        full.textures_delta.clear();
+        full.shapes
+            .iter()
+            .filter_map(|c| match &c.shape {
+                egui::Shape::Text(t) if t.galley.job.text == text => Some(t.galley.job.clone()),
+                _ => None,
+            })
+            .flat_map(|job| {
+                job.sections
+                    .iter()
+                    .map(|s| {
+                        (
+                            job.text[s.byte_range.start.0..s.byte_range.end.0].to_owned(),
+                            s.format.background != egui::Color32::TRANSPARENT,
+                            s.format.underline.width > 0.0,
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>()
+    };
+    // Line 2, from column 10: the `;` the parser choked on.
+    let marked = runs(Some((2, 10)));
+    let shaded: String = marked
+        .iter()
+        .filter(|r| r.1)
+        .map(|r| r.0.as_str())
+        .collect();
+    let underlined: String = marked
+        .iter()
+        .filter(|r| r.2)
+        .map(|r| r.0.as_str())
+        .collect();
+    assert_eq!(shaded, "b = (2 + ;", "{marked:?}");
+    assert_eq!(underlined, ";", "{marked:?}");
+    // All the text is still there, in order.
+    let all: String = marked.iter().map(|r| r.0.as_str()).collect();
+    assert_eq!(all, text);
+
+    // Without a mark, or with one past the end (the text changed since), nothing is marked.
+    for mark in [None, Some((9, 1))] {
+        assert!(runs(mark).iter().all(|r| !r.1 && !r.2), "{mark:?}");
+    }
 }

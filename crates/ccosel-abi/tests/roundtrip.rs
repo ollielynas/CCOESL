@@ -114,6 +114,7 @@ fn sample() -> Vec<Cmd<'static>> {
             version: 2,
             set: Some("x = 1; % one"),
             lang: CodeLang::Octave,
+            mark: Some((1, 5)),
         },
         Cmd::EndWindow { id: win },
     ]
@@ -362,17 +363,20 @@ fn plot_claiming_more_samples_than_are_present_is_truncated_not_a_panic() {
 }
 
 #[test]
-fn a_code_editor_costs_one_byte_more_than_a_text_area() {
+fn a_code_editor_costs_two_bytes_more_than_a_text_area() {
     let buf = encode(&[Cmd::TextEditCode {
         id: 9,
         version: 1,
         set: None,
         lang: CodeLang::Octave,
+        mark: None,
     }]);
     assert_eq!(buf[0], OpCode::TextEditCode as u8);
-    assert_eq!(buf.len(), 1 + 8 + 4 + 1 + 1);
+    // The language, and that there is no error to mark.
+    assert_eq!(buf.len(), 1 + 8 + 4 + 1 + 1 + 1);
     // A language this shell doesn't know is refused, not guessed at.
     let mut unknown = buf.clone();
-    *unknown.last_mut().unwrap() = 0;
+    let at = unknown.len() - 2;
+    unknown[at] = 0;
     assert!(decode(&unknown).is_err());
 }

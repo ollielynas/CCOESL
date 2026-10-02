@@ -8,7 +8,7 @@
 use std::ops::Range;
 
 use ccosel_abi::CodeLang;
-use egui::text::{LayoutJob, TextFormat};
+use egui::text::{ByteIndex, LayoutJob, TextFormat};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Token {
@@ -232,6 +232,64 @@ pub fn layout_job(
     }
     push(&mut job, at..text.len(), plain, false);
     job
+}
+
+/// Mark an error in a laid-out code editor: shade line `line` (from 1) and underline it from
+/// `column` (from 1, counted in characters; 0 for the whole line). A line past the end marks
+/// nothing: the text may have changed since the error.
+pub fn mark_error(ui: &egui::Ui, job: &mut LayoutJob, line: u32, column: u32) {
+    let Some(range) = line_range(&job.text, line) else {
+        return;
+    };
+    let underline_from = match column {
+        0 => range.start,
+        c => (job.text[range.clone()].char_indices())
+            .nth(c as usize - 1)
+            .map_or(range.end, |(i, _)| range.start + i),
+    };
+    let red = ui.visuals().error_fg_color;
+    let shade = red.gamma_multiply(0.18);
+    let mut sections = Vec::with_capacity(job.sections.len() + 4);
+    for section in std::mem::take(&mut job.sections) {
+        // Cut each section where the shading or the underline begins or ends, and mark the
+        // pieces inside them.
+        let r = section.byte_range.start.0..section.byte_range.end.0;
+        let mut cuts = vec![r.start, r.end];
+        for at in [range.start, underline_from, range.end] {
+            if r.start < at && at < r.end {
+                cuts.push(at);
+            }
+        }
+        cuts.sort_unstable();
+        cuts.dedup();
+        for (i, pair) in cuts.windows(2).enumerate() {
+            let mut piece = section.clone();
+            piece.byte_range = ByteIndex(pair[0])..ByteIndex(pair[1]);
+            if i > 0 {
+                piece.leading_space = 0.0;
+            }
+            if range.start <= pair[0] && pair[1] <= range.end {
+                piece.format.background = shade;
+                if pair[0] >= underline_from {
+                    piece.format.underline = egui::Stroke::new(1.5, red);
+                }
+            }
+            sections.push(piece);
+        }
+    }
+    job.sections = sections;
+}
+
+/// The bytes of line `line` (from 1) of `text`, without its newline.
+pub fn line_range(text: &str, line: u32) -> Option<Range<usize>> {
+    let mut start = 0;
+    for (n, l) in text.split('\n').enumerate() {
+        if n + 1 == line as usize {
+            return Some(start..start + l.len());
+        }
+        start += l.len() + 1;
+    }
+    None
 }
 
 /// Lexes each text once while it is unchanged, rather than every frame: egui's frame cache

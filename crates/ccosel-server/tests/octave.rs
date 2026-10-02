@@ -1194,3 +1194,53 @@ fn real_octave_shows_a_drawing_loop_without_flooding_and_pause_waits_for_enter()
     octave.answer(&jail, None, &answer).unwrap();
     assert!(wait(&octave, None, 2).output.contains("carried on"));
 }
+
+/// Real Octave, when this machine has it: a job that fails says where, for the editor to mark:
+/// in the code it ran itself (an empty path), or in a file in the jail.
+#[test]
+fn real_octave_says_where_an_error_is() {
+    let (jail, support) = setup("real-where");
+    let octave = Octave::detect(support);
+    if !octave.available() {
+        eprintln!("octave-cli is not installed; skipped");
+        return;
+    }
+    fs::write(
+        jail.root().join("broken.m"),
+        "a = 1;\nif a > 0\n  b = (2 + ;\nend\n",
+    )
+    .unwrap();
+    fs::write(
+        jail.root().join("helper.m"),
+        "function r = helper(x)\n  r = x(10);\nend\n",
+    )
+    .unwrap();
+    let at = |seq, input| {
+        run(&octave, &jail, None, seq, input);
+        let status = wait(&octave, None, seq);
+        let result = status.result.unwrap();
+        assert!(result.error, "{}", status.output);
+        result.error_at.map(|e| (e.path, e.line, e.column))
+    };
+    // A runtime error in what was run: its line, and the column Octave gives.
+    assert_eq!(
+        at(1, OctaveInput::Code("x = 1;\ny = [1 2];\nz = y(5);")),
+        Some((String::new(), 3, 1))
+    );
+    // A syntax error in a file, from its message: line and column.
+    assert_eq!(
+        at(2, OctaveInput::File("/broken.m")),
+        Some(("/broken.m".to_owned(), 3, 12))
+    );
+    // In a function file, called from what was typed: the innermost of the user's own.
+    assert_eq!(
+        at(3, OctaveInput::Code("y = helper([1 2]);")),
+        Some(("/helper.m".to_owned(), 2, 3))
+    );
+    // Raised inside one of Octave's own functions: where the user's code called it.
+    let inside = at(4, OctaveInput::Code("q = 1;\nstrrep(1, 2, 3)"));
+    assert_eq!(inside.map(|(p, l, _)| (p, l)), Some((String::new(), 2)));
+    // A success says nothing.
+    run(&octave, &jail, None, 5, OctaveInput::Code("ok = 1;"));
+    assert!(wait(&octave, None, 5).result.unwrap().error_at.is_none());
+}

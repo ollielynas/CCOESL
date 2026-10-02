@@ -144,8 +144,16 @@ impl Encoder {
                         self.str(s);
                     }
                 }
-                if let Cmd::TextEditCode { lang, .. } = cmd {
+                if let Cmd::TextEditCode { lang, mark, .. } = cmd {
                     self.u8(*lang as u8);
+                    match mark {
+                        None => self.u8(0),
+                        Some((line, column)) => {
+                            self.u8(1);
+                            self.u32(*line);
+                            self.u32(*column);
+                        }
+                    }
                 }
             }
             Cmd::Image { id, src, size } => {

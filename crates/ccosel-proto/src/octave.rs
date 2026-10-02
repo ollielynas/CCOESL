@@ -166,6 +166,19 @@ pub fn figure_url(client: u32, seq: u32, number: u32) -> String {
     url
 }
 
+/// Where an error happened, for an editor to mark.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ErrorAt {
+    /// The file, as a jail path; empty for the code the job ran itself (typed at the prompt,
+    /// or an editor's unsaved text, whose lines are the editor's).
+    pub path: String,
+    /// From 1.
+    pub line: u32,
+    /// From 1; 0 when Octave said only the line.
+    pub column: u32,
+    pub message: String,
+}
+
 /// The session's state after a job, so one poll brings the whole UI up to date.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct OctaveResult {
@@ -177,6 +190,8 @@ pub struct OctaveResult {
     /// Octave's working directory, as a jail path (`/home/alice`) when it is inside the jail,
     /// or empty when it is not.
     pub cwd: String,
+    /// Where the job's error happened, when it ended in one Octave could place.
+    pub error_at: Option<ErrorAt>,
     pub variables: Vec<Variable>,
     /// More variables existed than a reply carries.
     pub variables_truncated: bool,

@@ -321,7 +321,20 @@ impl<'a> Ui<'a> {
     /// is typed: keywords, strings, comments, numbers. The colouring costs the guest nothing;
     /// the shell does it from the text it already holds.
     pub fn code_editor(&mut self, text: &mut Text, lang: CodeLang) -> Response {
-        self.text_field(text, Field::Code(lang))
+        self.text_field(text, Field::Code(lang, None))
+    }
+
+    /// [`Ui::code_editor`] with an error marked at `line` and `column` (both from 1; column 0
+    /// for the whole line): the shell shades the line and underlines it from the column. Say
+    /// what the error was beside it; the mark only shows where.
+    pub fn code_editor_marked(
+        &mut self,
+        text: &mut Text,
+        lang: CodeLang,
+        line: u32,
+        column: u32,
+    ) -> Response {
+        self.text_field(text, Field::Code(lang, Some((line, column))))
     }
 
     fn text_field(&mut self, text: &mut Text, field: Field) -> Response {
@@ -343,11 +356,12 @@ impl<'a> Ui<'a> {
         self.rec.push(&match field {
             Field::Single => Cmd::TextEditSingle { id, version, set },
             Field::Multi => Cmd::TextEditMulti { id, version, set },
-            Field::Code(lang) => Cmd::TextEditCode {
+            Field::Code(lang, mark) => Cmd::TextEditCode {
                 id,
                 version,
                 set,
                 lang,
+                mark,
             },
         });
         text.push_pending = false;
@@ -414,7 +428,7 @@ impl<'a> Ui<'a> {
 enum Field {
     Single,
     Multi,
-    Code(CodeLang),
+    Code(CodeLang, Option<(u32, u32)>),
 }
 
 /// A text field's contents.

@@ -53,11 +53,21 @@ function __ccosel_run__ (kind, file, tag)
     else
       failed = true;
       printf ("error: %s\n", err.message);
+      ## Where it was is a nicety: never at the cost of the report.
+      try
+        where = __ccosel_where__ (err, kind, file);
+      catch
+        where = {};
+      end_try_catch
     endif
   end_try_catch
   fflush (stdout);
   fflush (stderr);
   printf ("%s STATUS\t%d\t%s\n", tag, failed, __ccosel_clean__ (pwd ()));
+  if (exist ("where", "var") && ! isempty (where))
+    printf ("%s ERROR\t%s\t%d\t%d\t%s\n", tag, where{1}, where{2}, where{3},
+            __ccosel_message__ (err.message));
+  endif
   __ccosel_vars__ (tag);
   setappdata (0, "__ccosel_live_busy__", false);
   __ccosel_figs__ (tag, getappdata (0, "__ccosel_live_before__"));
@@ -75,6 +85,49 @@ function __ccosel_render__ (dir)
     catch
     end_try_catch
   endfor
+endfunction
+
+function where = __ccosel_where__ (err, kind, script)
+  ## Where an error happened, for the editor to mark: {file, line, column}, with an empty file
+  ## for the code the job ran itself (typed, or an unsaved script), or {} if it isn't known.
+  ## The innermost frame in the user's own code: not the server's stand-ins, not Octave's.
+  support = getappdata (0, "__ccosel_dir__");
+  if (ischar (support))
+    support = fileparts (support);
+  else
+    support = "";
+  endif
+  where = {};
+  for s = err.stack(:)'
+    ## The stand-ins sit in the support folder itself; sessions' scripts in folders inside it.
+    if (isempty (s.file) || strcmp (fileparts (s.file), support)
+        || strncmp (s.file, OCTAVE_HOME (), numel (OCTAVE_HOME ())))
+      continue;
+    endif
+    where = {s.file, s.line, max(s.column, 0)};
+    break;
+  endfor
+  ## A syntax error has no frame of its own: its message says where.
+  t = regexp (err.message, 'near line (\d+),? (?:column (\d+) )?in file (.*)$', "tokens", "once");
+  if (isempty (where) && ! isempty (t))
+    col = 0;
+    if (! isempty (t{2}))
+      col = str2double (t{2});
+    endif
+    where = {strtrim(t{3}), str2double(t{1}), col};
+  endif
+  ## The job's own script is "the code it ran", which the server can't place in the jail.
+  if (! isempty (where) && strcmp (kind, "code") && strcmp (where{1}, script))
+    where{1} = "";
+  endif
+endfunction
+
+function s = __ccosel_message__ (s)
+  ## An error message as one report field: no tabs or newlines, and not endless.
+  s = strrep (strrep (strrep (s(:)', "\t", " "), "\n", " "), "\r", " ");
+  if (numel (s) > 500)
+    s = [s(1:497) "..."];
+  endif
 endfunction
 
 function s = __ccosel_clean__ (s)
