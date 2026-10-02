@@ -13,6 +13,9 @@ An app password lets a program that cannot use the sign-in page, such as a netwo
 (see [Your files as a drive](../WebDAV.md)), sign in as you. Each one is for a single device,
 and works with your user name instead of your real password.
 
+- **Connect to** shows the address to give the program. **Copy address** copies it. If the
+  page is not using HTTPS, the app warns you: the password would cross the network
+  unencrypted, and Windows will not send it at all.
 - Type a name for the device, such as `Laptop`, and press **Create**. The password is shown
   **once**: copy it into the program then, and press **Done**.
 - Each one in the list shows when you made it and when it was last used.

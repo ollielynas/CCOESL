@@ -299,3 +299,74 @@ fn there_are_no_app_passwords_with_login_off() {
     assert!(!h.has_text("App passwords"));
     assert_eq!(h.outstanding::<ListAppPasswords>(), 0);
 }
+
+// ---- where to connect ----
+
+#[test]
+fn shows_the_webdav_address_of_this_page_with_a_copy_button() {
+    let mut h = Harness::new(Account::default());
+    h.set_origin("https://ccosel.example.com");
+    h.frame();
+    h.reply::<WhoAmI>(&signed_in("ollielynas"));
+    h.frame();
+    assert!(h.has_label("Connect to"));
+    assert!(h.has_text("https://ccosel.example.com/dav/"));
+    assert_eq!(
+        h.copy_links(),
+        [("Copy address".to_owned(), "/dav/".to_owned())]
+    );
+    assert!(!h.has_text("Ask whoever runs"), "HTTPS needs no warning");
+}
+
+#[test]
+fn warns_when_the_address_is_unencrypted_across_the_network() {
+    let mut h = Harness::new(Account::default());
+    h.set_origin("http://192.168.1.20:8777");
+    h.frame();
+    h.reply::<WhoAmI>(&signed_in("ollielynas"));
+    h.frame();
+    assert!(h.has_text("http://192.168.1.20:8777/dav/"));
+    assert!(
+        h.styled()
+            .iter()
+            .any(|(t, _)| t.contains("not using HTTPS"))
+    );
+}
+
+#[test]
+fn without_the_page_address_it_says_how_to_find_it() {
+    let h = showing(signed_in("ollielynas"));
+    assert!(h.has_label("Connect to this server's address with /dav/ on the end."));
+    assert!(h.copy_links().is_empty());
+}
+
+#[test]
+fn a_new_password_says_which_user_name_goes_with_it() {
+    let mut h = with_passwords(&[]);
+    h.type_text(0, "Laptop");
+    h.frame();
+    h.click("Create");
+    h.frame();
+    h.reply::<CreateAppPassword>(&NewAppPassword {
+        info: info("a", "Laptop", None),
+        password: "pw".to_owned(),
+    });
+    h.frame();
+    assert!(h.has_label("Sign in with the user name ollielynas and this password."));
+}
+
+#[test]
+fn only_plain_http_to_another_machine_is_unencrypted_over_the_network() {
+    for (origin, unencrypted) in [
+        ("https://ccosel.example.com", false),
+        ("http://ccosel.example.com", true),
+        ("http://192.168.1.20:8777", true),
+        ("http://localhost:8777", false),
+        ("http://127.0.0.1:8777", false),
+        ("http://[::1]:8777", false),
+        ("http://[2001:db8::1]:8777", true),
+        ("http://localhost.example.com", true),
+    ] {
+        assert_eq!(unencrypted_over_network(origin), unencrypted, "{origin}");
+    }
+}

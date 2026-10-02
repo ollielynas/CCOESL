@@ -37,6 +37,23 @@ pub struct Account {
     status: Option<String>,
 }
 
+/// Where the server serves WebDAV, after its address.
+pub const DAV_PATH: &str = "/dav/";
+
+/// Whether a page at `origin` is plain `http://` to somewhere other than this computer: a
+/// password sent to it would cross the network unencrypted, and Windows refuses to send one.
+pub fn unencrypted_over_network(origin: &str) -> bool {
+    let Some(rest) = origin.strip_prefix("http://") else {
+        return false;
+    };
+    let host = match rest.strip_prefix('[') {
+        // `[::1]:8777`
+        Some(v6) => v6.split(']').next().unwrap_or(v6),
+        None => rest.split([':', '/']).next().unwrap_or(rest),
+    };
+    !matches!(host, "localhost" | "127.0.0.1" | "::1")
+}
+
 /// `YYYY-MM-DD` for a time in seconds since the Unix epoch, in UTC. Integer arithmetic only:
 /// formatting a float would pull `core::fmt`'s float code into the app's download.
 pub fn date(unix_s: i64) -> String {
@@ -67,13 +84,36 @@ impl Account {
             }
         });
         ui.separator();
-        self.app_passwords(ui);
+        self.app_passwords(ui, name);
     }
 
-    fn app_passwords(&mut self, ui: &mut Ui<'_>) {
+    /// How to connect a WebDAV client: this page's address with [`DAV_PATH`] on the end.
+    fn dav_address(ui: &mut Ui<'_>) {
+        let Some(origin) = ui.page().origin() else {
+            // A shell too old to say where the page is.
+            ui.label("Connect to this server's address with /dav/ on the end.");
+            return;
+        };
+        ui.horizontal(|ui| {
+            ui.label("Connect to");
+            ui.styled(&format!("{origin}{DAV_PATH}"), TextStyle::CODE);
+            ui.copy_link("Copy address", DAV_PATH);
+        });
+        if unencrypted_over_network(origin) {
+            ui.styled(
+                "This page is not using HTTPS, so a password sent to this address would cross \
+                 the network unencrypted, and Windows will not send it at all. Ask whoever runs \
+                 the server to set up HTTPS.",
+                TextStyle::WEAK,
+            );
+        }
+    }
+
+    fn app_passwords(&mut self, ui: &mut Ui<'_>, login: &str) {
         self.poll_pending(ui);
         ui.styled("App passwords", TextStyle::heading(2));
         ui.label("For programs that cannot sign in through this page, such as WebDAV.");
+        Self::dav_address(ui);
 
         if let Some(made) = &self.created {
             ui.styled(
@@ -81,6 +121,9 @@ impl Account {
                 TextStyle::STRONG,
             );
             ui.styled(&made.password, TextStyle::CODE);
+            ui.label(&format!(
+                "Sign in with the user name {login} and this password."
+            ));
             ui.label("Copy it now. It will not be shown again.");
             if ui.button("Done").clicked() {
                 self.created = None;

@@ -24,7 +24,8 @@ everyone gets the folders that are open to everyone.
 
 ## 2. Connect
 
-The address is the server's address with `/dav/` on the end, for example
+**Account** shows the address under **App passwords**, next to **Connect to**, with a
+**Copy address** button. It is the server's address with `/dav/` on the end, for example
 `https://ccosel.example.com/dav/`. Sign in with your usual user name and the app password.
 
 **Use an `https://` address.** Over plain `http://`, the password is sent across the network
