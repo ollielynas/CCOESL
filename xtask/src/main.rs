@@ -25,6 +25,10 @@ const WASM: &str = "wasm32-unknown-unknown";
 /// the Docs app shows. Every app must have a page here; see [`missing_app_docs`].
 const APP_DOCS_DIR: &str = "data/shared/Docs/Apps";
 
+/// The shell's app catalog. Read as text: the shell only compiles for wasm32, so xtask can't
+/// link it to ask.
+const REGISTRY: &str = "crates/ccosel-shell/src/registry.rs";
+
 /// Every guest app, as (crate name, served name). Crate names use underscores; the served
 /// names (`web/dist/<served>.wasm`) use hyphens, matching the registry.
 const GUESTS: [(&str, &str); 7] = [
@@ -152,6 +156,9 @@ fn report(label: &str, path: &Path) -> Result<u64> {
 
 fn build_web() -> Result<()> {
     let root = root();
+    // Before building: an app missing from `GUESTS` would be compiled, never copied to
+    // `web/dist/`, and so never held to the size budget below.
+    check_app_lists(&root)?;
     let dist = root.join("web/dist");
     std::fs::create_dir_all(&dist)?;
 
@@ -629,6 +636,95 @@ fn app_names(apps: &Path) -> Result<Vec<String>> {
     Ok(names)
 }
 
+/// `(id, url)` of each catalog entry in the registry's source, in order. An entry whose `url`
+/// is missing reads as an empty one, so it is reported rather than skipped. The test module
+/// is left out: an `AppEntry` built there is not part of the catalog.
+fn catalog_entries(src: &str) -> Vec<(String, String)> {
+    let field = |line: &str, name: &str| {
+        let value = line.trim().strip_prefix(name)?.strip_prefix(": \"")?;
+        value.strip_suffix("\",").map(str::to_owned)
+    };
+    let mut entries = Vec::new();
+    let mut id: Option<String> = None;
+    for line in src.lines().take_while(|l| l.trim() != "#[cfg(test)]") {
+        if let Some(next) = field(line, "id") {
+            if let Some(unfinished) = id.replace(next) {
+                entries.push((unfinished, String::new()));
+            }
+        } else if let Some(url) = field(line, "url") {
+            if let Some(id) = id.take() {
+                entries.push((id, url));
+            }
+        }
+    }
+    entries.extend(id.map(|id| (id, String::new())));
+    entries
+}
+
+/// Every way the app directories under `apps/`, the shell's catalog and [`GUESTS`] disagree,
+/// one message per problem, each naming the app. Empty when they agree.
+fn app_list_mismatches(
+    apps: &[String],
+    catalog: &[(String, String)],
+    guests: &[(&str, &str)],
+) -> Vec<String> {
+    let mut problems = Vec::new();
+    for app in apps {
+        if !catalog.iter().any(|(id, _)| id == app) {
+            problems.push(format!(
+                "apps/{app} is not in the shell's catalog ({REGISTRY}), so nobody can open it"
+            ));
+        }
+        if !guests.iter().any(|(_, served)| served == app) {
+            problems.push(format!(
+                "apps/{app} is not in GUESTS (xtask/src/main.rs), so build-web would neither \
+                 ship it nor check its size"
+            ));
+        }
+    }
+    for (id, url) in catalog {
+        if !apps.contains(id) {
+            problems.push(format!("the catalog lists {id}, but there is no apps/{id}"));
+        }
+        let want = format!("/dist/{id}.wasm");
+        if *url != want {
+            problems.push(format!(
+                "the catalog loads {id} from {url:?}, but build-web serves it at {want:?}"
+            ));
+        }
+    }
+    for (crate_name, served) in guests {
+        if !apps.iter().any(|app| app == served) {
+            problems.push(format!(
+                "GUESTS lists {served}, but there is no apps/{served}"
+            ));
+        }
+        if *crate_name != served.replace('-', "_") {
+            problems.push(format!(
+                "GUESTS builds {served} from {crate_name}.wasm, but cargo names it {}.wasm",
+                served.replace('-', "_")
+            ));
+        }
+    }
+    problems
+}
+
+/// Fails, naming every app involved, unless `apps/`, the shell's catalog and [`GUESTS`] list
+/// the same apps. They are kept by hand in three places, and nothing else notices a gap.
+fn check_app_lists(root: &Path) -> Result<()> {
+    let apps = app_names(&root.join("apps"))?;
+    let src = std::fs::read_to_string(root.join(REGISTRY))
+        .with_context(|| format!("reading {REGISTRY}"))?;
+    let problems = app_list_mismatches(&apps, &catalog_entries(&src), &GUESTS);
+    if !problems.is_empty() {
+        bail!(
+            "the app lists disagree (see \"Adding an app\" in CONTRIBUTING.md):\n  {}",
+            problems.join("\n  ")
+        );
+    }
+    Ok(())
+}
+
 /// Fails unless every app reaches [`APP_COVERAGE_MIN_LINES`]. Per app on purpose: a single
 /// workspace-wide number would let one well-tested app hide an untested one.
 fn coverage() -> Result<()> {
@@ -650,6 +746,8 @@ fn coverage() -> Result<()> {
             apps.display()
         );
     }
+
+    check_app_lists(&root())?;
 
     // Documentation is part of an app being covered: checked first, because it is quick.
     let undocumented = missing_app_docs(&root().join(APP_DOCS_DIR), &names);
@@ -770,7 +868,7 @@ fn serve() -> Result<()> {
 
 /// Scaffolds a new guest app crate under `apps/` and adds it to that workspace's members.
 ///
-/// It stops short of wiring the app into `registry.rs` and the `guests` array in
+/// It stops short of wiring the app into `registry.rs` and [`GUESTS`] in
 /// `build_web` above: those need an icon, a colour and a default window size, which are
 /// judgment calls, not boilerplate — so this prints them as a checklist instead of guessing.
 fn new_app(name: &str) -> Result<()> {
@@ -868,7 +966,8 @@ fn new_app(name: &str) -> Result<()> {
     println!("still needs wiring by hand:");
     println!("  1. crates/ccosel-shell/src/registry.rs — add an AppEntry to catalog()");
     println!(
-        "  2. xtask/src/main.rs, build_web()'s `guests` array — add (\"{crate_name}\", \"{name}\")"
+        "  2. xtask/src/main.rs, GUESTS — add (\"{crate_name}\", \"{name}\") \
+         (build-web and coverage fail until apps/, the catalog and GUESTS agree)"
     );
     println!(
         "  3. {APP_DOCS_DIR}/{name}.md — replace the stub with real documentation, and link it \
@@ -980,6 +1079,99 @@ end_of_record
         assert_eq!(
             missing_app_docs(&root().join(APP_DOCS_DIR), &names),
             Vec::<String>::new()
+        );
+    }
+
+    fn strings(names: &[&str]) -> Vec<String> {
+        names.iter().map(|n| (*n).to_owned()).collect()
+    }
+
+    fn entry(id: &str) -> (String, String) {
+        (id.to_owned(), format!("/dist/{id}.wasm"))
+    }
+
+    #[test]
+    fn the_catalog_is_read_from_the_registry_source() {
+        let src = "pub struct AppEntry {\n    pub id: &'static str,\n}\n\
+            vec![\n    AppEntry {\n        id: \"clock\",\n        name: \"Clock\",\n        \
+            url: \"/dist/clock.wasm\",\n    },\n    AppEntry {\n        id: \"no-url\",\n    },\n\
+            AppEntry {\n        id: \"docs\",\n        url: \"/dist/docs.wasm\",\n    },\n]\n\
+            #[cfg(test)]\nmod tests {\n    id: \"from-a-test\",\n}\n";
+        assert_eq!(
+            catalog_entries(src),
+            [
+                entry("clock"),
+                ("no-url".to_owned(), String::new()),
+                entry("docs")
+            ]
+        );
+    }
+
+    #[test]
+    fn lists_that_agree_have_no_mismatches() {
+        let apps = strings(&["clock", "file-browser"]);
+        let catalog = [entry("clock"), entry("file-browser")];
+        let guests = [("clock", "clock"), ("file_browser", "file-browser")];
+        assert_eq!(
+            app_list_mismatches(&apps, &catalog, &guests),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn an_app_missing_from_the_catalog_or_guests_is_named() {
+        let apps = strings(&["clock", "new-app"]);
+        let problems = app_list_mismatches(&apps, &[entry("clock")], &[("clock", "clock")]);
+        assert_eq!(problems.len(), 2, "{problems:?}");
+        assert!(
+            problems.iter().all(|p| p.contains("apps/new-app")),
+            "{problems:?}"
+        );
+        assert!(problems[0].contains("catalog") && problems[1].contains("GUESTS"));
+    }
+
+    #[test]
+    fn a_catalog_entry_or_guest_with_no_app_is_named() {
+        let apps = strings(&["clock"]);
+        let catalog = [entry("clock"), entry("gone")];
+        let guests = [("clock", "clock"), ("gone", "gone")];
+        let problems = app_list_mismatches(&apps, &catalog, &guests);
+        assert_eq!(problems.len(), 2, "{problems:?}");
+        assert!(
+            problems.iter().all(|p| p.contains("no apps/gone")),
+            "{problems:?}"
+        );
+    }
+
+    #[test]
+    fn a_catalog_url_that_is_not_where_build_web_serves_the_app_is_named() {
+        let apps = strings(&["clock"]);
+        for url in ["./dist/clock.wasm", "/dist/clocks.wasm", ""] {
+            let catalog = [("clock".to_owned(), url.to_owned())];
+            let problems = app_list_mismatches(&apps, &catalog, &[("clock", "clock")]);
+            assert_eq!(problems.len(), 1, "{url}: {problems:?}");
+            assert!(problems[0].contains("/dist/clock.wasm"), "{problems:?}");
+        }
+    }
+
+    #[test]
+    fn a_guest_whose_crate_name_does_not_match_its_app_is_named() {
+        let apps = strings(&["file-browser"]);
+        let problems = app_list_mismatches(
+            &apps,
+            &[entry("file-browser")],
+            &[("files", "file-browser")],
+        );
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].contains("file_browser.wasm"), "{problems:?}");
+    }
+
+    #[test]
+    fn the_app_lists_in_the_repository_agree() {
+        check_app_lists(&root()).unwrap();
+        assert_eq!(
+            catalog_entries(&std::fs::read_to_string(root().join(REGISTRY)).unwrap()).len(),
+            app_names(&root().join("apps")).unwrap().len()
         );
     }
 

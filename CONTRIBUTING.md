@@ -48,7 +48,7 @@ Each CI job is one `cargo xtask` command. To reproduce a red job, run the same c
 | `test` | `cargo xtask test` | A native test fails, in either workspace | — |
 | `test-wasm` | `cargo xtask test-wasm` | A browser-backend test fails under node | — |
 | `apps-coverage` | `cargo xtask coverage` | An app has no documentation page, or is under the coverage bar | See [Adding an app](#adding-an-app) and [Testing apps](#testing-apps) |
-| `build-web` | `cargo xtask build-web` | The build breaks, or an app exceeds 100 KiB gzipped | Trim the app; avoid float `Display` |
+| `build-web` | `cargo xtask build-web` | The build breaks, an app exceeds 100 KiB gzipped, or `apps/`, the catalog and `GUESTS` disagree | Trim the app; avoid float `Display`. For a list mismatch, see [Adding an app](#adding-an-app) |
 | `test-image` | `cargo xtask test-image` | The Docker image doesn't build, or a person couldn't use it: sign in through `/idp`, use the apps, build in the Compiler, keep their account and files when the container is replaced | Read the step it names; the container's log is printed below it |
 | `ci-ok` | *(GitHub only)* | Any job above did not succeed | It's the one required check |
 
@@ -83,8 +83,10 @@ Real examples: `apps/clock/src/tests.rs` (time as an input) and `apps/file-brows
 1. Run `cargo xtask new-app <name>` (or `make new-app NAME=<name>`). This creates the crate
    under `apps/` and adds it to the workspace members. It prints what still needs wiring by hand.
 2. Wire the remaining pieces:
-   - Register it in `crates/ccosel-shell/src/registry.rs` (the catalog) and in the `guests`
-     list in `build_web()` in `xtask/src/main.rs`. Neither is checked automatically yet.
+   - Register it in `crates/ccosel-shell/src/registry.rs` (the catalog), loading from
+     `/dist/<name>.wasm`, and in `GUESTS` in `xtask/src/main.rs`. `cargo xtask build-web` and
+     `cargo xtask coverage` fail, naming the app, until `apps/`, the catalog and `GUESTS` all
+     list the same apps.
    - Being in the catalog gives it its own page at `/app/<id>`, with nothing to add on the
      server. List that link in `data/shared/Docs/app-links.md`; `cargo xtask test-wasm` fails
      until you do.
