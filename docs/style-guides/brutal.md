@@ -59,7 +59,10 @@ The same applies to text edits. In `replay.rs` it wraps the `Cmd::Button` and
 ## Style-specific rules
 
 - Yellow means "this one": the active window, the selected row, the primary button, the pressed
-  state. Nothing else is yellow.
+  state. The one other use is the line of a graph, which is a mark rather than text. Nothing
+  else is yellow.
+- Links are ink and underlined, never yellow: yellow text on white is about 1.4:1, far below the
+  4.5:1 that text needs. The underline is what marks them as links.
 - Selection is solid yellow with ink text. It never tints.
 - Only the danger button uses a colour other than yellow.
 - Headings are big (24) and bold. Hierarchy comes from size and weight, not colour.
@@ -84,5 +87,6 @@ fn brutal() -> Tokens {
     }
 }
 // plus: widgets.active fill = accent (pressed = yellow); button hard shadow 3 px
+// links: hyperlink_color = ink, underlined; graph lines: accent (ccosel_host::set_plot_color)
 // fonts: body = Space Grotesk 400, heading = Space Grotesk 700, mono = Space Mono 400
 ```

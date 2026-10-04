@@ -15,4 +15,4 @@ mod host;
 mod replay;
 
 pub use host::{AppHost, AppInstance, FrameArgs, FrameResult, HostError, OutboundCall};
-pub use replay::{MediaSlot, ReplayError, Replayer};
+pub use replay::{MediaSlot, ReplayError, Replayer, plot_color, set_plot_color};

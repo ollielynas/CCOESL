@@ -5,7 +5,7 @@
 
 use ccosel_abi::event::{decode_batch, decode_text_delta, event_kind};
 use ccosel_abi::{Align, Cmd, Encoder, Layout, RespRecord, ResponseFlags, ScopeKind, TextStyle};
-use ccosel_host::{ReplayError, Replayer};
+use ccosel_host::{ReplayError, Replayer, plot_color, set_plot_color};
 
 const APP: u64 = 1;
 
@@ -352,6 +352,59 @@ fn a_plot_is_drawn_at_its_size_and_reported() {
     assert_eq!(fixed[3] - fixed[1], 30.0);
     let fill = find(&recs, 41).rect;
     assert!(fill[2] - fill[0] > 120.0, "a zero-width plot fills the row");
+}
+
+/// Whether any line painted in `shapes` is stroked in `color`.
+fn has_line_in(shapes: &[egui::Shape], color: egui::Color32) -> bool {
+    shapes
+        .iter()
+        .any(|s| matches!(s, egui::Shape::Path(p) if p.stroke.color == egui::epaint::ColorMode::Solid(color)))
+}
+
+#[test]
+fn a_plot_is_drawn_in_the_colour_the_shell_set_not_the_link_colour() {
+    let line = egui::Color32::from_rgb(0xAB, 0xCD, 0x01);
+    let link = egui::Color32::from_rgb(0x01, 0xAB, 0xCD);
+    let ctx = egui::Context::default();
+    ctx.all_styles_mut(|s| s.visuals.hyperlink_color = link);
+    let buf = encode(&[Cmd::Plot {
+        id: 40,
+        size: ccosel_abi::Vec2::new(120.0, 30.0),
+        samples: &[0, 255, 10, 200],
+    }]);
+
+    // Nothing set: graphs fall back to the link colour.
+    assert_eq!(plot_color(&ctx), link);
+    let (_, shapes) = frame_shapes(&ctx, &mut Replayer::new(), &buf, raw_input());
+    assert!(has_line_in(&shapes, link));
+
+    set_plot_color(&ctx, line);
+    assert_eq!(plot_color(&ctx), line);
+    let (_, shapes) = frame_shapes(&ctx, &mut Replayer::new(), &buf, raw_input());
+    assert!(
+        has_line_in(&shapes, line),
+        "the graph line is the set colour"
+    );
+    assert!(!has_line_in(&shapes, link), "and no longer the link colour");
+}
+
+#[test]
+fn a_link_is_underlined_at_rest_and_plain_text_is_not() {
+    let underlined = |text: &str, style: TextStyle| {
+        let buf = encode(&[Cmd::Styled {
+            id: 60,
+            text,
+            style,
+        }]);
+        let ctx = egui::Context::default();
+        let (_, shapes) = frame_shapes(&ctx, &mut Replayer::new(), &buf, raw_input());
+        shapes.iter().any(|s| {
+            matches!(s, egui::Shape::Text(t)
+                if t.galley.job.sections.iter().any(|sec| sec.format.underline.width > 0.0))
+        })
+    };
+    assert!(underlined("a link", TextStyle::LINK));
+    assert!(!underlined("not a link", TextStyle::PLAIN));
 }
 
 #[test]
