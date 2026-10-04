@@ -43,6 +43,33 @@ Right-click a file's name for what you can do with it:
 
 The list refreshes when the upload finishes.
 
+## Compressing and extracting
+
+Right-click a file or folder for these, in a folder you can change:
+
+- **Compress (.tar.gz)** bundles a file or a whole folder into one `.tar.gz` file next to it,
+  such as `photos.tar.gz` for the folder `photos`. It's smaller to download and keeps folders
+  together.
+- **Gzip (.gz)** compresses a single file on its own, such as `notes.txt.gz`.
+- **Extract here** appears on `.tar`, `.tar.gz`, `.tgz` and `.gz` files. A `.tar.gz` unpacks
+  into a new folder named after it (`photos.tar.gz` makes `photos`), and a `.gz` turns back into
+  the file it holds.
+
+The work happens on the server, so a big folder doesn't have to come down to your computer and
+back. A line above the list says how far it has got, and what it made once it's done. You can
+keep browsing meanwhile. Only one runs at a time.
+
+Nothing is ever overwritten. If the name is taken, the new one gets a number: `photos (2)`.
+
+Permissions files are never put into an archive, and an archive holding one is refused.
+Extracting is refused, and leaves nothing behind, if the archive:
+
+- tries to put files outside the new folder;
+- holds links that lead outside it;
+- would unpack to more than 4 GB, or more than 100,000 files.
+
+`.zip` and other formats aren't supported yet.
+
 ## Deleting
 
 Right-click a file or folder you can change and choose **Delete**. Files asks first, because
