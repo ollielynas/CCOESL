@@ -1152,8 +1152,7 @@ fn window_id(instance_id: u64) -> egui::Id {
     egui::Id::new(("app-window", instance_id))
 }
 
-/// Where windows live: between the status bar and the dock. A maximised window fills it,
-/// short of its own shadow so that stays on screen.
+/// Where windows live: between the status bar and the dock. A maximised window fills all of it.
 fn desktop_rect(ctx: &egui::Context) -> egui::Rect {
     let mut rect = ctx.content_rect();
     ctx.memory(|m| {
@@ -1164,8 +1163,6 @@ fn desktop_rect(ctx: &egui::Context) -> egui::Rect {
             rect.max.y = dock.min.y;
         }
     });
-    let [x, y] = theme::tokens().shadow.offset;
-    rect.max -= egui::vec2(f32::from(x), f32::from(y));
     rect
 }
 
