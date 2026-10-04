@@ -599,7 +599,9 @@ impl Cx<'_> {
                 Cmd::Styled { id, text, style } => {
                     let rich = rich_text(ui, text, style);
                     let r = if style.contains(TextStyle::LINK) {
-                        ui.add(egui::Link::new(rich))
+                        // Underlined at rest, not only on hover: a link drawn in the text colour
+                        // would otherwise look like any other text until the pointer found it.
+                        ui.add(egui::Link::new(rich.underline()))
                     } else {
                         ui.label(rich)
                     };
@@ -893,6 +895,25 @@ fn to_record(local_id: u64, r: &egui::Response) -> RespRecord {
     }
 }
 
+fn plot_color_id() -> egui::Id {
+    egui::Id::new("ccosel-host/plot-color")
+}
+
+/// Sets the colour graph lines are drawn in, for every frame replayed into `ctx` from now on.
+///
+/// Egui's `Visuals` has no field for it. Graphs used to borrow `hyperlink_color`, which tied
+/// them to whatever colour links happen to be; a shell that wants them apart says so here.
+pub fn set_plot_color(ctx: &egui::Context, color: egui::Color32) {
+    ctx.data_mut(|d| d.insert_temp(plot_color_id(), color));
+}
+
+/// The colour [`set_plot_color`] set, or the theme's link colour if nothing did, which reads
+/// on a window's fill in egui's own themes, unlike the selection fill, which may be pale.
+pub fn plot_color(ctx: &egui::Context) -> egui::Color32 {
+    ctx.data(|d| d.get_temp(plot_color_id()))
+        .unwrap_or_else(|| ctx.global_style().visuals.hyperlink_color)
+}
+
 /// Draw `samples` (each `0..=255`, oldest first) as a filled line graph filling `rect`.
 fn paint_plot(ui: &egui::Ui, rect: egui::Rect, samples: &[u8]) {
     let visuals = ui.visuals();
@@ -918,9 +939,7 @@ fn paint_plot(ui: &egui::Ui, rect: egui::Rect, samples: &[u8]) {
             )
         })
         .collect();
-    // The theme's link colour: the shell sets it to something that reads on a window's fill,
-    // unlike the selection fill, which may be pale.
-    let accent = visuals.hyperlink_color;
+    let accent = plot_color(ui.ctx());
     // Fill under the line as one quad per segment: a single polygon would be concave, which
     // egui's convex-polygon fill cannot draw correctly.
     let fill = accent.gamma_multiply(0.2);
