@@ -435,6 +435,15 @@ impl<'a> Ui<'a> {
         self.response(id)
     }
 
+    /// A button that opens the browser's file picker and uploads the chosen files into `dest`.
+    /// Otherwise the same as [`Ui::upload_folder`], including how the app learns an upload
+    /// finished.
+    pub fn upload_files(&mut self, dest: &str) -> Response {
+        let id = self.auto_id();
+        self.rec.push(&Cmd::UploadFiles { id, dest });
+        self.response(id)
+    }
+
     /// A button that uploads a project folder from this computer into a new temporary folder
     /// on the server, leaving out everything its `.gitignore` files exclude (and `.git/`).
     ///

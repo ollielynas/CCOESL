@@ -532,9 +532,9 @@ impl Desktop {
 
             // Acted on in the frame the click is drawn: browsers only open a picker or a tab
             // in response to a user action, and the next frame could be too late.
-            if let Some((widget, dest)) = window.clicked_upload() {
+            if let Some((widget, dest, files)) = window.clicked_upload() {
                 self.uploads
-                    .start(window.instance_id, widget, dest, ctx.clone());
+                    .start(window.instance_id, widget, dest, files, ctx.clone());
             }
             if let Some(widget) = window.clicked_project_upload() {
                 self.uploads

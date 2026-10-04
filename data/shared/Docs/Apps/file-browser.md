@@ -35,16 +35,31 @@ Right-click a file's name for what you can do with it:
 
 ## Uploading
 
-**⬆ Upload folder** asks your browser to pick a folder on your computer, and uploads all of it
-into the folder you are looking at. The list refreshes when the upload finishes.
+- **⬆ Upload files** asks your browser to pick one or more files on your computer, and uploads
+  them into the folder you are looking at.
+- **⬆ Upload folder** picks a whole folder instead, and uploads all of it, folders inside it
+  included.
+- You can also drag files or folders from your computer onto the window.
+
+The list refreshes when the upload finishes.
+
+## Deleting
+
+Right-click a file or folder you can change and choose **Delete**. Files asks first, because
+a deletion can't be undone: answer **Delete it** to go ahead, or **Cancel**. Deleting a folder
+deletes everything in it.
+
+A folder can only be deleted if you can change everything inside it, so a folder holding one
+you may only read stays put, along with what is in it. Read-only files and folders have no
+**Delete** at all.
 
 ## Permissions
 
 Under the trail, a line says what you can do in the folder you are looking at:
 
-- **Can change**: you can add and change files here, and **⬆ Upload folder** is shown.
-- **Read-only**: you can open and download files here, but not change them. There is no
-  upload button.
+- **Can change**: you can add, change and delete files here, and the upload buttons are shown.
+- **Read-only**: you can open and download files here, but not change them. There are no
+  upload buttons.
 
 The **Permissions** column says the same for each file and folder in the list.
 
