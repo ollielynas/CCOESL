@@ -116,7 +116,98 @@ fn no_build_button_without_cargo_toml() {
     h.reply::<ListDir>(&listing(vec![dir("src")]));
     h.frame();
     assert!(!h.has_button("\u{1f528} Build"));
-    assert!(h.has_label("No Cargo.toml here \u{2014} open a crate directory to build it."));
+    assert!(h.has_label(NOTHING_TO_BUILD));
+}
+
+/// Shows `entries` as the folder on screen.
+fn showing(entries: Vec<DirEntry>) -> Harness<RustCompiler> {
+    let mut h = Harness::new(RustCompiler::default());
+    h.frame();
+    h.reply::<ListDir>(&listing(entries));
+    h.frame();
+    h
+}
+
+#[test]
+fn says_which_kind_of_project_it_found() {
+    let h = showing(vec![dir("src"), file("Cargo.toml")]);
+    assert!(h.has_label("Found: Rust project (Cargo.toml)"));
+
+    let h = showing(vec![file("Makefile"), file("main.c")]);
+    assert!(h.has_label("Found: C/C++ project (Makefile)"));
+    assert!(h.has_button("\u{1f528} Build"));
+
+    let h = showing(vec![file("main.cpp"), file("util.h")]);
+    assert!(h.has_label("Found: C/C++ sources"));
+    assert!(h.has_button("\u{1f528} Build"));
+}
+
+#[test]
+fn headers_alone_or_a_folder_named_like_a_source_are_not_a_project() {
+    let h = showing(vec![file("util.h"), dir("main.c")]);
+    assert!(!h.has_button("\u{1f528} Build"));
+    assert!(h.has_label(NOTHING_TO_BUILD));
+}
+
+/// Presses Build on `entries` and answers the first poll with `status`.
+fn building(entries: Vec<DirEntry>, status: CompileStatus) -> Harness<RustCompiler> {
+    let mut h = showing(entries);
+    h.click("\u{1f528} Build");
+    h.frame();
+    h.reply::<Compile>(&status);
+    h.frame();
+    h
+}
+
+#[test]
+fn progress_counts_what_the_kind_of_build_is_made_of() {
+    let h = building(vec![file("Cargo.toml")], status_in_progress(2, 5, "serde"));
+    assert!(h.has_label("Compiling… 2/5 crates"), "{:?}", h.labels());
+
+    let h = building(
+        vec![file("a.c"), file("b.c")],
+        status_in_progress(1, 3, "b.c"),
+    );
+    assert!(h.has_label("Compiling… 1/3 steps"), "{:?}", h.labels());
+    assert!(h.has_label("b.c"));
+
+    let h = building(
+        vec![file("Makefile")],
+        status_in_progress(4, 0, "gcc -c x.c"),
+    );
+    assert!(
+        h.has_label("Compiling… 4 files compiled"),
+        "{:?}",
+        h.labels()
+    );
+}
+
+#[test]
+fn a_c_build_lists_its_program_for_download() {
+    let h = building(
+        vec![file("main.c")],
+        status_succeeded(vec![BuiltBinary {
+            name: "hello".to_owned(),
+            path: "/hello/target/hello".to_owned(),
+            size: 16_000,
+        }]),
+    );
+    assert!(h.has_label("✅ Build succeeded"));
+    assert!(h.has_label("hello"));
+    assert_eq!(
+        h.open_urls(),
+        [(
+            "Download".to_owned(),
+            "/files/hello/target/hello".to_owned()
+        )]
+    );
+}
+
+#[test]
+fn build_tooltips_say_what_runs() {
+    assert!(build_tooltip(ProjectKind::Cargo).contains("cargo build"));
+    assert!(build_tooltip(ProjectKind::Make).contains("make"));
+    assert!(build_tooltip(ProjectKind::Sources).contains("gcc"));
 }
 
 #[test]

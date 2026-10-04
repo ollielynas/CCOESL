@@ -1,7 +1,9 @@
-//! The Rust Compiler app.
+//! The Compiler app.
 //!
 //! Upload a project from this computer, or browse to one already on the server, press Build,
-//! watch it compile, download the binary the server's own toolchain produced.
+//! watch it compile, download the binary the server's own toolchain produced. A project is a
+//! Rust crate, a C/C++ project with a `Makefile`, or a folder of C/C++ sources: `build::detect`
+//! decides which, the same function the server builds by.
 //!
 //! An uploaded project is temporary: it goes into a scratch folder the server deletes after an
 //! hour unused (`ccosel_proto::scratch`), leaving out whatever its `.gitignore` excludes, so
@@ -19,12 +21,14 @@
 
 use std::rc::Rc;
 
-use ccosel_proto::build::{Compile, CompileReq, CompileStatus};
+use ccosel_proto::build::{Compile, CompileReq, CompileStatus, ProjectKind, detect};
 use ccosel_proto::fs::{ListDir, ListDirReq};
 use ccosel_proto::scratch;
 use ccosel_sdk::{App, Poll, Ui};
 
-const MANIFEST: &str = "Cargo.toml";
+/// What the app says in a folder with nothing it can build.
+pub const NOTHING_TO_BUILD: &str = "Nothing to build here: open a folder with a Cargo.toml, a \
+                                    Makefile, or C/C++ source files.";
 
 /// 4 Hz while a build runs. `ARCHITECTURE.md` caps compile progress here on purpose: a bad LAN
 /// plus a chatty progress feed is the fastest way to make this feel broken.
@@ -33,6 +37,8 @@ const POLL_MS: u32 = 250;
 pub struct RustCompiler {
     path: String,
     building: Option<String>,
+    /// What kind of project `building` is, for how its progress reads.
+    building_kind: Option<ProjectKind>,
     /// Bumped once per Build press. See the module docs: this is the idempotency key.
     generation: u32,
     last_status: Option<Rc<CompileStatus>>,
@@ -49,6 +55,7 @@ impl Default for RustCompiler {
         Self {
             path: "/".to_owned(),
             building: None,
+            building_kind: None,
             generation: 0,
             last_status: None,
             polling: false,
@@ -184,20 +191,43 @@ impl RustCompiler {
     }
 }
 
-/// The progress indicator, plus what cargo is chewing on right now.
-fn draw_progress(ui: &mut Ui<'_>, status: Option<&CompileStatus>) {
+/// What a build's units are called: crates for cargo, steps (each file, then linking) for
+/// C/C++ sources, compiler runs for `make`.
+fn unit_name(kind: Option<ProjectKind>) -> &'static str {
+    match kind {
+        Some(ProjectKind::Cargo) | None => "crates",
+        Some(ProjectKind::Sources) => "steps",
+        Some(ProjectKind::Make) => "files compiled",
+    }
+}
+
+/// What the Build button does, as its tooltip says.
+fn build_tooltip(kind: ProjectKind) -> &'static str {
+    match kind {
+        ProjectKind::Cargo => "Run cargo build --release on the server",
+        ProjectKind::Make => "Run make on the server",
+        ProjectKind::Sources => {
+            "Compile each .c file with gcc and each C++ file with g++ on the server, and link \
+             them into one program in target/"
+        }
+    }
+}
+
+/// The progress indicator, plus what the build is working on right now.
+fn draw_progress(ui: &mut Ui<'_>, status: Option<&CompileStatus>, kind: Option<ProjectKind>) {
     let Some(status) = status else {
         ui.label("Compiling… Starting…");
         return;
     };
 
+    let units = unit_name(kind);
     let label = if status.units_total > 0 {
         format!(
-            "Compiling… {}/{} crates",
+            "Compiling… {}/{} {units}",
             status.units_done, status.units_total
         )
     } else {
-        format!("Compiling… {} crates", status.units_done)
+        format!("Compiling… {} {units}", status.units_done)
     };
     ui.label(label.as_str());
 
@@ -264,8 +294,9 @@ impl App for RustCompiler {
             ui.tooltip("Go to parent directory");
             let r = ui.upload_project();
             ui.tooltip(
-                "Upload a Rust project from this computer to build it. Files its .gitignore \
-                 excludes are left out, and the upload is deleted after an hour unused.",
+                "Upload a Rust or C/C++ project from this computer to build it. Files its \
+                 .gitignore excludes are left out, and the upload is deleted after an hour \
+                 unused.",
             );
             if r.uploaded_project() != self.uploaded {
                 uploaded = r.uploaded_project();
@@ -276,6 +307,7 @@ impl App for RustCompiler {
             self.uploaded = Some(id);
             self.path = scratch::path(id);
             self.building = None;
+            self.building_kind = None;
             self.last_status = None;
         }
 
@@ -300,7 +332,7 @@ impl App for RustCompiler {
         // Bound to a local so the borrow of `self.path` ends before the arms run.
         let listing = ui.rpc().get::<ListDir>(&ListDirReq { path: &self.path });
 
-        let mut is_project = false;
+        let mut kind = None;
         let in_scratch_root = scratch_root(&self.path).is_some();
         match listing {
             Poll::Pending => {
@@ -310,10 +342,13 @@ impl App for RustCompiler {
                 ui.label(err.message());
             }
             Poll::Ready(listing) => {
-                is_project = listing
-                    .entries
-                    .iter()
-                    .any(|e| e.name == MANIFEST && !e.is_dir());
+                kind = detect(
+                    listing
+                        .entries
+                        .iter()
+                        .filter(|e| !e.is_dir())
+                        .map(|e| e.name.as_str()),
+                );
 
                 // Only directories: this picker exists to choose a project, and listing every
                 // source file in a crate would bury the one thing you can actually click.
@@ -346,16 +381,16 @@ impl App for RustCompiler {
         }
 
         ui.separator();
-        if is_project {
+        if let Some(kind) = kind {
             ui.horizontal(|ui| {
                 if ui.button("🔨 Build").clicked() {
                     build = true;
                 }
-                ui.tooltip("Run cargo build --release on the server");
-                ui.label("Cargo.toml found here");
+                ui.tooltip(build_tooltip(kind));
+                ui.label(&format!("Found: {}", kind.describe()));
             });
         } else {
-            ui.label("No Cargo.toml here — open a crate directory to build it.");
+            ui.label(NOTHING_TO_BUILD);
         }
         if scratch::id_of(&self.path).is_some() {
             ui.label("Uploaded for this build only: deleted after an hour unused.");
@@ -375,6 +410,7 @@ impl App for RustCompiler {
             // rather than "show me the last result".
             self.generation = self.generation.wrapping_add(1);
             self.building = Some(self.path.clone());
+            self.building_kind = kind;
             self.last_status = None;
         }
 
@@ -402,7 +438,7 @@ impl App for RustCompiler {
                     draw_result(ui, &status);
                 } else {
                     self.polling = true;
-                    draw_progress(ui, Some(&status));
+                    draw_progress(ui, Some(&status), self.building_kind);
                     // Drop the snapshot we just drew so next frame asks the server again. The
                     // job is keyed by `(path, generation)`, so this re-reads progress — it
                     // never starts a second build.
@@ -414,7 +450,7 @@ impl App for RustCompiler {
             Poll::Pending => {
                 self.polling = true;
                 let last = self.last_status.clone();
-                draw_progress(ui, last.as_deref());
+                draw_progress(ui, last.as_deref(), self.building_kind);
             }
             Poll::Failed(err) => {
                 self.polling = false;

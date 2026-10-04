@@ -38,7 +38,7 @@ The user documentation, the same pages the Docs app shows, starts at
 | **Files** | Browse the server's folders, upload (including drag-and-drop) and download files | [file-browser.md](data/shared/Docs/Apps/file-browser.md) |
 | **Docs** | Read, write and search documents, including the user documentation | [docs.md](data/shared/Docs/Apps/docs.md) |
 | **Viewer** | Look at pictures, music, videos, PDFs and text files, and share them | [viewer.md](data/shared/Docs/Apps/viewer.md) |
-| **Compiler** | Build a Rust project on the server and download the result | [rust-compiler.md](data/shared/Docs/Apps/rust-compiler.md) |
+| **Compiler** | Build a Rust, C or C++ project on the server and download the result | [rust-compiler.md](data/shared/Docs/Apps/rust-compiler.md) |
 | **Server** | Live graphs of how the server is doing | [server-dashboard.md](data/shared/Docs/Apps/server-dashboard.md) |
 | **Account** | See who you are signed in as, sign out, and make app passwords | [account.md](data/shared/Docs/Apps/account.md) |
 | **Clock** | A clock and stopwatch | [clock.md](data/shared/Docs/Apps/clock.md) |
@@ -57,7 +57,6 @@ These have an open pull request.
 
 These are open tickets.
 
-- **Compiler**: C and C++ projects with GCC (#72)
 - **Files**: delete files and folders (#52), compress and extract tar / gzip archives (#73)
 - **Viewer**: server-side conversion of Apple formats such as HEIC and HEVC (#81)
 - **Clock**: a sunlight map with timezones (#88)
@@ -175,4 +174,4 @@ sets itself up.
   [app passwords](#webdav). Remove the
   container freely; remove the volume only to start over.
 - **Smaller image:** `docker build --build-arg WITH_RUST=0 -t ccosel .` leaves out the Rust
-  toolchain the Compiler app builds with, about 1 GB. Everything else still works.
+  and C/C++ toolchains the Compiler app builds with, about 1 GB. Everything else still works.

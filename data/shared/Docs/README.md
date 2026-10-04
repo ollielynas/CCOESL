@@ -15,7 +15,8 @@ signing in, every visit starts with nothing open.
 - [Docs](Apps/docs.md): read, write and search documents, including these ones
 - [Clock](Apps/clock.md): a clock and stopwatch
 - [Server](Apps/server-dashboard.md): live graphs of how the server is doing
-- [Compiler](Apps/rust-compiler.md): build a Rust project on the server and download the result
+- [Compiler](Apps/rust-compiler.md): build a Rust, C or C++ project on the server and download
+  the result
 - [Account](Apps/account.md): see who you are signed in as, sign out, and make app passwords
 - [Viewer](Apps/viewer.md): look at pictures, music, videos, PDFs and text files, and share them
 
