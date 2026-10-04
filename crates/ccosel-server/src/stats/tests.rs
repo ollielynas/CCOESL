@@ -43,7 +43,13 @@ fn rpc_calls_count_up() {
     assert_eq!(s.rpc_calls(), 2);
 }
 
+/// The parsers are tested on fixed text above; this checks they are pointed at the real files.
+/// Linux only, because the figures come from `/proc`; elsewhere they read as unavailable.
+#[cfg(target_os = "linux")]
 #[test]
-fn host_sample_reports_at_least_one_cpu() {
-    assert!(sample_host().cpus >= 1);
+fn host_sample_reads_load_and_memory_from_proc() {
+    let host = sample_host();
+    assert!(host.load_milli.is_some(), "no load from /proc/loadavg");
+    let (used, total) = (host.mem_used_kib.unwrap(), host.mem_total_kib.unwrap());
+    assert!(total > 0 && used <= total, "{used} of {total} KiB");
 }
