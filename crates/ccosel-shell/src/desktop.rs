@@ -32,6 +32,7 @@ use crate::registry::{AppEntry, catalog, find, solo_url};
 use crate::session::{self, Autosave, OnScreen, SHELL_INSTANCE, Save, ShellSink};
 use crate::theme;
 use crate::upload::{self, Drops, Uploads};
+use crate::windows::{self, Launch, Restoring, window_id};
 
 /// Dock badge geometry, shared between `dock_item` (which paints it) and `app_menu` (which
 /// needs to know the dock's on-screen height so its popup can sit above it without overlapping).
@@ -72,23 +73,6 @@ pub(crate) use wallpaper_file;
 /// `index.html` — `ServeDir` serves it with no server changes needed.
 pub const WALLPAPER_URL: &str = concat!("/", wallpaper_file!());
 
-/// A launch in flight, or its outcome. Launching is async (fetch + compile); the render loop
-/// is not, so results land here and the next frame picks them up.
-///
-/// `restored` is the window's place in a remembered desktop, back to front, for one being
-/// reopened from it.
-enum Launch {
-    Ready {
-        window: Box<AppWindow<WebInstance>>,
-        restored: Option<usize>,
-    },
-    Failed {
-        name: String,
-        error: String,
-        restored: Option<usize>,
-    },
-}
-
 pub struct Desktop {
     registry: Vec<AppEntry>,
     windows: Vec<AppWindow<WebInstance>>,
@@ -96,7 +80,7 @@ pub struct Desktop {
     /// second window of the same app is nearly free — and this is where the IndexedDB cache
     /// will eventually sit, to make it free across sessions too.
     modules: Rc<RefCell<HashMap<&'static str, WebAssembly::Module>>>,
-    inbox: Rc<RefCell<Vec<Launch>>>,
+    inbox: Rc<RefCell<Vec<Launch<WebInstance>>>>,
     pending: Rc<RefCell<usize>>,
     next_instance_id: Rc<RefCell<u64>>,
     errors: Vec<String>,
@@ -139,8 +123,7 @@ pub struct Desktop {
     load_call: Option<u32>,
     autosave: Autosave,
     /// Remembered windows still opening, and the stacking place of each one that has.
-    restoring: usize,
-    restore_order: Vec<(usize, u64)>,
+    restoring: Restoring,
 }
 
 impl Desktop {
@@ -179,8 +162,7 @@ impl Desktop {
             next_shell_call: 1,
             load_call: None,
             autosave: Autosave::default(),
-            restoring: 0,
-            restore_order: Vec::new(),
+            restoring: Restoring::default(),
         };
         if let Err(e) = desktop.drops.listen(desktop.egui_ctx.clone()) {
             desktop
@@ -290,33 +272,16 @@ impl Desktop {
     }
 
     fn drain_inbox(&mut self) {
-        let launches: Vec<Launch> = self.inbox.borrow_mut().drain(..).collect();
+        let launches: Vec<_> = self.inbox.borrow_mut().drain(..).collect();
         for launch in launches {
-            let restored = match &launch {
-                Launch::Ready { restored, .. } | Launch::Failed { restored, .. } => *restored,
-            };
-            match launch {
-                Launch::Ready { window: mut w, .. } => {
-                    if let Some(i) = restored {
-                        self.restore_order.push((i, w.instance_id));
-                    }
-                    // Two windows of the same app need distinguishable taskbar entries, or the
-                    // taskbar stops being a way to find a particular window.
-                    let n = self.windows.iter().filter(|x| x.app_id == w.app_id).count();
-                    if n > 0 {
-                        w.title = format!("{} {}", w.title, n + 1);
-                    }
-                    self.windows.push(*w);
-                }
-                Launch::Failed { name, error, .. } => {
-                    self.errors.push(format!("{name}: {error}"));
-                }
-            }
-            if restored.is_some() {
-                self.restoring -= 1;
-                if self.restoring == 0 {
-                    self.stack_restored();
-                }
+            let stacked = windows::accept(
+                &mut self.windows,
+                &mut self.errors,
+                &mut self.restoring,
+                launch,
+            );
+            if let Some(order) = stacked {
+                self.stack_restored(order);
             }
         }
     }
@@ -397,18 +362,16 @@ impl Desktop {
                 continue;
             };
             let placement = Placement::restored(rect, saved.minimized, saved.maximized);
-            self.restoring += 1;
+            self.restoring.expect();
             self.launch_placed(&entry, saved.arg.clone(), Some((i, placement)));
         }
         self.autosave.loaded(layout);
     }
 
-    /// Once every remembered window is open, put them back in the order they were stacked:
-    /// they finish opening in whatever order their apps load.
-    fn stack_restored(&mut self) {
-        let mut order = std::mem::take(&mut self.restore_order);
-        order.sort_unstable();
-        for (_, id) in order {
+    /// Once every remembered window is open, put them back in the order they were stacked,
+    /// `order` being their instance ids back to front.
+    fn stack_restored(&mut self, order: Vec<u64>) {
+        for id in order {
             self.egui_ctx
                 .move_to_top(egui::LayerId::new(egui::Order::Middle, window_id(id)));
         }
@@ -439,7 +402,7 @@ impl Desktop {
     /// Save the desktop once it has settled after a change. Not while windows are still opening,
     /// which would save a desktop with some of them missing.
     fn autosave(&mut self, ctx: &egui::Context, now_ms: f64) {
-        if self.restoring > 0 || *self.pending.borrow() > 0 {
+        if self.restoring.in_progress() || *self.pending.borrow() > 0 {
             return;
         }
         let current = self.current_layout(ctx);
@@ -582,25 +545,7 @@ impl Desktop {
             }
 
             // Anything the guest asked for during that frame.
-            let sink = window.sink();
-            for call in window.take_outbox() {
-                self.transport.enqueue(
-                    PendingKey {
-                        instance: window.instance_id,
-                        call: call.call_id,
-                    },
-                    call.method as u16,
-                    call.args,
-                    sink.clone(),
-                    now_ms,
-                );
-            }
-            for call_id in window.take_cancels() {
-                self.transport.cancel(PendingKey {
-                    instance: window.instance_id,
-                    call: call_id,
-                });
-            }
+            windows::forward_calls(window, &mut self.transport, now_ms);
 
             if close {
                 window.close();
@@ -611,10 +556,7 @@ impl Desktop {
         // coalescing window, with no timer to arm and nothing to poll.
         self.transport.flush();
 
-        for window in self.windows.iter().filter(|w| !w.open) {
-            self.transport.forget_instance(window.instance_id);
-        }
-        self.windows.retain(|w| w.open);
+        windows::reap_closed(&mut self.windows, &mut self.transport);
 
         for (app, arg) in to_open {
             match find(&app) {
@@ -664,26 +606,12 @@ impl Desktop {
     fn route_drops(&mut self, ctx: &egui::Context) {
         for dropped in self.drops.take() {
             let layer = ctx.layer_id_at(dropped.pos).map(|l| l.id);
-            // On an app's own page the app is the whole page, so anywhere counts as on it.
-            let solo = self.solo.is_some();
-            let window = self.windows.iter().find(|w| {
-                !w.placement.minimized && (solo || Some(window_id(w.instance_id)) == layer)
-            });
-            let Some(window) = window else {
-                self.errors
-                    .push("upload: drop files onto an app window to upload them".to_owned());
-                continue;
-            };
-            match window.drop_target() {
-                Some(target) => self.uploads.start_dropped(
-                    window.instance_id,
-                    target,
-                    dropped.entries,
-                    ctx.clone(),
-                ),
-                None => self
-                    .errors
-                    .push(format!("upload: {} doesn't take uploads", window.title)),
+            match windows::drop_destination(&self.windows, self.solo.is_some(), layer) {
+                Ok((instance, target)) => {
+                    self.uploads
+                        .start_dropped(instance, target, dropped.entries, ctx.clone())
+                }
+                Err(e) => self.errors.push(e),
             }
         }
     }
@@ -692,19 +620,7 @@ impl Desktop {
     /// outcome visible: a summary in the status bar, and every failed file in the error list.
     fn drain_uploads(&mut self, now_ms: f64) {
         for done in self.uploads.take_finished() {
-            if let Some(w) = self
-                .windows
-                .iter_mut()
-                .find(|w| w.instance_id == done.instance)
-            {
-                // A project upload that failed before it had a folder tells the app nothing:
-                // there's nothing to build, and the error list says why.
-                match (done.project, done.scratch) {
-                    (true, Some(id)) => w.project_uploaded(done.widget, id),
-                    (true, None) => {}
-                    (false, _) => w.upload_finished(done.widget),
-                }
-            }
+            windows::upload_finished(&mut self.windows, &done);
             for f in &done.failures {
                 self.errors.push(format!("upload: {f}"));
             }
@@ -1160,6 +1076,8 @@ fn set_page_title(app: &str) {
     }
 }
 
+/// Where windows live: between the status bar and the dock. A maximised window fills it,
+/// short of its own shadow so that stays on screen.
 fn window_id(instance_id: u64) -> egui::Id {
     egui::Id::new(("app-window", instance_id))
 }

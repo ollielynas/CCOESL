@@ -24,6 +24,7 @@ mod registry;
 mod session;
 mod theme;
 mod upload;
+mod windows;
 
 use wasm_bindgen::prelude::*;
 

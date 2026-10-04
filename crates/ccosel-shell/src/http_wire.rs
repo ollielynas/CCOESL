@@ -79,12 +79,16 @@ impl Wire for HttpWire {
     }
 }
 
+/// The replies to the calls `seqs` in a reply batch, matched by sequence number rather than by
+/// position. A call the batch has no reply for fails now, rather than at its deadline; a reply
+/// to a call that wasn't in the request is dropped.
 fn decode_replies(bytes: &[u8], seqs: &[u32]) -> Vec<Incoming> {
     let Ok(replies) = postcard::from_bytes::<Vec<WireReply>>(bytes) else {
         return transport_failures(seqs, "malformed reply batch");
     };
-    replies
+    let mut incoming: Vec<Incoming> = replies
         .into_iter()
+        .filter(|r| seqs.contains(&r.seq))
         .map(|r| Incoming {
             seq: r.seq,
             result: match r.result {
@@ -92,7 +96,14 @@ fn decode_replies(bytes: &[u8], seqs: &[u32]) -> Vec<Incoming> {
                 WireResult::Err { code, detail } => Err((code, detail.to_owned())),
             },
         })
-        .collect()
+        .collect();
+    let missing: Vec<u32> = seqs
+        .iter()
+        .copied()
+        .filter(|seq| !incoming.iter().any(|i| i.seq == *seq))
+        .collect();
+    incoming.extend(transport_failures(&missing, "no reply in the batch"));
+    incoming
 }
 
 fn transport_failures(seqs: &[u32], detail: &str) -> Vec<Incoming> {
@@ -103,3 +114,6 @@ fn transport_failures(seqs: &[u32], detail: &str) -> Vec<Incoming> {
         })
         .collect()
 }
+
+#[cfg(test)]
+mod tests;
