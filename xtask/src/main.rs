@@ -663,10 +663,10 @@ fn catalog_entries(src: &str) -> Vec<(String, String)> {
             if let Some(unfinished) = id.replace(next) {
                 entries.push((unfinished, String::new()));
             }
-        } else if let Some(url) = field(line, "url") {
-            if let Some(id) = id.take() {
-                entries.push((id, url));
-            }
+        } else if let Some(url) = field(line, "url")
+            && let Some(id) = id.take()
+        {
+            entries.push((id, url));
         }
     }
     entries.extend(id.map(|id| (id, String::new())));
