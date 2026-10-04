@@ -57,9 +57,21 @@ const BAR_PAD: f32 = 14.0;
 /// The status bar's upload progress bar.
 const UPLOAD_BAR_WIDTH: f32 = 90.0;
 
+/// The wallpaper's file name under `web/`. A macro rather than a `const` so the tests can
+/// `include_bytes!` the very file [`WALLPAPER_URL`] names: rename one without the other and
+/// the shell's tests stop compiling.
+macro_rules! wallpaper_file {
+    () => {
+        "wallpaper.jpg"
+    };
+}
+// Only the tests name the file directly; the shell itself uses `WALLPAPER_URL`.
+#[cfg(test)]
+pub(crate) use wallpaper_file;
+
 /// Where the wallpaper image is served from. A plain static file under `web/`, alongside
 /// `index.html` — `ServeDir` serves it with no server changes needed.
-pub const WALLPAPER_URL: &str = "/wallpaper.jpg";
+pub const WALLPAPER_URL: &str = concat!("/", wallpaper_file!());
 
 pub struct Desktop {
     registry: Vec<AppEntry>,
@@ -839,7 +851,7 @@ impl Desktop {
                         ui.label(
                             egui::RichText::new("This app couldn't be opened.").color(t.text_dim),
                         );
-                        ui.hyperlink_to("Go to the desktop", "/");
+                        ui.hyperlink_to(egui::RichText::new("Go to the desktop").underline(), "/");
                     }
                 });
             });

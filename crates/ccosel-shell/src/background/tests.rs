@@ -4,17 +4,25 @@ use wasm_bindgen_test::wasm_bindgen_test;
 
 use super::*;
 
-/// The file the desktop actually fetches. `include_bytes!` also makes a renamed or deleted
-/// wallpaper a compile error rather than a silent 404 at runtime.
-const SHIPPED: &[u8] = include_bytes!("../../../../web/wallpaper.jpg");
+/// The file the desktop actually fetches: the name comes from the same macro as
+/// `desktop::WALLPAPER_URL`, so this is the file that URL serves. `include_bytes!` makes a
+/// renamed or deleted wallpaper a compile error rather than a silent 404 at runtime.
+const SHIPPED: &[u8] = include_bytes!(concat!(
+    "../../../../web/",
+    crate::desktop::wallpaper_file!()
+));
 
 fn approx(a: egui::Rect, b: egui::Rect) -> bool {
     (a.min - b.min).length() < 1e-4 && (a.max - b.max).length() < 1e-4
 }
 
 #[wasm_bindgen_test]
-fn the_url_the_desktop_fetches_is_the_file_that_ships() {
-    assert_eq!(crate::desktop::WALLPAPER_URL, "/wallpaper.jpg");
+fn the_url_the_desktop_fetches_is_a_file_at_the_root_of_web() {
+    // `web/` is served at `/`, so the URL is the file's name with nothing in front but `/`.
+    // That the file exists is checked when `SHIPPED` compiles.
+    let name = crate::desktop::WALLPAPER_URL.strip_prefix('/');
+    assert!(name.is_some_and(|n| !n.is_empty() && !n.contains('/')));
+    assert!(!SHIPPED.is_empty());
 }
 
 /// The regression behind "fetched but never rendered": the shipped wallpaper was a JPEG while
