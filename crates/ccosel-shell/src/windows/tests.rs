@@ -219,7 +219,11 @@ fn an_upload_click_is_reported_in_the_frame_it_happens_and_only_then() {
     assert_eq!(w.clicked_upload(), None);
 
     click(&ctx, &mut w, &seen, 7);
-    assert_eq!(w.clicked_upload(), Some((7, "/Docs".to_owned())));
+    assert_eq!(
+        w.clicked_upload(),
+        Some((7, "/Docs".to_owned(), false)),
+        "a folder picker"
+    );
     assert_eq!(
         w.clicked_project_upload(),
         None,
@@ -230,6 +234,21 @@ fn an_upload_click_is_reported_in_the_frame_it_happens_and_only_then() {
     frame(&ctx, &mut w, vec![]);
     assert_eq!(w.clicked_upload(), None, "one click opens one picker");
     assert_eq!(w.drop_target(), Some(DropTarget::Folder(7, "/Docs".into())));
+}
+
+#[wasm_bindgen_test]
+fn an_upload_files_click_asks_for_a_file_picker() {
+    let ctx = egui::Context::default();
+    let (mut w, seen) = window(
+        "file-browser",
+        1,
+        &[Cmd::UploadFiles {
+            id: 9,
+            dest: "/Docs",
+        }],
+    );
+    click(&ctx, &mut w, &seen, 9);
+    assert_eq!(w.clicked_upload(), Some((9, "/Docs".to_owned(), true)));
 }
 
 #[wasm_bindgen_test]
