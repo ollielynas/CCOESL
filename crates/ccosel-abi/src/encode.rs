@@ -160,6 +160,11 @@ impl Encoder {
                 self.u64(id);
                 self.str(dest);
             }
+            Cmd::UploadFiles { id, dest } => {
+                self.u8(OpCode::UploadFiles as u8);
+                self.u64(id);
+                self.str(dest);
+            }
             Cmd::OpenUrl { id, label, url } => {
                 self.u8(OpCode::OpenUrl as u8);
                 self.u64(id);
