@@ -161,6 +161,8 @@ pub mod server_error {
     pub const IO: u32 = 4;
     pub const UNKNOWN_METHOD: u32 = 5;
     pub const MALFORMED: u32 = 6;
+    /// Nothing `build::detect` recognises: no `Cargo.toml`, `Makefile` or C/C++ sources. Named
+    /// from when Rust was the only kind of project.
     pub const NOT_A_CARGO_PROJECT: u32 = 7;
     pub const TIMEOUT: u32 = 8;
     /// `ReadFile` on something that is not UTF-8 text.

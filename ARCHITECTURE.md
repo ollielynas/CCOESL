@@ -258,9 +258,10 @@ nothing despite responses being a frame stale.
 
 ## Known limitation: building is running untrusted code
 
-`Compile` runs `cargo build` on whatever project is in the jail. Cargo runs that project's
-build scripts (`build.rs`) and procedural macros as part of the build, so **building a project
-runs arbitrary code as the server's user**, with its filesystem and network access. The jail
+`Compile` runs `cargo build` or `make` on whatever project is in the jail. Cargo runs that
+project's build scripts (`build.rs`) and procedural macros as part of the build, and a
+`Makefile` is a list of shell commands to run, so **building a project runs arbitrary code as
+the server's user**, with its filesystem and network access. The jail
 is a path check on which directory gets built, not a sandbox around the build.
 
 Until that changes, only build projects you would be willing to run yourself. A real sandbox

@@ -1,4 +1,5 @@
-//! Runs `cargo build` inside the jail, as a **job** rather than a call.
+//! Runs a build inside the jail, as a **job** rather than a call: `cargo build` for a Rust
+//! project, or `make` or GCC for a C/C++ one (see `build_cc`).
 //!
 //! The heaviest thing this server does, and the only thing here that outlives its request: a
 //! build takes minutes, so `compile` starts one and returns a snapshot immediately. The client
@@ -12,18 +13,20 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use ccosel_proto::build::{BuiltBinary, CompileReq, CompileResult, CompileStatus};
+use ccosel_proto::build::{
+    BuiltBinary, CompileReq, CompileResult, CompileStatus, ProjectKind, detect,
+};
 use ccosel_proto::server_error;
 
 use crate::fs_api::Jail;
 
 /// A build that runs this long is not coming back on its own. Killing it is what keeps one
 /// runaway `build.rs` from holding a thread and a job slot forever.
-const BUILD_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+pub(crate) const BUILD_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
 /// Tail-capped like a directory listing is entry-capped: a guest must never be handed an
 /// unbounded reply, and a build failure's own error is usually the last thing cargo printed.
-const MAX_OUTPUT_BYTES: usize = 64 * 1024;
+pub(crate) const MAX_OUTPUT_BYTES: usize = 64 * 1024;
 
 /// Finished jobs older than this are dropped. Long enough that an app which stopped polling
 /// (occluded window, reconnect) can still come back for its result.
@@ -31,15 +34,15 @@ const JOB_RETENTION: Duration = Duration::from_secs(30 * 60);
 
 /// What a build reports about itself while it runs.
 #[derive(Default)]
-struct Progress {
-    units_done: u32,
-    units_total: u32,
-    current: String,
+pub(crate) struct Progress {
+    pub units_done: u32,
+    pub units_total: u32,
+    pub current: String,
 }
 
-struct Job {
+pub(crate) struct Job {
     started: Instant,
-    progress: Mutex<Progress>,
+    pub progress: Mutex<Progress>,
     /// `Some` once the build has finished, one way or the other.
     result: Mutex<Option<CompileResult>>,
     finished_at: Mutex<Option<Instant>>,
@@ -79,10 +82,7 @@ pub fn compile(jail: &Jail, jobs: &Jobs, req: &CompileReq<'_>) -> Result<Compile
     if !meta.is_dir() {
         return Err(server_error::NOT_A_DIRECTORY);
     }
-    let manifest = dir.join("Cargo.toml");
-    if !manifest.is_file() {
-        return Err(server_error::NOT_A_CARGO_PROJECT);
-    }
+    let kind = project_kind(&dir).ok_or(server_error::NOT_A_CARGO_PROJECT)?;
 
     let key = (dir.clone(), req.generation);
     let job = {
@@ -105,7 +105,13 @@ pub fn compile(jail: &Jail, jobs: &Jobs, req: &CompileReq<'_>) -> Result<Compile
                 let root = jail.root().to_path_buf();
                 let worker = job.clone();
                 std::thread::spawn(move || {
-                    let outcome = run_build(&manifest, &dir, &root, &worker);
+                    let outcome = match kind {
+                        ProjectKind::Cargo => {
+                            run_build(&dir.join("Cargo.toml"), &dir, &root, &worker)
+                        }
+                        ProjectKind::Make => crate::build_cc::run_make(&dir, &root, &worker),
+                        ProjectKind::Sources => crate::build_cc::run_sources(&dir, &root, &worker),
+                    };
                     *worker.result.lock().unwrap() = Some(outcome);
                     *worker.finished_at.lock().unwrap() = Some(Instant::now());
                 });
@@ -115,6 +121,17 @@ pub fn compile(jail: &Jail, jobs: &Jobs, req: &CompileReq<'_>) -> Result<Compile
     };
 
     Ok(snapshot(&job))
+}
+
+/// What [`detect`] makes of the plain files directly in `dir`.
+fn project_kind(dir: &Path) -> Option<ProjectKind> {
+    let names: Vec<String> = std::fs::read_dir(dir)
+        .ok()?
+        .filter_map(Result::ok)
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+        .filter_map(|e| e.file_name().into_string().ok())
+        .collect();
+    detect(names.iter().map(String::as_str))
 }
 
 fn snapshot(job: &Job) -> CompileStatus {
@@ -311,12 +328,12 @@ fn spawn_build(manifest: &Path, job: &Job) -> std::io::Result<Option<BuildRun>> 
     }))
 }
 
-fn kill(child: &mut Child) {
+pub(crate) fn kill(child: &mut Child) {
     let _ = child.kill();
     let _ = child.wait();
 }
 
-fn built_binary(jail_root: &Path, exe: &Path) -> Option<BuiltBinary> {
+pub(crate) fn built_binary(jail_root: &Path, exe: &Path) -> Option<BuiltBinary> {
     let size = std::fs::metadata(exe).ok()?.len();
     let name = exe.file_name()?.to_str()?.to_owned();
     let rel = exe.strip_prefix(jail_root).ok()?;
@@ -340,7 +357,7 @@ fn jail_path(rel: &Path) -> String {
 }
 
 /// Keep the last `max` bytes of `s`, on a char boundary.
-fn cap_tail(mut s: String, max: usize) -> (String, bool) {
+pub(crate) fn cap_tail(mut s: String, max: usize) -> (String, bool) {
     if s.len() <= max {
         return (s, false);
     }

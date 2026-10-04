@@ -230,3 +230,136 @@ fn builds_a_project_inside_this_repositorys_data_folder() {
     assert!(result.success, "build failed:\n{}", result.output);
     assert_eq!(result.binaries.len(), 1);
 }
+
+// C and C++. `gcc`, `g++` and `make` are on the CI runner, so these use the real ones.
+
+/// Builds `dir` (jail-relative) to completion and runs the one program it made, returning
+/// what the program printed.
+fn build_and_run(jail: &Jail, root: &std::path::Path, path: &str) -> (CompileStatus, String) {
+    let status = build_to_completion(jail, &Jobs::new(), path, 1);
+    let result = status.result.as_ref().unwrap();
+    assert!(result.success, "build failed:\n{}", result.output);
+    assert_eq!(result.binaries.len(), 1, "output:\n{}", result.output);
+    let exe = root.join(result.binaries[0].path.trim_start_matches('/'));
+    let out = std::process::Command::new(&exe).output().unwrap();
+    assert!(out.status.success());
+    (status, String::from_utf8(out.stdout).unwrap())
+}
+
+#[test]
+fn builds_a_folder_of_c_sources_into_one_program() {
+    let root = temp_root("builds_a_folder_of_c_sources_into_one_program");
+    let dir = root.join("hello c");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("greet.h"), "const char *greeting(void);\n").unwrap();
+    fs::write(
+        dir.join("greet.c"),
+        "#include \"greet.h\"\nconst char *greeting(void) { return \"hi from c\"; }\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("main.c"),
+        "#include <stdio.h>\n#include <math.h>\n#include \"greet.h\"\n\
+         int main(void) { printf(\"%s %d\\n\", greeting(), (int)sqrt(16.0)); return 0; }\n",
+    )
+    .unwrap();
+    let jail = Jail::new(&root).unwrap();
+
+    let (status, printed) = build_and_run(&jail, &root, "/hello c");
+    assert_eq!(printed, "hi from c 4\n", "linked with libm");
+    let binary = &status.result.as_ref().unwrap().binaries[0];
+    assert_eq!(binary.name, "hello_c");
+    assert_eq!(binary.path, "/hello c/target/hello_c");
+    // Two sources and the link.
+    assert_eq!((status.units_done, status.units_total), (3, 3));
+}
+
+#[test]
+fn builds_c_and_cpp_sources_together_linked_as_cpp() {
+    let root = temp_root("builds_c_and_cpp_sources_together_linked_as_cpp");
+    let dir = root.join("mixed");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("add.c"),
+        "int add(int a, int b) { return a + b; }\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("main.cpp"),
+        "#include <iostream>\n#include <vector>\nextern \"C\" int add(int, int);\n\
+         int main() { std::vector<int> v{1, 2}; std::cout << add(v[0], v[1]) << std::endl; }\n",
+    )
+    .unwrap();
+    let jail = Jail::new(&root).unwrap();
+
+    let (_, printed) = build_and_run(&jail, &root, "/mixed");
+    assert_eq!(printed, "3\n");
+}
+
+#[test]
+fn a_c_compile_error_is_reported_with_every_file_tried_and_nothing_linked() {
+    let root = temp_root("a_c_compile_error_is_reported_with_every_file_tried");
+    let dir = root.join("broken");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("a.c"), "int main(void) { this is not c }\n").unwrap();
+    fs::write(dir.join("b.cc"), "int helper() { also not c++ }\n").unwrap();
+    let jail = Jail::new(&root).unwrap();
+
+    let status = build_to_completion(&jail, &Jobs::new(), "/broken", 1);
+    let result = status.result.unwrap();
+    assert!(!result.success);
+    assert!(result.binaries.is_empty());
+    assert!(result.output.contains("a.c:1"), "{}", result.output);
+    assert!(result.output.contains("b.cc:1"), "{}", result.output);
+    assert!(!dir.join("target/broken").exists(), "nothing was linked");
+}
+
+#[test]
+fn builds_a_makefile_project_and_finds_what_it_made() {
+    let root = temp_root("builds_a_makefile_project_and_finds_what_it_made");
+    let dir = root.join("made");
+    fs::create_dir_all(dir.join("tools")).unwrap();
+    // An executable that was there before the build is not something it made.
+    fs::write(dir.join("tools/old.sh"), "#!/bin/sh\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(dir.join("tools/old.sh"), fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    fs::write(
+        dir.join("main.c"),
+        "#include <stdio.h>\nint main(void) { puts(\"made\"); return 0; }\n",
+    )
+    .unwrap();
+    // Also a loose source, so this proves the Makefile wins over compiling sources directly.
+    fs::write(
+        dir.join("Makefile"),
+        "bin/app: main.c\n\tmkdir -p bin\n\tgcc -O2 -o bin/app main.c\n",
+    )
+    .unwrap();
+    let jail = Jail::new(&root).unwrap();
+
+    let (status, printed) = build_and_run(&jail, &root, "/made");
+    assert_eq!(printed, "made\n");
+    let result = status.result.as_ref().unwrap();
+    assert_eq!(result.binaries[0].path, "/made/bin/app");
+    assert!(
+        result.output.contains("gcc -O2"),
+        "make's own output is shown"
+    );
+    assert_eq!(status.units_done, 1, "one compiler run counted");
+}
+
+#[test]
+fn a_failing_makefile_is_a_reported_failure() {
+    let root = temp_root("a_failing_makefile_is_a_reported_failure");
+    let dir = root.join("bad");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("Makefile"), "all:\n\t@echo going wrong; exit 3\n").unwrap();
+    let jail = Jail::new(&root).unwrap();
+
+    let status = build_to_completion(&jail, &Jobs::new(), "/bad", 1);
+    let result = status.result.unwrap();
+    assert!(!result.success);
+    assert!(result.output.contains("going wrong"), "{}", result.output);
+}

@@ -41,13 +41,14 @@ FROM eclipse-temurin:21-jre-noble
 # Keycloak, pinned. It runs as a child of the server (CCOSEL_KEYCLOAK_HOME), not in Docker.
 COPY --from=quay.io/keycloak/keycloak:26.7.4 /opt/keycloak /opt/keycloak
 
-# The Compiler app runs `cargo build` on the server. Without a toolchain that app can't build
-# anything, but everything else works: `--build-arg WITH_RUST=0` makes the image ~1 GB smaller.
+# The Compiler app runs `cargo build`, `make`, `gcc` and `g++` on the server. Without the
+# toolchains that app can't build anything, but everything else works: `--build-arg WITH_RUST=0`
+# makes the image ~1 GB smaller.
 ARG WITH_RUST=1
 ENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo PATH=/usr/local/cargo/bin:$PATH
 RUN apt-get update \
     && if [ "$WITH_RUST" = 1 ]; then \
-         apt-get install -y --no-install-recommends ca-certificates curl gcc libc6-dev \
+         apt-get install -y --no-install-recommends ca-certificates curl gcc g++ make libc6-dev \
          && curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --no-modify-path \
               --target wasm32-unknown-unknown \
          && chmod -R a+rwX "$RUSTUP_HOME" "$CARGO_HOME"; \
