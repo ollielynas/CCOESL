@@ -10,6 +10,7 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use ccosel_proto::account::{Account, CreateAppPasswordReq, RevokeAppPasswordReq};
+use ccosel_proto::archive::ArchiveReq;
 use ccosel_proto::build::CompileReq;
 use ccosel_proto::desktop::DesktopLayout;
 use ccosel_proto::fs::{ListDirReq, PathReq, SearchReq, WriteFileReq};
@@ -115,6 +116,10 @@ async fn dispatch(
             let result = jail
                 .authorize(a.path, user, crate::fs_api::Need::Read)
                 .and_then(|_| crate::build_api::compile(jail, &state.jobs, &a));
+            (result, a.path)
+        }),
+        Method::Archive => run::<ArchiveReq, _>(req, |a| {
+            let result = crate::archive_api::archive(jail, &state.archive_jobs, &a, user);
             (result, a.path)
         }),
         Method::ServerInfo => {

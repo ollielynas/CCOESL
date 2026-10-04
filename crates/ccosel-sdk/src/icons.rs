@@ -40,6 +40,9 @@ pub const SQUARE: &str = "\u{E45E}";
 pub const CODE_BLOCK: &str = "\u{EAFE}";
 pub const QUOTES: &str = "\u{E660}";
 pub const INFO: &str = "\u{E2CE}";
+pub const ARROWS_IN_SIMPLE: &str = "\u{E09E}";
+pub const ARROWS_OUT_SIMPLE: &str = "\u{E0A6}";
+pub const FILE_ZIP: &str = "\u{E958}";
 
 #[cfg(test)]
 mod tests {
@@ -78,5 +81,8 @@ mod tests {
         assert_eq!(super::CODE_BLOCK, p::CODE_BLOCK);
         assert_eq!(super::QUOTES, p::QUOTES);
         assert_eq!(super::INFO, p::INFO);
+        assert_eq!(super::ARROWS_IN_SIMPLE, p::ARROWS_IN_SIMPLE);
+        assert_eq!(super::ARROWS_OUT_SIMPLE, p::ARROWS_OUT_SIMPLE);
+        assert_eq!(super::FILE_ZIP, p::FILE_ZIP);
     }
 }

@@ -8,6 +8,9 @@
 //! navigated away. Asking for a listing every frame is the whole of the data flow, because the
 //! request cache keys on the request itself — so changing `self.path` *is* the re-request.
 
+use ccosel_proto::archive::{
+    Archive, ArchiveAction, ArchiveReq, ArchiveResult, ArchiveStatus, archive_kind,
+};
 use ccosel_proto::fs::{Access, EntryKind, ListDir, ListDirReq, PathReq, Remove};
 use ccosel_sdk::{App, CallId, Poll, Text, TextStyle, Ui, url};
 
@@ -53,8 +56,13 @@ pub struct FileBrowser {
     confirm: Option<(String, bool)>,
     /// The deletion on its way to the server: what it deletes, and the call.
     deleting: Option<(String, CallId)>,
-    /// How the last deletion went, until the next one or until the folder changes.
+    /// How the last deletion or archive job went, until the next one or until the folder
+    /// changes.
     status: Option<String>,
+    /// The archive job running, if any: what it is of, and what it does. Polled every frame.
+    archiving: Option<(String, ArchiveAction)>,
+    /// Bumped once per Compress, Gzip or Extract: the job's idempotency key.
+    generation: u32,
 }
 
 impl Default for FileBrowser {
@@ -69,6 +77,8 @@ impl Default for FileBrowser {
             confirm: None,
             deleting: None,
             status: None,
+            archiving: None,
+            generation: 0,
         }
     }
 }
@@ -141,7 +151,7 @@ impl FileBrowser {
     fn left_folder(&mut self) {
         self.selected = None;
         self.confirm = None;
-        if self.deleting.is_none() {
+        if self.deleting.is_none() && self.archiving.is_none() {
             self.status = None;
         }
     }
@@ -178,6 +188,57 @@ impl FileBrowser {
         let call = ui.rpc().send::<Remove>(&PathReq { path: &path });
         self.status = Some(format!("Deleting {name}…"));
         self.deleting = Some((path, call));
+    }
+
+    /// Start an archive job on `name` in the folder on screen.
+    fn start_archive(&mut self, name: &str, action: ArchiveAction) {
+        self.generation = self.generation.wrapping_add(1);
+        self.archiving = Some((join(&self.path, name), action));
+        self.status = Some(format!("{} {name}…", doing(action)));
+    }
+
+    /// Check on the archive job, if any: show how far it has got, and once it is done say
+    /// what it made and list its folder again.
+    fn poll_archive(&mut self, ui: &mut Ui<'_>) {
+        let Some((path, action)) = &self.archiving else {
+            return;
+        };
+        let rpc = ui.rpc();
+        let req = ArchiveReq {
+            path,
+            action: *action,
+            generation: self.generation,
+        };
+        let name = path.rsplit('/').next().unwrap_or(path).to_owned();
+        let status = match rpc.get::<Archive>(&req) {
+            // A poll on the wire: keep showing the last progress.
+            Poll::Pending => return,
+            Poll::Ready(s) if !s.finished => {
+                self.status = Some(progress(*action, &name, &s));
+                // Read again next frame; the job is keyed by its generation, so this never
+                // starts a second one.
+                rpc.invalidate::<Archive>(&req);
+                return;
+            }
+            Poll::Ready(s) => match &s.result {
+                Some(ArchiveResult::Made(made)) => {
+                    let made = made.rsplit('/').next().unwrap_or(made);
+                    format!("{} {name} into {made}", done(*action))
+                }
+                Some(ArchiveResult::Failed(why)) => {
+                    format!("Couldn't {} {name}: {why}", verb(*action))
+                }
+                None => return,
+            },
+            Poll::Failed(err) => format!("Couldn't {} {name}: {}", verb(*action), err.message()),
+        };
+        let dir = match path.rfind('/') {
+            Some(0) | None => "/",
+            Some(i) => &path[..i],
+        };
+        rpc.invalidate::<ListDir>(&ListDirReq { path: dir });
+        self.status = Some(status);
+        self.archiving = None;
     }
 
     /// Check on the deletion in flight, if any. Once it is done the folder it was in is
@@ -221,7 +282,18 @@ impl FileBrowser {
     }
 }
 
+/// 4 Hz while an archive job runs, as the Compiler polls a build.
+const POLL_MS: u32 = 250;
+
 impl App for FileBrowser {
+    fn wants_repaint_after_ms(&self) -> u32 {
+        if self.archiving.is_some() {
+            POLL_MS
+        } else {
+            ccosel_sdk::REPAINT_ON_INPUT_ONLY
+        }
+    }
+
     fn update(&mut self, ui: &mut Ui<'_>) {
         // Who the server thinks this is, which is where "My files" lives.
         let user = match ui.rpc().get::<Access>(&PathReq { path: "/" }) {
@@ -346,6 +418,7 @@ impl App for FileBrowser {
         }
 
         self.poll_delete(ui);
+        self.poll_archive(ui);
         if let Some((name, is_dir)) = &self.confirm {
             let question = if *is_dir {
                 format!("Delete the folder {name} and everything in it? This can't be undone.")
@@ -383,6 +456,10 @@ impl App for FileBrowser {
         // Deferred so the borrow of `self` inside the match does not collide with mutating it.
         let mut enter: Option<String> = None;
         let mut delete: Option<(String, bool)> = None;
+        let mut start: Option<(String, ArchiveAction)> = None;
+        // Each archive action makes something in the folder on screen, so it is offered only
+        // where the caller may write, and only while no other job is running.
+        let can_archive = here == Some(true) && self.archiving.is_none();
         let mut retry = false;
         let mut total = 0usize;
         let mut shown = 0usize;
@@ -461,10 +538,19 @@ impl App for FileBrowser {
                                 // Attached to the name just drawn, so right-clicking it is
                                 // what opens it. A folder's menu only has something in it if
                                 // it can be deleted, so a read-only folder has none.
-                                if !entry.is_dir() || entry.writable {
+                                if !entry.is_dir() || entry.writable || can_archive {
                                     ui.context_menu(|ui| {
                                         if !entry.is_dir() {
                                             file_menu(ui, &path);
+                                        }
+                                        if can_archive {
+                                            for (label, action) in
+                                                archive_actions(&entry.name, entry.is_dir())
+                                            {
+                                                if ui.button(label).clicked() {
+                                                    start = Some((entry.name.clone(), action));
+                                                }
+                                            }
                                         }
                                         if entry.writable && ui.button(DELETE).clicked() {
                                             delete = Some((entry.name.clone(), entry.is_dir()));
@@ -507,6 +593,9 @@ impl App for FileBrowser {
         if delete.is_some() {
             self.confirm = delete;
         }
+        if let Some((name, action)) = start {
+            self.start_archive(&name, action);
+        }
 
         ui.separator();
         match &self.selected {
@@ -544,6 +633,65 @@ fn file_menu(ui: &mut Ui<'_>, path: &str) {
     );
     // Opened by the shell in a new tab.
     ui.open_url(DOWNLOAD, &url::file_url(path));
+}
+
+/// The archive entries of a right-click menu.
+pub const COMPRESS: &str = "\u{E09E}  Compress (.tar.gz)";
+pub const GZIP: &str = "\u{E958}  Gzip (.gz)";
+pub const EXTRACT: &str = "\u{E0A6}  Extract here";
+
+/// What can be done to `name` with archives: extract an archive; compress anything; gzip a
+/// file that isn't already compressed.
+fn archive_actions(name: &str, is_dir: bool) -> Vec<(&'static str, ArchiveAction)> {
+    let archive = !is_dir && archive_kind(name).is_some();
+    let mut out = Vec::new();
+    if archive {
+        out.push((EXTRACT, ArchiveAction::Extract));
+    }
+    out.push((COMPRESS, ArchiveAction::Compress));
+    if !is_dir && !archive {
+        out.push((GZIP, ArchiveAction::Gzip));
+    }
+    out
+}
+
+/// "Compressing", for "Compressing photos… 40%".
+fn doing(action: ArchiveAction) -> &'static str {
+    match action {
+        ArchiveAction::Compress => "Compressing",
+        ArchiveAction::Gzip => "Gzipping",
+        ArchiveAction::Extract => "Extracting",
+    }
+}
+
+/// "Compressed", for "Compressed photos into photos.tar.gz".
+fn done(action: ArchiveAction) -> &'static str {
+    match action {
+        ArchiveAction::Compress => "Compressed",
+        ArchiveAction::Gzip => "Gzipped",
+        ArchiveAction::Extract => "Extracted",
+    }
+}
+
+/// "compress", for "Couldn't compress photos: …".
+fn verb(action: ArchiveAction) -> &'static str {
+    match action {
+        ArchiveAction::Compress => "compress",
+        ArchiveAction::Gzip => "gzip",
+        ArchiveAction::Extract => "extract",
+    }
+}
+
+/// "Compressing photos… 40%", or without a percentage until the size is known.
+fn progress(action: ArchiveAction, name: &str, status: &ArchiveStatus) -> String {
+    let mut s = format!("{} {name}…", doing(action));
+    let done = status.done_bytes.min(status.total_bytes) * 100;
+    if let Some(percent) = done.checked_div(status.total_bytes) {
+        s.push(' ');
+        s.push_str(&itoa(percent.min(99)));
+        s.push('%');
+    }
+    s
 }
 
 /// A writable entry's right-click menu entry, then the two answers to "are you sure?".

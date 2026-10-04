@@ -2,6 +2,7 @@
 //! (clicking buttons by label) and the server (answering `ListDir`), so the whole loop the app
 //! runs in production — ask, wait, render, navigate, re-ask — runs here without a browser.
 
+use ccosel_proto::archive::{Archive, ArchiveStatus};
 use ccosel_proto::fs::{Access, AccessReply, DirEntry, DirListing, EntryKind, ListDir, Remove};
 use ccosel_sdk::icons;
 use ccosel_sdk::testing::{Harness, rpc_error};
@@ -312,20 +313,25 @@ fn a_finished_upload_re_lists_the_folder_once() {
 }
 
 #[test]
-fn every_file_has_a_right_click_menu_and_folders_only_one_to_delete_them() {
+fn every_file_has_a_right_click_menu_and_folders_one_to_compress_or_delete_them() {
     let h = browsing(sample());
-    // Delete for the folder, then the whole menu for `notes.md` and for `link`.
+    // The folder's menu, then the whole menu for `notes.md` and for `link`.
     assert_eq!(
         h.context_menu_items(),
         [
+            COMPRESS,
             DELETE,
             OPEN_WITH_VIEWER,
             SHARE_WITH_VIEWER,
             DOWNLOAD,
+            COMPRESS,
+            GZIP,
             DELETE,
             OPEN_WITH_VIEWER,
             SHARE_WITH_VIEWER,
             DOWNLOAD,
+            COMPRESS,
+            GZIP,
             DELETE
         ]
     );
@@ -415,6 +421,15 @@ fn the_labels_use_the_sdk_icons() {
     assert_eq!(READ_ONLY, format!("{}  Read-only", icons::LOCK_SIMPLE));
     assert_eq!(DELETE, format!("{}  Delete", icons::TRASH));
     assert_eq!(CONFIRM_DELETE, format!("{}  Delete it", icons::TRASH));
+    assert_eq!(
+        COMPRESS,
+        format!("{}  Compress (.tar.gz)", icons::ARROWS_IN_SIMPLE)
+    );
+    assert_eq!(GZIP, format!("{}  Gzip (.gz)", icons::FILE_ZIP));
+    assert_eq!(
+        EXTRACT,
+        format!("{}  Extract here", icons::ARROWS_OUT_SIMPLE)
+    );
 }
 
 #[test]
@@ -700,4 +715,188 @@ fn leaving_the_folder_drops_an_unanswered_question() {
     press(&mut h, "docs");
     assert!(!h.has_button(CONFIRM_DELETE));
     assert!(h.app.confirm.is_none());
+}
+
+fn running(done: u64, total: u64) -> ArchiveStatus {
+    ArchiveStatus {
+        finished: false,
+        done_bytes: done,
+        total_bytes: total,
+        result: None,
+    }
+}
+
+fn finished(result: ArchiveResult) -> ArchiveStatus {
+    ArchiveStatus {
+        finished: true,
+        done_bytes: 0,
+        total_bytes: 0,
+        result: Some(result),
+    }
+}
+
+/// A folder holding an archive, a plain file and a folder.
+fn with_archive() -> Harness<FileBrowser> {
+    browsing(listing(vec![
+        entry("photos", EntryKind::Dir, 0),
+        entry("notes.txt", EntryKind::File, 10),
+        entry("old.tar.gz", EntryKind::File, 300),
+    ]))
+}
+
+#[test]
+fn archives_offer_extract_files_gzip_and_everything_compresses() {
+    let h = with_archive();
+    let items = h.context_menu_items();
+    let count = |label: &str| items.iter().filter(|i| *i == label).count();
+    assert_eq!(count(EXTRACT), 1, "only the archive extracts: {items:?}");
+    assert_eq!(count(GZIP), 1, "only the plain file gzips: {items:?}");
+    assert_eq!(count(COMPRESS), 3, "everything compresses: {items:?}");
+}
+
+#[test]
+fn archive_actions_by_kind() {
+    let actions = |name, dir| {
+        archive_actions(name, dir)
+            .into_iter()
+            .map(|(_, a)| a)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        actions("a.tgz", false),
+        [ArchiveAction::Extract, ArchiveAction::Compress]
+    );
+    assert_eq!(
+        actions("a.txt", false),
+        [ArchiveAction::Compress, ArchiveAction::Gzip]
+    );
+    assert_eq!(actions("a.tar", true), [ArchiveAction::Compress]);
+}
+
+#[test]
+fn nothing_can_be_archived_in_a_read_only_folder() {
+    let mut h = Harness::new(FileBrowser::default());
+    h.frame();
+    answer_access(&mut h, false, None);
+    h.reply::<ListDir>(&listing(vec![
+        entry("notes.txt", EntryKind::File, 10),
+        entry("old.tar.gz", EntryKind::File, 300),
+    ]));
+    h.frame();
+    let items = h.context_menu_items();
+    assert!(
+        !items
+            .iter()
+            .any(|i| i == COMPRESS || i == GZIP || i == EXTRACT),
+        "{items:?}"
+    );
+}
+
+#[test]
+fn compressing_polls_shows_progress_then_says_what_it_made() {
+    let mut h = with_archive();
+    only(&mut h, "photos");
+    press(&mut h, COMPRESS);
+    assert_eq!(h.outstanding::<Archive>(), 1);
+    assert!(h.has_label("Compressing photos…"), "{:?}", h.labels());
+    assert_eq!(
+        h.app.wants_repaint_after_ms(),
+        POLL_MS,
+        "polls while it runs"
+    );
+
+    h.reply::<Archive>(&running(40, 100));
+    h.frame();
+    assert!(h.has_label("Compressing photos… 40%"), "{:?}", h.labels());
+    h.frame();
+    assert_eq!(h.outstanding::<Archive>(), 1, "asked again");
+
+    h.reply::<Archive>(&finished(ArchiveResult::Made("/photos.tar.gz".to_owned())));
+    h.frame();
+    h.frame();
+    assert!(
+        h.has_label("Compressed photos into photos.tar.gz"),
+        "{:?}",
+        h.labels()
+    );
+    assert_eq!(h.outstanding::<ListDir>(), 1, "the folder is listed again");
+    assert_eq!(
+        h.app.wants_repaint_after_ms(),
+        ccosel_sdk::REPAINT_ON_INPUT_ONLY
+    );
+}
+
+#[test]
+fn extract_and_gzip_name_what_they_did() {
+    let mut h = with_archive();
+    only(&mut h, "old");
+    press(&mut h, EXTRACT);
+    assert!(h.has_label("Extracting old.tar.gz…"));
+    h.reply::<Archive>(&finished(ArchiveResult::Made("/old".to_owned())));
+    h.frame();
+    h.frame();
+    assert!(
+        h.has_label("Extracted old.tar.gz into old"),
+        "{:?}",
+        h.labels()
+    );
+
+    let mut h = with_archive();
+    only(&mut h, "notes");
+    press(&mut h, GZIP);
+    assert!(h.has_label("Gzipping notes.txt…"));
+    h.reply::<Archive>(&running(0, 0));
+    h.frame();
+    assert!(
+        h.has_label("Gzipping notes.txt…"),
+        "no percentage before a size"
+    );
+}
+
+#[test]
+fn a_refused_extract_says_why() {
+    let mut h = with_archive();
+    only(&mut h, "old");
+    press(&mut h, EXTRACT);
+    h.reply::<Archive>(&finished(ArchiveResult::Failed(
+        "it holds an absolute path (/etc/passwd)".to_owned(),
+    )));
+    h.frame();
+    h.frame();
+    assert!(
+        h.has_label("Couldn't extract old.tar.gz: it holds an absolute path (/etc/passwd)"),
+        "{:?}",
+        h.labels()
+    );
+}
+
+#[test]
+fn a_failed_call_says_why_and_stops_polling() {
+    let mut h = with_archive();
+    only(&mut h, "notes");
+    press(&mut h, COMPRESS);
+    h.fail::<Archive>(rpc_error::DENIED);
+    h.frame();
+    h.frame();
+    assert!(
+        h.has_label("Couldn't compress notes.txt: permission denied"),
+        "{:?}",
+        h.labels()
+    );
+    assert!(h.app.archiving.is_none());
+}
+
+#[test]
+fn one_job_at_a_time_and_it_outlives_leaving_the_folder() {
+    let mut h = with_archive();
+    only(&mut h, "photos");
+    press(&mut h, COMPRESS);
+    assert!(
+        !h.context_menu_items().iter().any(|i| i == COMPRESS),
+        "no second job while one runs"
+    );
+    // Leaving keeps the job and its status line.
+    press(&mut h, "photos");
+    assert!(h.app.archiving.is_some());
+    assert!(h.has_label("Compressing photos…"));
 }
