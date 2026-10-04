@@ -89,6 +89,15 @@ impl Placement {
     }
 }
 
+/// The part of `area` a window can fill and still have its hard `shadow` inside `area`.
+fn within_shadow(area: Rect, shadow: egui::Shadow) -> Rect {
+    let [x, y] = shadow.offset;
+    Rect::from_min_max(
+        area.min,
+        area.max - vec2(f32::from(x).max(0.0), f32::from(y).max(0.0)),
+    )
+}
+
 /// One app window: Brutal frame, the shell's title bar, then `body` inside the window margin.
 #[expect(
     clippy::too_many_arguments,
@@ -107,14 +116,22 @@ pub fn show_window(
 ) -> TitleActions {
     let handle = title_handle(id);
     // The margin goes on the body instead, so the title bar can run edge to edge.
-    let frame = egui::Frame::window(&ctx.global_style()).inner_margin(0);
+    let mut frame = egui::Frame::window(&ctx.global_style()).inner_margin(0);
+    // A maximised window fills the desktop edge to edge. Its shadow would have nowhere to go
+    // but under the dock and off the screen, so it has none.
+    let bounds = if placement.is_maximized() {
+        frame.shadow = egui::Shadow::NONE;
+        desktop
+    } else {
+        within_shadow(desktop, frame.shadow)
+    };
     let mut window = egui::Window::new(title)
         .id(id)
         .title_bar(false)
         .default_size(default_size)
         // Kept between the status bar and the dock: the title bar is the only way to move a
         // window, so it must never end up underneath either of them.
-        .constrain_to(desktop)
+        .constrain_to(bounds)
         .frame(frame);
     if !placement.is_maximized()
         && let Some(pos) = dragged_pos(ctx, id, handle)
@@ -127,7 +144,8 @@ pub fn show_window(
     window.show(ctx, |ui| {
         let spacing = ui.spacing().item_spacing;
         ui.spacing_mut().item_spacing.y = 0.0;
-        actions = title_bar(ui, handle, icon, title, highlight);
+        let maximized = placement.is_maximized();
+        actions = title_bar(ui, handle, icon, title, highlight, maximized);
         ui.spacing_mut().item_spacing = spacing;
 
         // A window without egui's title bar is dragged from anywhere on its body, so a press
@@ -196,19 +214,23 @@ pub fn active_window(ctx: &egui::Context, windows: &[Id]) -> Option<Id> {
 enum Glyph {
     Minimize,
     Maximize,
+    /// On a maximised window's maximise button: two overlapping squares, the window it goes
+    /// back to.
+    Restore,
     Close,
 }
 
 /// The bar, with a rule under it: filled with `highlight` (the app's own colour, on the active
 /// window) or white. Its icon, title and buttons are ink or white, whichever reads on the fill.
 /// Dragging it moves the window, double-clicking it maximises, and `– □ ×` minimise, maximise
-/// and close.
+/// and close. On a `maximized` window the middle button shows [`Glyph::Restore`] instead.
 fn title_bar(
     ui: &mut Ui,
     handle: Id,
     icon: &str,
     title: &str,
     highlight: Option<Color32>,
+    maximized: bool,
 ) -> TitleActions {
     let t = theme::tokens();
     let (rect, _) =
@@ -225,7 +247,15 @@ fn title_bar(
     let mut right = rect.right() - TITLE_INSET + (TITLE_BUTTON - 10.0) / 2.0;
     for (glyph, name, hit) in [
         (Glyph::Close, "close", &mut actions.close),
-        (Glyph::Maximize, "maximize", &mut actions.maximize),
+        (
+            if maximized {
+                Glyph::Restore
+            } else {
+                Glyph::Maximize
+            },
+            "maximize",
+            &mut actions.maximize,
+        ),
         (Glyph::Minimize, "minimize", &mut actions.minimize),
     ] {
         let button = Rect::from_min_max(
@@ -282,6 +312,23 @@ fn paint_glyph(painter: &egui::Painter, c: Pos2, glyph: Glyph, ink: Color32) {
                 stroke,
                 StrokeKind::Middle,
             );
+        }
+        Glyph::Restore => {
+            // The back square shows only above and to the right of the front one.
+            const FRONT: f32 = HALF * 2.0 - 3.0;
+            let front = Rect::from_min_size(c + vec2(-HALF, HALF - FRONT), Vec2::splat(FRONT));
+            let back = front.translate(vec2(3.0, -3.0));
+            painter.line_segment([back.left_top(), back.right_top()], stroke);
+            painter.line_segment([back.right_top(), back.right_bottom()], stroke);
+            painter.line_segment(
+                [back.left_top(), Pos2::new(back.left(), front.top())],
+                stroke,
+            );
+            painter.line_segment(
+                [back.right_bottom(), Pos2::new(front.right(), back.bottom())],
+                stroke,
+            );
+            painter.rect_stroke(front, 0, stroke, StrokeKind::Middle);
         }
         Glyph::Close => {
             painter.line_segment([c + vec2(-HALF, -HALF), c + vec2(HALF, HALF)], stroke);
@@ -432,6 +479,35 @@ mod tests {
             self.frame(vec![]);
         }
 
+        /// Every painted rect, including those nested in a `Shape::Vec`, which is how a
+        /// window's frame and shadow are painted.
+        fn painted_rects(&self) -> Vec<Rect> {
+            fn walk(shape: &egui::Shape, out: &mut Vec<Rect>) {
+                match shape {
+                    egui::Shape::Vec(shapes) => {
+                        for s in shapes {
+                            walk(s, out);
+                        }
+                    }
+                    egui::Shape::Rect(r) => out.push(r.rect),
+                    _ => {}
+                }
+            }
+            let mut out = Vec::new();
+            for s in &self.shapes {
+                walk(&s.shape, &mut out);
+            }
+            out
+        }
+
+        /// Every painted rect that reaches past `area`.
+        fn painted_outside(&self, area: Rect) -> Vec<Rect> {
+            self.painted_rects()
+                .into_iter()
+                .filter(|r| !area.contains_rect(*r))
+                .collect()
+        }
+
         fn filled_with(&self, rect: Rect, fill: Color32) -> bool {
             self.shapes.iter().any(
                 |s| matches!(&s.shape, egui::Shape::Rect(r) if r.rect == rect && r.fill == fill),
@@ -479,6 +555,45 @@ mod tests {
         );
     }
 
+    /// Dragged into the bottom-right corner, a window stops short by its shadow, so the
+    /// shadow stays on the desktop too.
+    #[wasm_bindgen_test]
+    fn an_ordinary_window_keeps_its_shadow_on_the_desktop() {
+        let mut rig = Rig::new(1);
+        let grip = rig.title_bar(0).left_center() + vec2(60.0, 0.0);
+        rig.drag(grip, vec2(2000.0, 2000.0));
+
+        let [x, y] = theme::tokens().shadow.offset;
+        let shadow = vec2(f32::from(x), f32::from(y));
+        assert_eq!(rig.rect(0).max, DESKTOP.max - shadow);
+        assert!(rig.painted_outside(DESKTOP).is_empty());
+    }
+
+    /// The fix for #82: a maximised window used to stop short of the right and bottom edges
+    /// to leave room for its shadow, which showed as a gap.
+    #[wasm_bindgen_test]
+    fn a_maximized_window_fills_the_desktop_with_no_gap_and_no_shadow() {
+        let mut rig = Rig::new(1);
+        rig.click(rig.title_button(0, 1));
+        rig.frame(vec![]);
+
+        assert_eq!(rig.rect(0), DESKTOP);
+        assert_eq!(
+            rig.painted_outside(DESKTOP),
+            Vec::<Rect>::new(),
+            "nothing, its shadow included, spills past the desktop"
+        );
+
+        // Restored, it casts its shadow again.
+        rig.click(rig.title_button(0, 1));
+        rig.frame(vec![]);
+        rig.frame(vec![]);
+        assert!(
+            !rig.painted_outside(rig.rect(0)).is_empty(),
+            "a restored window has its shadow back"
+        );
+    }
+
     #[wasm_bindgen_test]
     fn dragging_the_body_does_not_move_the_window() {
         let mut rig = Rig::new(1);
@@ -488,6 +603,39 @@ mod tests {
         rig.drag(body, vec2(120.0, 80.0));
 
         assert_eq!(rig.rect(0), before);
+    }
+
+    /// The maximise button swaps to a restore glyph while the window is maximised, and back.
+    #[wasm_bindgen_test]
+    fn the_maximize_button_shows_restore_while_maximized() {
+        let mut rig = Rig::new(1);
+        let button =
+            |rig: &Rig| Rect::from_center_size(rig.title_button(0, 1), Vec2::splat(TITLE_BUTTON));
+        // The glyph is the one outlined square drawn inside the button.
+        let square = |rig: &Rig| {
+            let b = button(rig);
+            let inside: Vec<Rect> = rig
+                .painted_rects()
+                .into_iter()
+                .filter(|r| b.contains_rect(*r) && r.size() != b.size())
+                .collect();
+            assert_eq!(inside.len(), 1, "one square in the button: {inside:?}");
+            inside[0].size()
+        };
+        let maximize = square(&rig);
+
+        rig.click(rig.title_button(0, 1));
+        rig.frame(vec![]);
+        let restore = square(&rig);
+        assert!(
+            restore.x < maximize.x && restore.y < maximize.y,
+            "restore's front square ({restore:?}) is smaller than maximise's ({maximize:?})"
+        );
+
+        rig.click(rig.title_button(0, 1));
+        rig.frame(vec![]);
+        rig.frame(vec![]);
+        assert_eq!(square(&rig), maximize);
     }
 
     #[wasm_bindgen_test]
