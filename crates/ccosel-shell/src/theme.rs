@@ -116,6 +116,8 @@ pub fn apply(ctx: &egui::Context) {
         let style = style(&ctx.style_of(theme), tokens());
         ctx.set_style_of(theme, style);
     }
+    // A graph's line is a mark, not text, so it can be the accent where a link can't.
+    ccosel_host::set_plot_color(ctx, tokens().accent);
 }
 
 /// Space Grotesk and Space Mono first in their families, with egui's default fonts and Phosphor
@@ -218,7 +220,9 @@ fn visuals(t: &Tokens) -> egui::Visuals {
     v.extreme_bg_color = t.surface_alt;
     v.faint_bg_color = t.surface_alt;
     v.code_bg_color = t.surface_alt;
-    v.hyperlink_color = t.accent;
+    // Ink, not the accent: yellow text on white is about 1.4:1, far below the 4.5:1 text needs.
+    // Links are told apart by their underline instead (see `replay.rs`).
+    v.hyperlink_color = t.ink;
     v.warn_fg_color = t.warn;
     v.error_fg_color = t.danger;
     // What `.weak()` resolves to. Without it, weak text is ink at reduced alpha, which is
@@ -366,62 +370,86 @@ mod tests {
         assert!(!is_dark(&light));
     }
 
-    #[wasm_bindgen_test]
-    fn outlines_are_square_two_pixel_ink_everywhere() {
-        let ctx = applied(egui::Theme::Light);
-        let v = &ctx.global_style().visuals;
-        let ink = Stroke::new(2.0, hex(0x111111));
-
-        assert_eq!(v.window_stroke, ink);
-        assert_eq!(v.window_corner_radius, CornerRadius::ZERO);
-        assert_eq!(v.menu_corner_radius, CornerRadius::ZERO);
+    fn states(v: &egui::Visuals) -> [(&'static str, &WidgetVisuals); 5] {
         let w = &v.widgets;
-        for (name, state) in [
+        [
             ("noninteractive", &w.noninteractive),
             ("inactive", &w.inactive),
             ("hovered", &w.hovered),
             ("active", &w.active),
             ("open", &w.open),
-        ] {
-            assert_eq!(state.bg_stroke, ink, "{name}");
+        ]
+    }
+
+    /// Every widget state is outlined exactly like a window, square, and the same size: a
+    /// button that grew or changed outline on hover would slide off its hard shadow.
+    #[wasm_bindgen_test]
+    fn every_widget_state_is_outlined_like_a_window_and_stays_square() {
+        let ctx = applied(egui::Theme::Light);
+        let v = &ctx.global_style().visuals;
+
+        assert!(v.window_stroke.width > 0.0);
+        assert_eq!(v.window_corner_radius, CornerRadius::ZERO);
+        assert_eq!(v.menu_corner_radius, CornerRadius::ZERO);
+        for (name, state) in states(v) {
+            assert_eq!(state.bg_stroke, v.window_stroke, "{name}");
             assert_eq!(state.corner_radius, CornerRadius::ZERO, "{name}");
             assert_eq!(state.expansion, 0.0, "{name}");
         }
     }
 
     #[wasm_bindgen_test]
-    fn windows_and_popups_cast_a_hard_offset_shadow() {
+    fn windows_and_popups_cast_one_hard_shadow_in_the_outline_ink() {
         let ctx = applied(egui::Theme::Light);
         let v = &ctx.global_style().visuals;
-        let hard = Shadow {
-            offset: [7, 7],
-            blur: 0,
-            spread: 0,
-            color: hex(0x111111),
-        };
-        assert_eq!(v.window_shadow, hard);
-        assert_eq!(v.popup_shadow, hard);
+        let shadow = v.window_shadow;
+
+        assert_eq!(v.popup_shadow, shadow);
+        assert_eq!((shadow.blur, shadow.spread), (0, 0), "hard, not soft");
+        assert!(
+            shadow.offset[0] > 0 && shadow.offset[1] > 0,
+            "down and right"
+        );
+        assert_eq!(shadow.color, v.window_stroke.color);
     }
 
+    /// Whatever the palette is, every piece of text the style colours reads on what it is drawn
+    /// over. This is what `the_palette_matches_the_spec` used to stand in for.
     #[wasm_bindgen_test]
-    fn the_palette_matches_the_spec() {
+    fn all_styled_text_clears_aa_contrast_on_its_own_background() {
         let ctx = applied(egui::Theme::Light);
         let v = &ctx.global_style().visuals;
-        let (ink, yellow) = (hex(0x111111), hex(0xFFD400));
+        let mut pairs: Vec<(String, Color32, Color32)> = states(v)
+            .into_iter()
+            .map(|(name, s)| (format!("{name} text"), s.fg_stroke.color, s.bg_fill))
+            .collect();
+        pairs.extend([
+            (
+                "selected text".into(),
+                v.selection.stroke.color,
+                v.selection.bg_fill,
+            ),
+            ("a link".into(), v.hyperlink_color, v.window_fill),
+            (
+                "weak text".into(),
+                v.weak_text_color.unwrap(),
+                v.window_fill,
+            ),
+            ("text in a field".into(), v.text_color(), v.extreme_bg_color),
+        ]);
+        for (name, fg, bg) in pairs {
+            let ratio = contrast_ratio(fg, bg);
+            assert!(ratio >= AA_TEXT, "{name}: {ratio:.2}:1 ({fg:?} on {bg:?})");
+        }
+    }
 
-        assert_eq!(v.window_fill, Color32::WHITE);
-        assert_eq!(v.panel_fill, Color32::WHITE);
-        assert_eq!(v.extreme_bg_color, Color32::WHITE);
-        assert_eq!(v.widgets.inactive.bg_fill, Color32::WHITE);
-        assert_eq!(v.widgets.hovered.bg_fill, hex(0xFFF3B0));
-        assert_eq!(v.widgets.active.bg_fill, yellow);
-        assert_eq!(v.selection.bg_fill, yellow);
-        assert_eq!(v.selection.stroke.color, ink);
-        assert_eq!(v.hyperlink_color, yellow);
-        assert_eq!(v.weak_text_color, Some(hex(0x5A5A5A)));
-        assert_eq!(v.error_fg_color, hex(0xFF4D2E));
-        assert_eq!(v.warn_fg_color, hex(0xFF9F1C));
-        assert_eq!(BRUTAL.success, hex(0x1FAF5A));
+    /// Links can't be the accent (see the test above), but a graph's line is a mark, not text,
+    /// so graphs keep it.
+    #[wasm_bindgen_test]
+    fn graphs_are_drawn_in_the_accent_though_links_are_not() {
+        let ctx = applied(egui::Theme::Light);
+        assert_eq!(ccosel_host::plot_color(&ctx), tokens().accent);
+        assert_ne!(ctx.global_style().visuals.hyperlink_color, tokens().accent);
     }
 
     #[wasm_bindgen_test]
@@ -453,18 +481,24 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
-    fn text_styles_use_the_bundled_fonts_at_the_spec_sizes() {
+    fn text_styles_use_the_bundled_fonts_and_size_sets_the_hierarchy() {
         let ctx = applied(egui::Theme::Light);
         let styles = &ctx.global_style().text_styles;
         let heading = FontFamily::Name(HEADING.into());
-        assert_eq!(
-            styles[&TextStyle::Heading],
-            FontId::new(24.0, heading.clone())
+        let (h, body, button, small) = (
+            &styles[&TextStyle::Heading],
+            &styles[&TextStyle::Body],
+            &styles[&TextStyle::Button],
+            &styles[&TextStyle::Small],
         );
-        assert_eq!(styles[&TextStyle::Body], FontId::proportional(14.0));
-        assert_eq!(styles[&TextStyle::Button], FontId::proportional(14.0));
-        assert_eq!(styles[&TextStyle::Small], FontId::proportional(12.0));
-        assert_eq!(styles[&TextStyle::Monospace], FontId::monospace(13.0));
+
+        assert_eq!(h.family, heading);
+        assert_eq!(body.family, FontFamily::Proportional);
+        assert_eq!(button, body, "buttons read like body text");
+        assert_eq!(small.family, FontFamily::Proportional);
+        assert_eq!(styles[&TextStyle::Monospace].family, FontFamily::Monospace);
+        // Hierarchy comes from size and weight, not colour.
+        assert!(small.size < body.size && body.size < h.size);
 
         let fonts = font_definitions();
         assert_eq!(
