@@ -9,7 +9,8 @@
 //! for a file to open.
 
 use ccosel_proto::fs::{
-    EntryKind, ImageInfo, ListDir, ListDirReq, MAX_TEXT_BYTES, PathReq, ReadFile, Search, SearchReq,
+    EntryKind, ImageInfo, ListDir, ListDirReq, MAX_TEXT_BYTES, PathReq, ReadFile, Search,
+    SearchReq, WebCopy,
 };
 use ccosel_sdk::{App, MediaKind, Poll, Text, TextStyle, Ui, Vec2, icons, url};
 
@@ -52,16 +53,30 @@ pub fn kind_of(path: &str) -> Kind {
     }
 }
 
-/// Formats Apple devices make that most browsers other than Safari can't show yet. The page
-/// says so, rather than leaving someone wondering why a photo is blank.
-pub fn apple_only(path: &str) -> bool {
+/// Formats Apple devices make (and TIFF) that most browsers other than Safari can't show. The
+/// server makes a copy of these that every browser can, and this shows that instead. An `.m4a`
+/// may be Apple Lossless or plain AAC; the server tells which and sends AAC as it is.
+pub fn needs_web_copy(path: &str) -> bool {
     let name = path.rsplit('/').next().unwrap_or(path);
     let ext = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase());
     matches!(
         ext.as_deref(),
-        Some("heic" | "heif" | "mov" | "caf" | "aif" | "aiff" | "tif" | "tiff")
+        Some("heic" | "heif" | "mov" | "m4a" | "caf" | "aif" | "aiff" | "tif" | "tiff")
     )
 }
+
+/// Where the page fetches `path` to show it: the file itself, or for a format only some
+/// browsers show, the server's copy that all of them can.
+pub fn shown_url(path: &str) -> String {
+    let mut url = url::inline_file_url(path);
+    if needs_web_copy(path) {
+        url.push_str("&as=web");
+    }
+    url
+}
+
+/// How often a video being converted is asked about.
+pub const POLL_MS: u32 = 500;
 
 /// The most rows of a table drawn: each cell is a widget every frame, and nobody reads ten
 /// thousand rows in a window. The rest are there in "Show as text", and in the download.
@@ -164,6 +179,8 @@ pub struct Viewer {
     pub as_text: bool,
     /// Whether a picture's details (size, camera, when and where it was taken) are shown.
     pub details: bool,
+    /// Whether a video's web copy is being made, so the app polls until it is.
+    pub converting: bool,
 }
 
 impl Default for Viewer {
@@ -175,12 +192,21 @@ impl Default for Viewer {
             text_for: None,
             rows: Vec::new(),
             as_text: false,
+            converting: false,
             details: false,
         }
     }
 }
 
 impl App for Viewer {
+    fn wants_repaint_after_ms(&self) -> u32 {
+        if self.converting {
+            POLL_MS
+        } else {
+            ccosel_sdk::REPAINT_ON_INPUT_ONLY
+        }
+    }
+
     fn open(&mut self, arg: &str) {
         if arg.is_empty() || self.file.is_some() {
             return;
@@ -328,27 +354,23 @@ impl Viewer {
         }
         let size = entry.map(|e| e.size);
 
+        self.converting = false;
         match kind_of(path) {
             Kind::Image => {
                 if self.details {
                     image_details(ui, path, size);
                     ui.separator();
                 }
-                ui.image(&url::inline_file_url(path), Vec2::new(0.0, 0.0));
+                ui.image(&shown_url(path), Vec2::new(0.0, 0.0));
             }
             Kind::Video => {
-                ui.media(
-                    &url::inline_file_url(path),
-                    MediaKind::Video,
-                    Vec2::new(0.0, 0.0),
-                );
+                if needs_web_copy(path) && !self.web_copy_ready(ui, path) {
+                    return;
+                }
+                ui.media(&shown_url(path), MediaKind::Video, Vec2::new(0.0, 0.0));
             }
             Kind::Audio => {
-                ui.media(
-                    &url::inline_file_url(path),
-                    MediaKind::Audio,
-                    Vec2::new(0.0, 0.0),
-                );
+                ui.media(&shown_url(path), MediaKind::Audio, Vec2::new(0.0, 0.0));
             }
             Kind::Pdf => {
                 ui.media(
@@ -360,13 +382,47 @@ impl Viewer {
             Kind::Table => self.text_view(ui, path, size, Some(separator(path))),
             Kind::Other => self.text_view(ui, path, size, None),
         }
-        if apple_only(path) {
-            ui.styled(
-                "This is an Apple format. Safari shows it; other browsers may not yet, so \
-                 download it if nothing appears.",
-                TextStyle::WEAK,
-            );
+    }
+
+    /// Whether the server's copy of the video `path` is ready to play. Until it is, says how
+    /// far along it is, and keeps asking: a long video can take minutes to convert.
+    fn web_copy_ready(&mut self, ui: &mut Ui<'_>, path: &str) -> bool {
+        let req = PathReq { path };
+        match ui.rpc().get::<WebCopy>(&req) {
+            Poll::Ready(status) if status.finished => match &status.error {
+                None => return true,
+                Some(why) => {
+                    ui.label(&format!(
+                        "This video couldn't be converted to play here: {why}. Download it to \
+                         watch it."
+                    ));
+                }
+            },
+            Poll::Ready(status) => {
+                let mut text = String::from("Converting this video so it plays in this browser…");
+                if let Some(p) = status.permille {
+                    text.push(' ');
+                    text.push_str(&(p / 10).to_string());
+                    text.push('%');
+                }
+                ui.label(&text);
+                ui.styled(
+                    "Only the first time: once converted, it plays straight away.",
+                    TextStyle::WEAK,
+                );
+                self.converting = true;
+                // Ask again next time round; this reads the job's progress, never starts another.
+                ui.rpc().invalidate::<WebCopy>(&req);
+            }
+            Poll::Pending => {
+                ui.label("Converting this video so it plays in this browser…");
+                self.converting = true;
+            }
+            Poll::Failed(e) => {
+                ui.label(e.message());
+            }
         }
+        false
     }
 
     /// A text file, or with `table`, a table file split on that separator.

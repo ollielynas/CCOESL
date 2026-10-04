@@ -1,6 +1,6 @@
 use ccosel_proto::fs::{
     DirEntry, DirListing, EntryKind, FileText, ImageInfo, ImageInfoReply, ListDir, MAX_TEXT_BYTES,
-    ReadFile, Search, SearchHit, SearchReply,
+    ReadFile, Search, SearchHit, SearchReply, WebCopy, WebCopyStatus,
 };
 use ccosel_sdk::testing::{Harness, rpc_error};
 use ccosel_sdk::{MediaKind, TextStyle, icons};
@@ -129,10 +129,6 @@ fn a_picture_is_drawn_by_the_shell_from_its_url() {
     assert_eq!(h.images(), ["/files/Photos/beach%20day.jpg?inline=1"]);
     assert!(h.has_text("beach day.jpg"));
     assert!(h.has_text("/Photos"));
-    assert!(!h.has_text(
-        "This is an Apple format. Safari shows it; other browsers may not yet, so download it if \
-         nothing appears."
-    ));
 }
 
 #[test]
@@ -148,13 +144,96 @@ fn video_audio_and_pdf_are_handed_to_the_browser() {
 }
 
 #[test]
-fn apple_formats_say_which_browsers_show_them() {
+fn apple_photos_and_audio_are_shown_from_the_servers_web_copy() {
     let h = opened_on("/Photos/IMG_0001.HEIC", 1000);
-    assert_eq!(h.images().len(), 1);
-    assert!(h.has_text(
-        "This is an Apple format. Safari shows it; other browsers may not yet, so download it if \
-         nothing appears."
+    assert_eq!(h.images(), ["/files/Photos/IMG_0001.HEIC?inline=1&as=web"]);
+    let h = opened_on("/Scans/page.tif", 1000);
+    assert_eq!(h.images(), ["/files/Scans/page.tif?inline=1&as=web"]);
+    for path in ["/m/lossless.m4a", "/m/memo.caf", "/m/take.AIFF"] {
+        let h = opened_on(path, 1000);
+        assert_eq!(
+            h.media(),
+            [(
+                format!("{}&as=web", url::inline_file_url(path)),
+                MediaKind::Audio
+            )],
+            "{path}"
+        );
+    }
+    assert!(!h.has_text("Safari"), "no browser note any more");
+    assert_eq!(
+        h.outstanding::<WebCopy>(),
+        0,
+        "only a video waits for its copy"
+    );
+}
+
+fn converting(permille: Option<u16>) -> WebCopyStatus {
+    WebCopyStatus {
+        finished: false,
+        permille,
+        error: None,
+    }
+}
+
+#[test]
+fn an_apple_video_shows_its_conversion_then_plays_the_copy() {
+    let mut h = opened_on("/Videos/IMG_0002.MOV", 1000);
+    assert!(h.media().is_empty(), "no blank player while it converts");
+    assert!(h.has_label("Converting this video so it plays in this browser…"));
+    assert_eq!(h.app.wants_repaint_after_ms(), POLL_MS);
+
+    h.reply::<WebCopy>(&converting(None));
+    h.frame();
+    assert!(h.has_label("Converting this video so it plays in this browser…"));
+    h.frame();
+    h.reply::<WebCopy>(&converting(Some(420)));
+    h.frame();
+    assert!(
+        h.has_label("Converting this video so it plays in this browser… 42%"),
+        "{:?}",
+        h.labels()
+    );
+    h.frame();
+    assert_eq!(h.outstanding::<WebCopy>(), 1, "asked again");
+    h.reply::<WebCopy>(&WebCopyStatus {
+        finished: true,
+        permille: Some(1000),
+        error: None,
+    });
+    h.frame();
+    assert_eq!(
+        h.media(),
+        [(
+            "/files/Videos/IMG_0002.MOV?inline=1&as=web".to_owned(),
+            MediaKind::Video
+        )]
+    );
+    assert_eq!(
+        h.app.wants_repaint_after_ms(),
+        ccosel_sdk::REPAINT_ON_INPUT_ONLY
+    );
+}
+
+#[test]
+fn a_video_that_cannot_be_converted_says_why() {
+    let mut h = opened_on("/Videos/broken.mov", 1000);
+    h.reply::<WebCopy>(&WebCopyStatus {
+        finished: true,
+        permille: Some(1000),
+        error: Some("ffmpeg couldn't convert it: invalid data".to_owned()),
+    });
+    h.frame();
+    assert!(h.media().is_empty());
+    assert!(h.has_label(
+        "This video couldn't be converted to play here: ffmpeg couldn't convert it: invalid \
+         data. Download it to watch it."
     ));
+
+    let mut h = opened_on("/Videos/private.mov", 1000);
+    h.fail::<WebCopy>(rpc_error::DENIED);
+    h.frame();
+    assert!(h.has_label("permission denied"));
 }
 
 #[test]
@@ -295,8 +374,11 @@ fn kinds_follow_the_extension_whatever_its_case() {
         "the folder's name doesn't count"
     );
     assert_eq!(kind_of("Makefile"), Kind::Other);
-    assert!(apple_only("/a/b.MOV"));
-    assert!(!apple_only("/a.mov/b.mp4"));
+    assert!(needs_web_copy("/a/b.MOV"));
+    assert!(needs_web_copy("/a/b.m4a"));
+    assert!(!needs_web_copy("/a.mov/b.mp4"));
+    assert!(!needs_web_copy("/a/b.jpg"));
+    assert_eq!(shown_url("/a/b.jpg"), "/files/a/b.jpg?inline=1");
 }
 
 #[test]

@@ -65,8 +65,8 @@ not on another.
 | AVIF | `.avif` | ✅ In current browsers |
 | Bitmap | `.bmp` | ✅ |
 | Icon | `.ico` | ✅ |
-| Apple photos (HEIC/HEIF) | `.heic` `.heif` | ⚠️ Safari only |
-| TIFF | `.tif` `.tiff` | ⚠️ Safari only |
+| Apple photos (HEIC/HEIF) | `.heic` `.heif` | ✅ converted on the server for browsers other than Safari |
+| TIFF | `.tif` `.tiff` | ✅ converted on the server |
 | SVG drawing | `.svg` | ⚠️ Shown as its text, not as a picture |
 | Camera RAW | `.cr2` `.cr3` `.nef` `.arw` `.dng` `.raf` `.orf` `.rw2` | ❌ |
 | Photoshop | `.psd` | ❌ |
@@ -78,7 +78,7 @@ not on another.
 |---|---|---|
 | MP4 (H.264) | `.mp4` `.m4v` | ✅ |
 | WebM | `.webm` | ✅ |
-| QuickTime | `.mov` | ⚠️ Plays where the video inside is H.264; iPhone (HEVC) and ProRes videos in Safari only |
+| QuickTime, including iPhone (HEVC) and ProRes videos | `.mov` | ✅ converted on the server; see below |
 | MP4 with HEVC/H.265 | `.mp4` | ⚠️ Safari, and some other browsers on some computers |
 | Ogg video | `.ogv` | ⚠️ Not in Safari |
 | Matroska | `.mkv` | ⚠️ Mostly Chrome and Edge |
@@ -98,9 +98,9 @@ not on another.
 | FLAC | `.flac` | ✅ |
 | Ogg Vorbis | `.ogg` `.oga` | ✅ In current browsers |
 | Opus | `.opus` | ✅ In current browsers |
-| Apple Lossless (ALAC) | `.m4a` | ⚠️ Safari only |
-| Core Audio | `.caf` | ⚠️ Safari only |
-| AIFF | `.aif` `.aiff` | ⚠️ Safari only |
+| Apple Lossless (ALAC) | `.m4a` | ✅ converted on the server |
+| Core Audio | `.caf` | ✅ converted on the server |
+| AIFF | `.aif` `.aiff` | ✅ converted on the server |
 | Windows Media Audio | `.wma` | ❌ |
 | MIDI | `.mid` `.midi` | ❌ |
 | AMR (voice memos from older phones) | `.amr` | ❌ |
@@ -145,5 +145,16 @@ Shown as text, up to 1 MB:
 | Databases | `.sqlite` `.db` | ❌ |
 | Any other file that isn't text | | ❌ |
 
-Apple formats that only Safari shows today are planned to be converted on the server so that
-every browser can show them.
+### Apple formats
+
+Photos, videos and recordings from Apple devices, and TIFF pictures, are in formats only Safari
+shows. For these, the server makes a copy every browser can show (a JPEG picture, an MP4 video or
+an AAC recording) and the Viewer shows that. The file itself isn't changed, and **Download**
+still gives you the original.
+
+The first time a video is opened it has to be converted, which takes a while for a long one. The
+Viewer says how far along it is, and plays it when it's ready. After that, and for anyone else
+who opens the same video, it plays straight away. A picture or recording takes a moment the
+first time.
+
+If the file changes, it's converted again the next time it's opened.
