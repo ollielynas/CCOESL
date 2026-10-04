@@ -57,6 +57,9 @@ pub enum OpCode {
     /// Read-only multi-line text, selectable and copyable. Same payload and protocol as
     /// `TextEditMulti`, so a long file costs its bytes once, not every frame.
     TextView = 0x16,
+    /// Like `UploadFolder`, but the picker chooses one or more files rather than a folder. Same
+    /// payload, and the same finished-count response.
+    UploadFiles = 0xB0,
     // 0x40..0x4F reserved for subtree caching (BeginCached / EndCached / CachedRef).
     // Not implemented yet, but the space is reserved so adding it is not an ABI break.
 }
@@ -86,6 +89,7 @@ impl OpCode {
             0x14 => Some(Self::CopyLink),
             0x15 => Some(Self::Media),
             0x16 => Some(Self::TextView),
+            0xB0 => Some(Self::UploadFiles),
             _ => None,
         }
     }

@@ -50,6 +50,7 @@ pub enum Method {
     RevokeAppPassword = 15,
     LoadDesktop = 16,
     SaveDesktop = 17,
+    Remove = 51459,
 }
 
 impl Method {
@@ -72,6 +73,7 @@ impl Method {
             15 => Some(Self::RevokeAppPassword),
             16 => Some(Self::LoadDesktop),
             17 => Some(Self::SaveDesktop),
+            51459 => Some(Self::Remove),
             _ => None,
         }
     }

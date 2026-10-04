@@ -8,8 +8,8 @@
 //! navigated away. Asking for a listing every frame is the whole of the data flow, because the
 //! request cache keys on the request itself — so changing `self.path` *is* the re-request.
 
-use ccosel_proto::fs::{Access, EntryKind, ListDir, ListDirReq, PathReq};
-use ccosel_sdk::{App, Poll, Text, TextStyle, Ui, url};
+use ccosel_proto::fs::{Access, EntryKind, ListDir, ListDirReq, PathReq, Remove};
+use ccosel_sdk::{App, CallId, Poll, Text, TextStyle, Ui, url};
 
 /// The two file systems a person has: what is shared on the server, and their own folder.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -43,9 +43,18 @@ pub struct FileBrowser {
     /// Keyed by name, not by index: the listing is replaced asynchronously, so an index would
     /// silently come to mean a different file.
     selected: Option<String>,
-    /// The upload button's finished-upload count as of the last frame. When the shell's count
-    /// moves past it, an upload has landed and the listing is re-asked.
+    /// The upload buttons' finished-upload counts as of the last frame, folders then files.
+    /// When the shell's count moves past one, an upload has landed and the listing is
+    /// re-asked.
     uploads_seen: u32,
+    file_uploads_seen: u32,
+    /// What Delete was chosen for and is waiting to be confirmed: its name in the folder on
+    /// screen, and whether it is a folder.
+    confirm: Option<(String, bool)>,
+    /// The deletion on its way to the server: what it deletes, and the call.
+    deleting: Option<(String, CallId)>,
+    /// How the last deletion went, until the next one or until the folder changes.
+    status: Option<String>,
 }
 
 impl Default for FileBrowser {
@@ -56,6 +65,10 @@ impl Default for FileBrowser {
             filter: Text::new(""),
             selected: None,
             uploads_seen: 0,
+            file_uploads_seen: 0,
+            confirm: None,
+            deleting: None,
+            status: None,
         }
     }
 }
@@ -120,7 +133,17 @@ impl FileBrowser {
     fn switch_to(&mut self, place: Place, root: String) {
         self.place = place;
         self.path = root;
+        self.left_folder();
+    }
+
+    /// Whatever was about the folder on screen no longer applies once it changes. A deletion
+    /// already sent still finishes, and still says how it went.
+    fn left_folder(&mut self) {
         self.selected = None;
+        self.confirm = None;
+        if self.deleting.is_none() {
+            self.status = None;
+        }
     }
 
     fn go_up(&mut self) {
@@ -135,7 +158,7 @@ impl FileBrowser {
         if self.path.len() < root.len() {
             self.path = root;
         }
-        self.selected = None;
+        self.left_folder();
     }
 
     fn enter(&mut self, name: &str) {
@@ -143,7 +166,43 @@ impl FileBrowser {
             self.path.push('/');
         }
         self.path.push_str(name);
-        self.selected = None;
+        self.left_folder();
+    }
+
+    /// Ask the server to delete the confirmed entry.
+    fn delete_confirmed(&mut self, ui: &mut Ui<'_>) {
+        let Some((name, _)) = self.confirm.take() else {
+            return;
+        };
+        let path = join(&self.path, &name);
+        let call = ui.rpc().send::<Remove>(&PathReq { path: &path });
+        self.status = Some(format!("Deleting {name}…"));
+        self.deleting = Some((path, call));
+    }
+
+    /// Check on the deletion in flight, if any. Once it is done the folder it was in is
+    /// listed again, so it disappears from the list (or, if it failed, stays).
+    fn poll_delete(&mut self, ui: &mut Ui<'_>) {
+        let Some((path, call)) = &self.deleting else {
+            return;
+        };
+        let rpc = ui.rpc();
+        let name = path.rsplit('/').next().unwrap_or(path).to_owned();
+        let status = match rpc.outcome::<Remove>(*call) {
+            Poll::Pending => return,
+            Poll::Ready(_) => format!("Deleted {name}"),
+            Poll::Failed(err) => format!("Couldn't delete {name}: {}", err.message()),
+        };
+        let dir = match path.rfind('/') {
+            Some(0) | None => "/",
+            Some(i) => &path[..i],
+        };
+        rpc.invalidate::<ListDir>(&ListDirReq { path: dir });
+        if self.selected.as_deref() == Some(name.as_str()) {
+            self.selected = None;
+        }
+        self.status = Some(status);
+        self.deleting = None;
     }
 
     /// The path as a chain of `(label, full path)` breadcrumbs, from the top of the current
@@ -236,6 +295,17 @@ impl App for FileBrowser {
                     refresh = true;
                 }
             });
+            ui.push_id("upload-files", |ui| {
+                if here != Some(true) {
+                    return;
+                }
+                let finished = ui.upload_files(&self.path).uploads_finished();
+                ui.tooltip("Upload files from this computer into this folder");
+                if finished != self.file_uploads_seen {
+                    self.file_uploads_seen = finished;
+                    refresh = true;
+                }
+            });
         });
 
         // A clickable trail, not just a path label: jumping to an ancestor is one click instead
@@ -268,11 +338,40 @@ impl App for FileBrowser {
         }
         if let Some(path) = go_to {
             self.path = path;
-            self.selected = None;
+            self.left_folder();
         }
         if refresh {
             ui.rpc()
                 .invalidate::<ListDir>(&ListDirReq { path: &self.path });
+        }
+
+        self.poll_delete(ui);
+        if let Some((name, is_dir)) = &self.confirm {
+            let question = if *is_dir {
+                format!("Delete the folder {name} and everything in it? This can't be undone.")
+            } else {
+                format!("Delete {name}? This can't be undone.")
+            };
+            let mut answer = None;
+            ui.push_id("confirm", |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(&question);
+                    if ui.button(CONFIRM_DELETE).clicked() {
+                        answer = Some(true);
+                    }
+                    if ui.button(CANCEL).clicked() {
+                        answer = Some(false);
+                    }
+                });
+            });
+            match answer {
+                Some(true) => self.delete_confirmed(ui),
+                Some(false) => self.confirm = None,
+                None => {}
+            }
+        }
+        if let Some(status) = &self.status {
+            ui.push_id("status", |ui| ui.label(status));
         }
 
         ui.horizontal(|ui| {
@@ -283,6 +382,7 @@ impl App for FileBrowser {
 
         // Deferred so the borrow of `self` inside the match does not collide with mutating it.
         let mut enter: Option<String> = None;
+        let mut delete: Option<(String, bool)> = None;
         let mut retry = false;
         let mut total = 0usize;
         let mut shown = 0usize;
@@ -354,12 +454,22 @@ impl App for FileBrowser {
                                         self.selected = Some(entry.name.clone());
                                     }
                                 }
+                                let path = join(&self.path, &entry.name);
                                 if !entry.is_dir() {
                                     ui.tooltip("Right-click to open, share or download it");
-                                    let path = join(&self.path, &entry.name);
-                                    // Attached to the name just drawn, so right-clicking the
-                                    // file is what opens it.
-                                    ui.context_menu(|ui| file_menu(ui, &path));
+                                }
+                                // Attached to the name just drawn, so right-clicking it is
+                                // what opens it. A folder's menu only has something in it if
+                                // it can be deleted, so a read-only folder has none.
+                                if !entry.is_dir() || entry.writable {
+                                    ui.context_menu(|ui| {
+                                        if !entry.is_dir() {
+                                            file_menu(ui, &path);
+                                        }
+                                        if entry.writable && ui.button(DELETE).clicked() {
+                                            delete = Some((entry.name.clone(), entry.is_dir()));
+                                        }
+                                    });
                                 }
                                 if !entry.is_dir() {
                                     ui.label(format!("· {}", human_size(entry.size)).as_str());
@@ -393,6 +503,9 @@ impl App for FileBrowser {
         }
         if let Some(name) = enter {
             self.enter(&name);
+        }
+        if delete.is_some() {
+            self.confirm = delete;
         }
 
         ui.separator();
@@ -432,6 +545,11 @@ fn file_menu(ui: &mut Ui<'_>, path: &str) {
     // Opened by the shell in a new tab.
     ui.open_url(DOWNLOAD, &url::file_url(path));
 }
+
+/// A writable entry's right-click menu entry, then the two answers to "are you sure?".
+pub const DELETE: &str = "\u{E4A6}  Delete";
+pub const CONFIRM_DELETE: &str = "\u{E4A6}  Delete it";
+pub const CANCEL: &str = "Cancel";
 
 /// The Viewer's id in the shell's catalog.
 const VIEWER: &str = "viewer";

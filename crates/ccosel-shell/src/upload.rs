@@ -361,22 +361,23 @@ impl Uploads {
         }
     }
 
-    /// Open the folder picker for a click on an `UploadFolder` button, then upload what's
-    /// picked into `dest`.
+    /// Open the picker for a click on an `UploadFolder` button, or with `files` an
+    /// `UploadFiles` one, then upload what's picked into `dest`.
     ///
     /// Browsers only open a picker in response to a user action. The desktop calls this in the
     /// same frame the click is drawn, which is well inside that allowance.
-    pub fn start(&self, instance: u64, widget: u64, dest: String, ctx: egui::Context) {
-        self.pick(instance, widget, Dest::Folder(dest), ctx);
+    pub fn start(&self, instance: u64, widget: u64, dest: String, files: bool, ctx: egui::Context) {
+        self.pick(instance, widget, Dest::Folder(dest), files, ctx);
     }
 
     /// Open the folder picker for a click on an `UploadProject` button, then upload what's
     /// picked, minus what `.gitignore` excludes, into a new temporary folder on the server.
     pub fn start_project(&self, instance: u64, widget: u64, ctx: egui::Context) {
-        self.pick(instance, widget, Dest::Scratch, ctx);
+        self.pick(instance, widget, Dest::Scratch, false, ctx);
     }
 
-    fn pick(&self, instance: u64, widget: u64, dest: Dest, ctx: egui::Context) {
+    /// `files`: a picker that chooses files, rather than one folder.
+    fn pick(&self, instance: u64, widget: u64, dest: Dest, files: bool, ctx: egui::Context) {
         let target = self.target(
             instance,
             match dest {
@@ -385,14 +386,14 @@ impl Uploads {
             },
         );
         let (seq, project) = (target.seq, matches!(target.dest, Dest::Scratch));
-        if let Err(e) = open_picker(self.all.clone(), target, ctx) {
+        if let Err(e) = open_picker(self.all.clone(), target, files, ctx) {
             self.all.borrow_mut().push(Upload {
                 seq,
                 instance,
                 widget,
                 project,
                 finished: true,
-                failures: vec![format!("couldn't open the folder picker: {e:?}")],
+                failures: vec![format!("couldn't open the file picker: {e:?}")],
                 ..Default::default()
             });
         }
@@ -417,6 +418,7 @@ enum Dest {
 fn open_picker(
     all: Rc<RefCell<Vec<Upload>>>,
     target: Target,
+    files: bool,
     ctx: egui::Context,
 ) -> Result<(), JsValue> {
     let document = web_sys::window()
@@ -424,7 +426,9 @@ fn open_picker(
         .ok_or("no document")?;
     let input: HtmlInputElement = document.create_element("input")?.dyn_into()?;
     input.set_type("file");
-    input.set_attribute("webkitdirectory", "")?;
+    if !files {
+        input.set_attribute("webkitdirectory", "")?;
+    }
     input.set_attribute("multiple", "")?;
     input.set_attribute("style", "display:none")?;
     // In the page rather than detached: some browsers ignore `click()` on a detached input.

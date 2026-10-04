@@ -138,6 +138,22 @@ impl Rpc for CreateDir {
 
 impl Command for CreateDir {}
 
+/// Delete a file, link or whole folder. The caller needs write access to the folder it is in,
+/// to it, and, for a folder, to every folder inside it, so a folder whose own rules grant less
+/// can't be removed by removing its parent. The top of the server (`/`) is never removed.
+pub struct Remove;
+
+impl Rpc for Remove {
+    const METHOD: Method = Method::Remove;
+    const COALESCE: Coalesce = Coalesce::None;
+    const EFFECT: Effect = Effect::Effectful;
+    const DEADLINE_MS: u32 = 15_000;
+    type Req<'a> = PathReq<'a>;
+    type Reply = ();
+}
+
+impl Command for Remove {}
+
 /// What the caller may do with a path, and who the server thinks the caller is.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AccessReply {
