@@ -65,6 +65,11 @@ pub enum Cmd<'a> {
         id: u64,
         dest: &'a str,
     },
+    /// The same as [`Cmd::UploadFolder`], with a picker that chooses files, not a folder.
+    UploadFiles {
+        id: u64,
+        dest: &'a str,
+    },
     /// Ask the shell to open `url` in a new browser tab. `label` is the button text — kept
     /// separate from `url` so a listing of many rows (e.g. files) does not have to show the
     /// URL itself next to every one.
@@ -317,6 +322,10 @@ impl<'a> Decoder<'a> {
                 text: self.str()?,
             },
             OpCode::UploadFolder => Cmd::UploadFolder {
+                id: self.u64()?,
+                dest: self.str()?,
+            },
+            OpCode::UploadFiles => Cmd::UploadFiles {
                 id: self.u64()?,
                 dest: self.str()?,
             },

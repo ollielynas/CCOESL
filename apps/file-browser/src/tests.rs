@@ -2,7 +2,7 @@
 //! (clicking buttons by label) and the server (answering `ListDir`), so the whole loop the app
 //! runs in production — ask, wait, render, navigate, re-ask — runs here without a browser.
 
-use ccosel_proto::fs::{Access, AccessReply, DirEntry, DirListing, EntryKind, ListDir};
+use ccosel_proto::fs::{Access, AccessReply, DirEntry, DirListing, EntryKind, ListDir, Remove};
 use ccosel_sdk::icons;
 use ccosel_sdk::testing::{Harness, rpc_error};
 
@@ -312,18 +312,21 @@ fn a_finished_upload_re_lists_the_folder_once() {
 }
 
 #[test]
-fn every_file_has_a_right_click_menu_and_folders_do_not() {
+fn every_file_has_a_right_click_menu_and_folders_only_one_to_delete_them() {
     let h = browsing(sample());
-    // One menu each for `notes.md` and `link`, nothing for the folder.
+    // Delete for the folder, then the whole menu for `notes.md` and for `link`.
     assert_eq!(
         h.context_menu_items(),
         [
+            DELETE,
             OPEN_WITH_VIEWER,
             SHARE_WITH_VIEWER,
             DOWNLOAD,
+            DELETE,
             OPEN_WITH_VIEWER,
             SHARE_WITH_VIEWER,
-            DOWNLOAD
+            DOWNLOAD,
+            DELETE
         ]
     );
     assert_eq!(
@@ -410,6 +413,8 @@ fn the_labels_use_the_sdk_icons() {
     assert_eq!(MINE_TAB, format!("{}  My files", icons::HOUSE));
     assert_eq!(CAN_CHANGE, format!("{}  Can change", icons::PENCIL_SIMPLE));
     assert_eq!(READ_ONLY, format!("{}  Read-only", icons::LOCK_SIMPLE));
+    assert_eq!(DELETE, format!("{}  Delete", icons::TRASH));
+    assert_eq!(CONFIRM_DELETE, format!("{}  Delete it", icons::TRASH));
 }
 
 #[test]
@@ -539,4 +544,160 @@ fn nothing_is_said_about_a_folder_until_the_server_answers() {
     h.frame();
     assert!(h.upload_buttons().is_empty());
     assert!(!h.labels().iter().any(|l| l.contains("you can")));
+}
+
+/// Narrow the listing to `name`, so a click on a row's menu entry lands on that row.
+fn only(h: &mut Harness<FileBrowser>, name: &str) {
+    h.type_text(0, name);
+    h.frame();
+}
+
+#[test]
+fn the_upload_files_button_sits_beside_upload_folder_and_follows_the_folder() {
+    let mut h = browsing(sample());
+    assert_eq!(h.upload_buttons(), vec!["/"]);
+    assert_eq!(h.file_upload_buttons(), vec!["/"]);
+    press(&mut h, "docs");
+    answer_access(&mut h, true, None);
+    h.frame();
+    assert_eq!(h.file_upload_buttons(), vec!["/docs"]);
+}
+
+#[test]
+fn a_finished_file_upload_re_lists_the_folder() {
+    let mut h = browsing(sample());
+    h.finish_file_upload();
+    h.frame();
+    h.frame();
+    assert_eq!(h.outstanding::<ListDir>(), 1);
+    h.reply::<ListDir>(&sample());
+    h.frame();
+    h.frame();
+    assert_eq!(
+        h.outstanding::<ListDir>(),
+        0,
+        "the same count is not a new upload"
+    );
+}
+
+#[test]
+fn a_read_only_folder_offers_neither_upload_button() {
+    let h = browsing_as(sample(), false, None);
+    assert!(h.upload_buttons().is_empty());
+    assert!(h.file_upload_buttons().is_empty());
+}
+
+#[test]
+fn nothing_read_only_can_be_deleted() {
+    let mut ro = sample();
+    for e in &mut ro.entries {
+        e.writable = false;
+    }
+    let h = browsing_as(ro, false, None);
+    let items = h.context_menu_items();
+    assert!(!items.iter().any(|i| i == DELETE), "{items:?}");
+    // The files keep the rest of their menus; the read-only folder has none at all.
+    assert_eq!(items.iter().filter(|i| *i == DOWNLOAD).count(), 2);
+}
+
+#[test]
+fn delete_asks_first_and_cancel_leaves_the_file_alone() {
+    let mut h = browsing(sample());
+    only(&mut h, "notes");
+    press(&mut h, DELETE);
+    assert!(
+        h.has_label("Delete notes.md? This can't be undone."),
+        "{:?}",
+        h.labels()
+    );
+    assert_eq!(
+        h.outstanding::<Remove>(),
+        0,
+        "nothing is deleted before the answer"
+    );
+
+    press(&mut h, CANCEL);
+    assert!(!h.has_button(CONFIRM_DELETE));
+    assert_eq!(h.outstanding::<Remove>(), 0);
+}
+
+#[test]
+fn a_confirmed_delete_removes_it_and_re_lists_the_folder() {
+    let mut h = browsing(sample());
+    only(&mut h, "notes");
+    press(&mut h, "notes.md");
+    assert!(h.has_label("notes.md"), "selected");
+    press(&mut h, DELETE);
+    press(&mut h, CONFIRM_DELETE);
+    assert_eq!(h.outstanding::<Remove>(), 1);
+    assert!(h.has_label("Deleting notes.md…"));
+    assert!(
+        !h.has_button(CONFIRM_DELETE),
+        "the question goes once answered"
+    );
+
+    h.reply::<Remove>(&());
+    h.frame();
+    h.frame();
+    assert!(h.has_label("Deleted notes.md"), "{:?}", h.labels());
+    assert_eq!(h.outstanding::<ListDir>(), 1, "the folder is listed again");
+    assert!(
+        h.app.selected.is_none(),
+        "a deleted file is no longer selected"
+    );
+}
+
+#[test]
+fn deleting_a_folder_warns_about_what_is_in_it() {
+    let mut h = browsing(sample());
+    only(&mut h, "docs");
+    press(&mut h, DELETE);
+    assert!(h.has_label("Delete the folder docs and everything in it? This can't be undone."));
+}
+
+#[test]
+fn a_refused_delete_says_why_and_the_entry_stays() {
+    let mut h = browsing(sample());
+    only(&mut h, "notes");
+    press(&mut h, DELETE);
+    press(&mut h, CONFIRM_DELETE);
+    h.fail::<Remove>(rpc_error::DENIED);
+    h.frame();
+    h.frame();
+    assert!(
+        h.has_label("Couldn't delete notes.md: permission denied"),
+        "{:?}",
+        h.labels()
+    );
+}
+
+#[test]
+fn a_deletion_in_a_subfolder_names_the_whole_path_and_re_lists_that_folder() {
+    let mut h = browsing(sample());
+    press(&mut h, "docs");
+    answer_access(&mut h, true, None);
+    h.reply::<ListDir>(&listing(vec![entry("a.txt", EntryKind::File, 1)]));
+    h.frame();
+    press(&mut h, DELETE);
+    press(&mut h, CONFIRM_DELETE);
+    assert_eq!(
+        h.app.deleting.as_ref().map(|(p, _)| p.as_str()),
+        Some("/docs/a.txt")
+    );
+    h.reply::<Remove>(&());
+    h.frame();
+    h.frame();
+    assert_eq!(h.outstanding::<ListDir>(), 1);
+}
+
+#[test]
+fn leaving_the_folder_drops_an_unanswered_question() {
+    let mut h = browsing(sample());
+    only(&mut h, "docs");
+    press(&mut h, DELETE);
+    assert!(h.has_button(CONFIRM_DELETE));
+    // Opening the very folder it asked about: the question was about the one left behind.
+    press(&mut h, "docs");
+    assert!(!h.has_button(CONFIRM_DELETE));
+    assert!(h.app.confirm.is_none());
 }
