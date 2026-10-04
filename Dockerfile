@@ -45,7 +45,9 @@ COPY --from=quay.io/keycloak/keycloak:26.7.4 /opt/keycloak /opt/keycloak
 # anything, but everything else works: `--build-arg WITH_RUST=0` makes the image ~1 GB smaller.
 ARG WITH_RUST=1
 ENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo PATH=/usr/local/cargo/bin:$PATH
+# GNU Go is the Go app's opponent.
 RUN apt-get update \
+    && apt-get install -y --no-install-recommends gnugo \
     && if [ "$WITH_RUST" = 1 ]; then \
          apt-get install -y --no-install-recommends ca-certificates curl gcc libc6-dev \
          && curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --no-modify-path \

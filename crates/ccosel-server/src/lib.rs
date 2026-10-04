@@ -9,7 +9,9 @@ pub mod auth;
 pub mod build_api;
 pub mod dav;
 pub mod desktop;
+pub mod engine;
 pub mod fs_api;
+pub mod go_api;
 pub mod idp;
 pub mod image_info;
 pub mod keycloak;
@@ -59,6 +61,8 @@ pub struct AppState {
     pub scratch: Arc<scratch::Scratch>,
     /// WebDAV at `/dav`. See `dav`.
     pub dav: dav_server::DavHandler<Option<String>>,
+    /// GNU Go, for the Go app. See `go_api`.
+    pub go: Arc<go_api::GoEngines>,
 }
 
 /// Build the router. Separated from `serve` so tests can drive it on an ephemeral port.
@@ -94,6 +98,7 @@ pub fn app(jail: Jail, web_dir: PathBuf, auth: AuthState) -> Router {
         auth,
         jobs: Arc::new(build_api::Jobs::new()),
         stats: Arc::new(stats::Stats::new()),
+        go: Arc::new(go_api::GoEngines::default()),
     };
 
     // Everything that reads or writes the jail needs a session once OAuth is configured. The

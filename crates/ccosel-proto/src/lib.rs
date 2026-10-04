@@ -17,6 +17,7 @@ pub mod account;
 pub mod build;
 pub mod desktop;
 pub mod fs;
+pub mod go;
 pub mod info;
 pub mod scratch;
 pub mod upload;
@@ -51,6 +52,7 @@ pub enum Method {
     LoadDesktop = 16,
     SaveDesktop = 17,
     Remove = 51459,
+    GoEngine = 60955,
 }
 
 impl Method {
@@ -74,6 +76,7 @@ impl Method {
             16 => Some(Self::LoadDesktop),
             17 => Some(Self::SaveDesktop),
             51459 => Some(Self::Remove),
+            60955 => Some(Self::GoEngine),
             _ => None,
         }
     }

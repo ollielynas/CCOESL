@@ -377,6 +377,7 @@ pub fn method_name(method: u32) -> String {
         Some(Method::LoadDesktop) => "load_desktop",
         Some(Method::SaveDesktop) => "save_desktop",
         Some(Method::Remove) => "remove",
+        Some(Method::GoEngine) => "go_engine",
         None => "unknown",
     };
     String::from(name)

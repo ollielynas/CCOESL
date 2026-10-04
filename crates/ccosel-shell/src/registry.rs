@@ -137,6 +137,14 @@ pub fn catalog() -> Vec<AppEntry> {
             default_size: [640.0, 520.0],
         },
         AppEntry {
+            id: "go",
+            name: "Go",
+            icon: egui_phosphor::regular::GRID_NINE,
+            color: egui::Color32::from_rgb(0x57, 0x53, 0x4e),
+            url: "/dist/go.wasm",
+            default_size: [520.0, 640.0],
+        },
+        AppEntry {
             id: "docs",
             name: "Docs",
             icon: egui_phosphor::regular::BOOK_OPEN,
