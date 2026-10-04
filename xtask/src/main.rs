@@ -11,9 +11,14 @@ use anyhow::{Context, Result, bail};
 
 mod image;
 
-/// App modules are the recurring download, so they get a hard budget. The shell is fetched
-/// once and cached forever, so it is reported but not gated.
+/// App modules are the recurring download, so they get a hard budget.
 const GUEST_BUDGET_GZIP: u64 = 100 * 1024;
+
+/// The shell is fetched once and cached, so it gets a looser ceiling rather than a target: it
+/// is there to catch a dependency or a debug build that suddenly doubles the first load on a
+/// slow LAN. Set at the size measured in October 2026 (2.25 MiB gzipped, without wasm-opt)
+/// plus about 15%. Raise it deliberately, in a reviewed change, when the shell has earned it.
+const SHELL_BUDGET_GZIP: u64 = 2_650 * 1024;
 
 /// Line coverage every app must reach. Measured over the app's own `src/` only (not the SDK it
 /// links) and excluding its test code, so neither can inflate the number.
@@ -214,8 +219,15 @@ fn build_web() -> Result<()> {
     }
 
     println!("\nwire sizes (what a client actually downloads):");
-    report("shell.wasm", &dist.join("ccosel-shell_bg.wasm"))?;
+    let shell = report("shell.wasm", &dist.join("ccosel-shell_bg.wasm"))?;
     report("shell.js", &dist.join("ccosel-shell.js"))?;
+    if shell > SHELL_BUDGET_GZIP {
+        bail!(
+            "the shell is {} gzipped, over its {} budget (SHELL_BUDGET_GZIP)",
+            human(shell),
+            human(SHELL_BUDGET_GZIP)
+        );
+    }
 
     let mut over_budget = Vec::new();
     for (_, served) in GUESTS {

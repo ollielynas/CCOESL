@@ -48,7 +48,7 @@ Each CI job is one `cargo xtask` command. To reproduce a red job, run the same c
 | `test` | `cargo xtask test` | A native test fails, in either workspace | — |
 | `test-wasm` | `cargo xtask test-wasm` | A browser-backend test fails under node | — |
 | `apps-coverage` | `cargo xtask coverage` | An app has no documentation page, or is under the coverage bar | See [Adding an app](#adding-an-app) and [Testing apps](#testing-apps) |
-| `build-web` | `cargo xtask build-web` | The build breaks, an app exceeds 100 KiB gzipped, or `apps/`, the catalog and `GUESTS` disagree | Trim the app; avoid float `Display`. For a list mismatch, see [Adding an app](#adding-an-app) |
+| `build-web` | `cargo xtask build-web` | The build breaks, an app exceeds 100 KiB gzipped, the shell exceeds its budget (`SHELL_BUDGET_GZIP`), or `apps/`, the catalog and `GUESTS` disagree | Trim the app; avoid float `Display`. For a list mismatch, see [Adding an app](#adding-an-app) |
 | `test-image` | `cargo xtask test-image` | The Docker image doesn't build, or a person couldn't use it: sign in through `/idp`, use the apps, build in the Compiler, keep their account and files when the container is replaced | Read the step it names; the container's log is printed below it |
 | `ci-ok` | *(GitHub only)* | Any job above did not succeed | It's the one required check |
 
