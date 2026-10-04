@@ -26,16 +26,47 @@ The server application
   - hosts shared and user space file systems
 
 
-## apps
+## Apps
 
-- [ ] **File Browser**
-Users should be able to uplaod and download files from either a private or public file system location
+The user documentation, the same pages the Docs app shows, starts at
+[data/shared/Docs/README.md](data/shared/Docs/README.md).
 
-- [ ] **Compiler**
-The user can uplaod a project directory or select a project from the server file system and the server will compile it for their arcetecture.
-Plan to support
-- C / C++
-- Rust
+### Available
+
+| App | What it does | Docs |
+|---|---|---|
+| **Files** | Browse the server's folders, upload (including drag-and-drop) and download files | [file-browser.md](data/shared/Docs/Apps/file-browser.md) |
+| **Docs** | Read, write and search documents, including the user documentation | [docs.md](data/shared/Docs/Apps/docs.md) |
+| **Viewer** | Look at pictures, music, videos, PDFs and text files, and share them | [viewer.md](data/shared/Docs/Apps/viewer.md) |
+| **Compiler** | Build a Rust project on the server and download the result | [rust-compiler.md](data/shared/Docs/Apps/rust-compiler.md) |
+| **Server** | Live graphs of how the server is doing | [server-dashboard.md](data/shared/Docs/Apps/server-dashboard.md) |
+| **Account** | See who you are signed in as, sign out, and make app passwords | [account.md](data/shared/Docs/Apps/account.md) |
+| **Clock** | A clock and stopwatch | [clock.md](data/shared/Docs/Apps/clock.md) |
+
+Your files can also be opened as a drive with [WebDAV](data/shared/Docs/WebDAV.md).
+
+### In progress
+
+These have an open pull request.
+
+- **Settings**: theme, background, motion, data use, dock pinning, switching account (#4)
+- **Octave**: a GNU Octave front end with command window, workspace, history, editor and plots (#56)
+- **Modeller**: a SketchUp-style 3D modeller backed by FreeCAD (#47)
+
+### Planned
+
+These are open tickets.
+
+- **Compiler**: C and C++ projects with GCC (#72)
+- **Files**: delete files and folders (#52), compress and extract tar / gzip archives (#73)
+- **Viewer**: server-side conversion of Apple formats such as HEIC and HEVC (#81)
+- **Clock**: a sunlight map with timezones (#88)
+- **Chess** against GNU Chess (#76), and **Go** against GNU Go (#77)
+- **Spreadsheet** backed by GNU Gnumeric (#75)
+- **Music Score** backed by GNU LilyPond (#74)
+- **Messages**: inbox, 1:1 and group chats, and file sharing (#49)
+- **Admin console** (#65) and **NAS** storage (#66)
+- **Fluid simulation** with OpenFOAM (#91)
 
 ## Auth
 
