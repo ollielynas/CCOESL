@@ -693,3 +693,31 @@ async fn nobody_removes_the_root_their_home_or_someone_elses_files() {
     remove(s.alice, "/home/alice/diary.md").await.unwrap();
     assert!(!s.root.join("home/alice/diary.md").exists());
 }
+
+#[tokio::test]
+async fn archive_runs_as_a_job_over_rpc_and_respects_permissions() {
+    use ccosel_proto::archive::{Archive, ArchiveAction, ArchiveReq, ArchiveResult};
+
+    let s = site().await;
+    let req = |path| ArchiveReq {
+        path,
+        action: ArchiveAction::Gzip,
+        generation: 1,
+    };
+    // Nobody may write in /Docs, so nothing can be made there.
+    assert_eq!(
+        call::<Archive>(s.alice, &req("/Docs/Apps/files.md")).await,
+        Err(server_error::DENIED)
+    );
+    let made = loop {
+        let status = call::<Archive>(s.alice, &req("/Shared/notes.md"))
+            .await
+            .unwrap();
+        if let Some(result) = status.result {
+            break result;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    };
+    assert_eq!(made, ArchiveResult::Made("/Shared/notes.md.gz".to_owned()));
+    assert!(s.root.join("Shared/notes.md.gz").is_file());
+}

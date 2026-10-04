@@ -28,6 +28,11 @@ sha2 = "0.10"
 base64 = "0.22"
 futures-util = "0.3"
 bytes = "1"
+# The File Browser's Compress and Extract, in-process: nothing new to install, and every entry
+# passes through checks of ours on its way to the disk. No `xattr`: extended attributes are
+# neither kept nor restored.
+tar = { version = "0.4", default-features = false }
+flate2 = "1"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "fs"] }

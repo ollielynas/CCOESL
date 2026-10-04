@@ -5,6 +5,7 @@
 
 pub mod access;
 pub mod app_passwords;
+pub mod archive_api;
 pub mod auth;
 pub mod build_api;
 pub mod dav;
@@ -54,6 +55,7 @@ pub struct AppState {
     /// Builds outlive the request that started them, so they live on the server rather than in
     /// any one call. See `build_api`.
     pub jobs: Arc<build_api::Jobs>,
+    pub archive_jobs: Arc<archive_api::Jobs>,
     pub stats: Arc<stats::Stats>,
     /// Temporary project folders. See `scratch`.
     pub scratch: Arc<scratch::Scratch>,
@@ -93,6 +95,7 @@ pub fn app(jail: Jail, web_dir: PathBuf, auth: AuthState) -> Router {
         jail,
         auth,
         jobs: Arc::new(build_api::Jobs::new()),
+        archive_jobs: Arc::new(archive_api::Jobs::new()),
         stats: Arc::new(stats::Stats::new()),
     };
 
