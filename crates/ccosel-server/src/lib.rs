@@ -7,6 +7,7 @@ pub mod access;
 pub mod app_passwords;
 pub mod auth;
 pub mod build_api;
+mod build_cc;
 pub mod dav;
 pub mod desktop;
 pub mod fs_api;
