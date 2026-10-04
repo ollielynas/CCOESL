@@ -69,8 +69,13 @@ pub fn realm_url() -> String {
     format!("{}{}/realms/{REALM}", upstream(), idp::PREFIX)
 }
 
+/// The admin console, opened on the `ccosel` realm. The admin account lives in `master`, so the
+/// console is `master`'s; the fragment picks the realm it shows.
 pub fn admin_console_url() -> String {
-    format!("http://localhost:{PORT}{}/admin/", idp::PREFIX)
+    format!(
+        "http://localhost:{PORT}{}/admin/master/console/#/{REALM}",
+        idp::PREFIX
+    )
 }
 
 /// `docker run` arguments for the container. The admin password is not among them: it is

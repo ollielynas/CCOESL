@@ -48,11 +48,12 @@ this machine can reach. Browsers never talk to it directly: the server forwards 
 pages under `/idp/`, so one address (or one tunnel) carries both CCOSEL and its login. The
 admin console is never forwarded.
 
-- **Admin console:** `http://localhost:8080/idp/admin/`, on the server machine only. The user
+- **Admin console:** `http://localhost:8080/idp/admin/master/console/#/ccosel` (the server
+  prints it at start-up), on the server machine only. The user
   is `admin`; the password is generated on first start and kept in
   `~/.local/share/ccosel/keycloak-admin-password` (`%APPDATA%\ccosel\` on Windows). It is per
   machine, like the container, so every checkout signs in to the same Keycloak with it.
-- **Adding a user:** in the admin console, switch to the **ccosel** realm (top left), then
+- **Adding a user:** in the admin console, check the **ccosel** realm is selected (top left), then
   **Users → Add user**. Fill in email, first and last name too, or Keycloak asks for them at
   first sign-in. Set a password under **Credentials**.
 - Accounts are kept in the `ccosel-keycloak-data` Docker volume, so they survive restarts and
@@ -118,7 +119,7 @@ docker run -d --name ccosel --restart unless-stopped \
 Then open `http://<this machine>:8777`. The first start takes a minute or so while Keycloak
 sets itself up.
 
-- **Adding accounts:** the admin console is at `http://localhost:8080/idp/admin/`, on this
+- **Adding accounts:** the admin console is at `http://localhost:8080/idp/admin/master/console/#/ccosel`, on this
   machine only (that is what the `127.0.0.1:` in `-p 127.0.0.1:8080:8080` does; leave that
   `-p` out to have no admin console at all). The user is `admin`, and the password is
   generated on first start:
