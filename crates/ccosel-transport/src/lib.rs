@@ -88,6 +88,7 @@ fn policy(method: u16) -> (Coalesce, u32) {
         // Writes: two identical saves are two saves, so they are never merged.
         Some(Method::WriteFile) => (Coalesce::None, 15_000),
         Some(Method::CreateDir) => (Coalesce::None, 8_000),
+        Some(Method::Remove) => (Coalesce::None, 15_000),
         Some(Method::CreateAppPassword) => (Coalesce::None, 8_000),
         Some(Method::RevokeAppPassword) => (Coalesce::None, 8_000),
         None => (Coalesce::None, 4_000),

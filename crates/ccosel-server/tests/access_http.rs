@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use ccosel_proto::fs::{
     Access, AccessReply, CreateDir, DirListing, EntryKind, FileText, ListDir, ListDirReq, PathReq,
-    ReadFile, Search, SearchReply, SearchReq, WriteFile, WriteFileReq,
+    ReadFile, Remove, Search, SearchReply, SearchReq, WriteFile, WriteFileReq,
 };
 use ccosel_proto::{Rpc, WireReply, WireRequest, WireResult, server_error};
 use ccosel_server::fs_api::Jail;
@@ -622,4 +622,74 @@ async fn a_listing_says_what_the_caller_may_change() {
     assert_eq!(home.entries.len(), 1);
     assert!(home.entries[0].writable);
     assert!(listing(s.alice, "/home/alice").await.entries[0].writable);
+}
+
+async fn remove(addr: SocketAddr, path: &str) -> Result<(), u32> {
+    call::<Remove>(addr, &PathReq { path }).await
+}
+
+#[tokio::test]
+async fn remove_deletes_a_file_or_a_whole_folder_where_the_caller_may_write() {
+    let s = site().await;
+    fs::create_dir_all(s.root.join("Shared/old/deeper")).unwrap();
+    fs::write(s.root.join("Shared/old/deeper/a.txt"), "a").unwrap();
+
+    remove(s.anon, "/Shared/notes.md").await.unwrap();
+    assert!(!s.root.join("Shared/notes.md").exists());
+    remove(s.anon, "/Shared/old").await.unwrap();
+    assert!(!s.root.join("Shared/old").exists());
+
+    assert_eq!(
+        remove(s.anon, "/Shared/old").await,
+        Err(server_error::NOT_FOUND),
+        "removing something already gone says so"
+    );
+}
+
+#[tokio::test]
+async fn remove_is_refused_in_a_read_only_folder() {
+    let s = site().await;
+    assert_eq!(
+        remove(s.alice, "/Docs/Apps/files.md").await,
+        Err(server_error::DENIED)
+    );
+    assert_eq!(remove(s.alice, "/Docs").await, Err(server_error::DENIED));
+    assert!(s.root.join("Docs/Apps/files.md").exists());
+}
+
+#[tokio::test]
+async fn remove_is_refused_for_a_folder_holding_one_the_caller_may_not_change() {
+    let s = site().await;
+    fs::create_dir_all(s.root.join("Shared/project/locked")).unwrap();
+    fs::write(s.root.join("Shared/project/locked/.access"), "read: *\n").unwrap();
+    fs::write(s.root.join("Shared/project/locked/a.txt"), "a").unwrap();
+
+    assert_eq!(
+        remove(s.alice, "/Shared/project").await,
+        Err(server_error::DENIED)
+    );
+    assert!(s.root.join("Shared/project/locked/a.txt").exists());
+}
+
+#[tokio::test]
+async fn nobody_removes_the_root_their_home_or_someone_elses_files() {
+    let s = site().await;
+    write(s.bob, "/home/bob/secret.txt", "mine").await.unwrap();
+
+    assert_eq!(remove(s.anon, "/").await, Err(server_error::DENIED));
+    assert_eq!(
+        remove(s.alice, "/home/alice").await,
+        Err(server_error::DENIED)
+    );
+    // Bob's home is as absent to alice as a missing folder, so it is not found, not denied.
+    assert_eq!(
+        remove(s.alice, "/home/bob/secret.txt").await,
+        Err(server_error::NOT_FOUND)
+    );
+    assert!(s.root.join("home/bob/secret.txt").exists());
+
+    // Inside her own home, alice can.
+    write(s.alice, "/home/alice/diary.md", "x").await.unwrap();
+    remove(s.alice, "/home/alice/diary.md").await.unwrap();
+    assert!(!s.root.join("home/alice/diary.md").exists());
 }

@@ -48,7 +48,7 @@ pub struct Harness<A: App> {
     page: PageInfo,
     clicks: Vec<RespRecord>,
     /// Per upload button id, the `aux` the "shell" reports in its response every frame, as the
-    /// real shell does: a finished count for `UploadFolder`, a folder id for `UploadProject`.
+    /// real shell does: a finished count for `UploadFolder` and `UploadFiles`, a folder id for `UploadProject`.
     uploads_finished: Vec<(u64, u32)>,
     calls: Vec<OutCall>,
     last: Vec<u8>,
@@ -392,6 +392,16 @@ impl<A: App> Harness<A> {
             .collect()
     }
 
+    /// Destination folder of every `upload_files` button drawn in the last frame, in order.
+    pub fn file_upload_buttons(&self) -> Vec<String> {
+        self.commands()
+            .filter_map(|c| match c {
+                Cmd::UploadFiles { dest, .. } => Some(dest.to_string()),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// `(label, url)` of every `open_url` button drawn in the last frame, in order.
     pub fn open_urls(&self) -> Vec<(String, String)> {
         self.commands()
@@ -412,6 +422,23 @@ impl<A: App> Harness<A> {
                 _ => None,
             })
             .expect("no upload_folder button in the last frame");
+        self.count_finished(id);
+    }
+
+    /// Plays the shell finishing an upload started from the first `upload_files` button in
+    /// the last frame. The app sees it on the next [`frame`](Self::frame).
+    pub fn finish_file_upload(&mut self) {
+        let id = self
+            .commands()
+            .find_map(|c| match c {
+                Cmd::UploadFiles { id, .. } => Some(id),
+                _ => None,
+            })
+            .expect("no upload_files button in the last frame");
+        self.count_finished(id);
+    }
+
+    fn count_finished(&mut self, id: u64) {
         match self.uploads_finished.iter_mut().find(|(i, _)| *i == id) {
             Some((_, n)) => *n += 1,
             None => self.uploads_finished.push((id, 1)),

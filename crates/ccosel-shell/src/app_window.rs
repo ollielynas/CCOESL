@@ -58,7 +58,7 @@ pub struct AppWindow<I: AppInstance> {
     /// so a suspended app's replies survive until it is resumed.
     events: Rc<RefCell<VecDeque<Vec<u8>>>>,
     alive: Rc<Cell<bool>>,
-    /// Per `UploadFolder` button, how many uploads from it have finished. Handed to the app in
+    /// Per `UploadFolder` and `UploadFiles` button, how many uploads from it have finished. Handed to the app in
     /// that button's response (`aux`), which is how it knows to re-list the folder.
     uploads_finished: HashMap<u64, u32>,
 }
@@ -119,14 +119,15 @@ impl<I: AppInstance> AppWindow<I> {
         }
     }
 
-    /// The `UploadFolder` button clicked this frame, if any: its id and destination folder.
-    /// Called straight after [`Self::ui`], so the picker opens in the same frame as the click.
-    pub fn clicked_upload(&self) -> Option<(u64, String)> {
+    /// The `UploadFolder` or `UploadFiles` button clicked this frame, if any: its id, its
+    /// destination folder, and whether it picks files rather than a folder. Called straight
+    /// after [`Self::ui`], so the picker opens in the same frame as the click.
+    pub fn clicked_upload(&self) -> Option<(u64, String, bool)> {
         self.replayer
             .uploads()
             .iter()
             .find(|(id, _)| self.clicked(*id))
-            .cloned()
+            .map(|(id, dest)| (*id, dest.clone(), self.replayer.picks_files(*id)))
     }
 
     /// The `UploadProject` button clicked this frame, if any.
