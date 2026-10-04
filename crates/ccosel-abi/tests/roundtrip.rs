@@ -62,6 +62,10 @@ fn sample() -> Vec<Cmd<'static>> {
             id: id::hash_str(win, "upload"),
             dest: "/Documents",
         },
+        Cmd::UploadFiles {
+            id: id::hash_str(win, "upload-files"),
+            dest: "/Documents",
+        },
         Cmd::OpenUrl {
             id: id::hash_str(win, "download"),
             label: "Download",
@@ -349,6 +353,26 @@ fn upload_folder_truncated_mid_command_is_an_error_not_a_panic() {
     assert_eq!(
         decode(&buf).unwrap(),
         vec![Cmd::UploadFolder {
+            id: 42,
+            dest: "/a b"
+        }]
+    );
+}
+
+#[test]
+fn upload_files_truncated_mid_command_is_an_error_not_a_panic() {
+    let buf = encode(&[Cmd::UploadFiles {
+        id: 42,
+        dest: "/a b",
+    }]);
+    assert_eq!(buf[0], 0xB0, "UploadFiles keeps its wire value");
+    for n in 0..buf.len() {
+        let _ = decode(&buf[..n]);
+        let _ = validate(&buf[..n]);
+    }
+    assert_eq!(
+        decode(&buf).unwrap(),
+        vec![Cmd::UploadFiles {
             id: 42,
             dest: "/a b"
         }]

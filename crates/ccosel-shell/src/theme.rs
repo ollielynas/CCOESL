@@ -566,7 +566,7 @@ mod tests {
     fn no_guest_widget_changes_size_on_hover_or_press() {
         use ccosel_abi::{Cmd, Encoder};
 
-        let cases: [(&str, Cmd<'_>); 6] = [
+        let cases: [(&str, Cmd<'_>); 7] = [
             (
                 "button",
                 Cmd::Button {
@@ -591,6 +591,7 @@ mod tests {
                 },
             ),
             ("upload folder", Cmd::UploadFolder { id: 1, dest: "/" }),
+            ("upload files", Cmd::UploadFiles { id: 1, dest: "/" }),
             ("upload project", Cmd::UploadProject { id: 1 }),
             (
                 "open url",
