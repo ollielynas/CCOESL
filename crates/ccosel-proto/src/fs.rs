@@ -249,3 +249,32 @@ impl Rpc for ImageInfo {
 }
 
 impl Query for ImageInfo {}
+
+/// Where the server has got to making a copy of a file that every browser can show: JPEG for
+/// an Apple or TIFF photo, H.264 MP4 for HEVC or ProRes video, AAC for Apple audio. The copy
+/// itself is fetched from `/files/<path>?inline=1&as=web` once `finished` without an error.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WebCopyStatus {
+    pub finished: bool,
+    /// How far along, in thousandths, or `None` while that isn't known.
+    pub permille: Option<u16>,
+    /// Why there is no copy, once `finished`.
+    pub error: Option<String>,
+}
+
+/// Start making the web copy of a file if it isn't made or being made, and say how far along it
+/// is. A job: the first call starts it and every later one reports on it, so the app polls. The
+/// copy is kept, so asking again for an unchanged file finds it ready at once.
+pub struct WebCopy;
+
+impl Rpc for WebCopy {
+    const METHOD: Method = Method::WebCopy;
+    const COALESCE: Coalesce = Coalesce::ByArgs;
+    // Polling an unchanged file reports on the one job, or finds the copy already made.
+    const EFFECT: Effect = Effect::Idempotent;
+    const DEADLINE_MS: u32 = 8_000;
+    type Req<'a> = PathReq<'a>;
+    type Reply = WebCopyStatus;
+}
+
+impl Query for WebCopy {}

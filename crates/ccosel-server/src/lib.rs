@@ -17,10 +17,12 @@ pub mod rpc;
 pub mod scratch;
 pub mod stats;
 pub mod upload_api;
+pub mod web_copy;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::extract::{DefaultBodyLimit, Path as AxPath, Query, State};
 use axum::http::{StatusCode, header};
@@ -59,6 +61,21 @@ pub struct AppState {
     pub scratch: Arc<scratch::Scratch>,
     /// WebDAV at `/dav`. See `dav`.
     pub dav: dav_server::DavHandler<Option<String>>,
+    /// Copies of Apple-format files every browser can show. See `web_copy`.
+    pub web_copies: Arc<web_copy::WebCopies>,
+}
+
+/// Where web copies are kept, and how much of them: `CCOSEL_WEB_COPY_DIR` and
+/// `CCOSEL_WEB_COPY_MAX_MB`, or a folder in the system's temporary directory and 2 GB.
+fn web_copies(converter: Arc<dyn web_copy::Converter>) -> web_copy::WebCopies {
+    let dir = std::env::var_os("CCOSEL_WEB_COPY_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| std::env::temp_dir().join("ccosel-web-copies"));
+    let max_mb: u64 = std::env::var("CCOSEL_WEB_COPY_MAX_MB")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(2048);
+    web_copy::WebCopies::new(dir, max_mb << 20, converter)
 }
 
 /// Build the router. Separated from `serve` so tests can drive it on an ephemeral port.
@@ -66,6 +83,16 @@ pub struct AppState {
 /// Panics if it can't create `.scratch` in the jail: a server that can't write to its own jail
 /// can't accept uploads either, and failing at start is clearer than failing on first use.
 pub fn app(jail: Jail, web_dir: PathBuf, auth: AuthState) -> Router {
+    app_with_copies(jail, web_dir, auth, web_copies(Arc::new(web_copy::Ffmpeg)))
+}
+
+/// [`app`] making web copies with `copies` rather than ffmpeg, for tests.
+pub fn app_with_copies(
+    jail: Jail,
+    web_dir: PathBuf,
+    auth: AuthState,
+    copies: web_copy::WebCopies,
+) -> Router {
     let scratch = Arc::new(
         scratch::Scratch::new(jail.root()).expect("create the .scratch directory in the jail"),
     );
@@ -94,6 +121,7 @@ pub fn app(jail: Jail, web_dir: PathBuf, auth: AuthState) -> Router {
         auth,
         jobs: Arc::new(build_api::Jobs::new()),
         stats: Arc::new(stats::Stats::new()),
+        web_copies: Arc::new(copies),
     };
 
     // Everything that reads or writes the jail needs a session once OAuth is configured. The
@@ -169,16 +197,52 @@ async fn download(
     if !real.is_file() {
         return StatusCode::NOT_FOUND.into_response();
     }
-    let filename = real
+    let mut filename = real
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("download")
         .replace(['"', '\\', '\r', '\n'], "_");
-    let shown = params
-        .inline
-        .is_some()
-        .then(|| inline_type(&real))
-        .flatten();
+    // A copy every browser can show, for the formats only some can. The check above is the
+    // same one as for the original, and the copy is found from the real path it passed.
+    let mut real = real;
+    let mut web_type = None;
+    if shown_inline_web(&params)
+        && let Some(target) = web_copy::target_for(&real)
+    {
+        let copies = state.web_copies.clone();
+        let source = real.clone();
+        // A picture or a song takes a moment; wait for it. A video can take minutes, so it
+        // only waits briefly, and the Viewer polls `WebCopy` for its progress meanwhile.
+        let wait = match target {
+            web_copy::Target::Mp4 => Duration::from_secs(2),
+            _ => target.time_limit(),
+        };
+        let ready = tokio::task::spawn_blocking(move || copies.wait(&source, target, wait))
+            .await
+            .ok()
+            .flatten();
+        match ready {
+            None => return (StatusCode::ACCEPTED, "still converting").into_response(),
+            Some(Err(why)) => return (StatusCode::UNPROCESSABLE_ENTITY, why).into_response(),
+            Some(Ok(web_copy::Ready::Original)) => {}
+            Some(Ok(web_copy::Ready::Copy(copy, target))) => {
+                // Named for what it now is: `IMG_1.heic` is sent as `IMG_1.jpg`.
+                let stem = filename
+                    .rsplit_once('.')
+                    .map_or(filename.as_str(), |(stem, _)| stem);
+                filename = format!("{stem}.{}", target.extension());
+                real = copy;
+                web_type = Some(target.content_type());
+            }
+        }
+    }
+    let shown = web_type.or_else(|| {
+        params
+            .inline
+            .is_some()
+            .then(|| inline_type(&real))
+            .flatten()
+    });
 
     let mut resp = match ServeFile::new(&real).try_call(req).await {
         Ok(resp) => resp.map(axum::body::Body::new),
@@ -206,6 +270,14 @@ async fn download(
 struct DownloadParams {
     /// Present (any value) to show the file in the page rather than download it.
     inline: Option<String>,
+    /// `web`, with `inline`: a copy every browser can show, for a format only some can. See
+    /// `web_copy`.
+    #[serde(rename = "as")]
+    as_: Option<String>,
+}
+
+fn shown_inline_web(params: &DownloadParams) -> bool {
+    params.inline.is_some() && params.as_.as_deref() == Some("web")
 }
 
 /// The type a file is shown in the page with, for the kinds a browser can show and that can't
