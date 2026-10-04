@@ -9,4 +9,4 @@ Closes #
 - [ ] `cargo xtask ci` passes locally
 - [ ] New behaviour has tests
 - [ ] New or changed app: still at or above the line-coverage bar, with tests in `src/tests.rs`
-- [ ] New app: registered in `crates/ccosel-shell/src/registry.rs` and in the `guests` list in `build_web()` (`xtask/src/main.rs`)
+- [ ] New app: registered in `crates/ccosel-shell/src/registry.rs` and in `GUESTS` in `xtask/src/main.rs`
