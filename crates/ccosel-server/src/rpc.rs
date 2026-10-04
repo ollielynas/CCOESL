@@ -117,6 +117,7 @@ async fn dispatch(
                 .and_then(|_| crate::build_api::compile(jail, &state.jobs, &a));
             (result, a.path)
         }),
+        Method::GoEngine => run::<ccosel_proto::go::EngineReq, _>(req, |a| (state.go.ask(&a), "")),
         Method::ServerInfo => {
             let host = stats::sample_host();
             let info = ServerInfoReply {
