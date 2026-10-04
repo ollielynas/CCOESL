@@ -4,10 +4,14 @@
 //! there is no CORS configuration anywhere in this project.
 
 pub mod access;
+pub mod app_passwords;
 pub mod auth;
 pub mod build_api;
+pub mod dav;
+pub mod desktop;
 pub mod fs_api;
 pub mod idp;
+pub mod image_info;
 pub mod keycloak;
 pub mod octave_api;
 pub mod rpc;
@@ -20,12 +24,13 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use axum::extract::{DefaultBodyLimit, Path as AxPath, State};
+use axum::extract::{DefaultBodyLimit, Path as AxPath, Query, State};
 use axum::http::{StatusCode, header};
 use axum::middleware;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{any, get, post};
 use axum::{Extension, Router};
+use tower_http::services::ServeFile;
 
 use access::User;
 use auth::AuthState;
@@ -56,6 +61,8 @@ pub struct AppState {
     pub scratch: Arc<scratch::Scratch>,
     /// Everyone's Octave sessions. See `octave_api`.
     pub octave: Arc<octave_api::Octave>,
+    /// WebDAV at `/dav`. See `dav`.
+    pub dav: dav_server::DavHandler<Option<String>>,
 }
 
 /// Build the router. Separated from `serve` so tests can drive it on an ephemeral port.
@@ -83,9 +90,11 @@ pub fn app(jail: Jail, web_dir: PathBuf, auth: AuthState) -> Router {
             }
         });
     }
+    let jail = Arc::new(jail);
     let state = AppState {
         scratch,
-        jail: Arc::new(jail),
+        dav: dav::handler(jail.clone()),
+        jail,
         auth,
         jobs: Arc::new(build_api::Jobs::new()),
         stats: Arc::new(stats::Stats::new()),
@@ -111,9 +120,28 @@ pub fn app(jail: Jail, web_dir: PathBuf, auth: AuthState) -> Router {
             auth::require_session,
         ));
 
+    // WebDAV signs in with an app password, never the session cookie: see `dav`. So it has a
+    // guard of its own instead of `require_session`.
+    let webdav = Router::new()
+        .route(dav::PREFIX, any(dav::handle))
+        .route(&format!("{}/", dav::PREFIX), any(dav::handle))
+        .route(&format!("{}/{{*path}}", dav::PREFIX), any(dav::handle))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            dav::require_app_password,
+        ));
+
+    // `/app/{id}` is the boot page again: the shell reads the id from the address and shows that
+    // one app on its own. Any id gets the page, so a new app has one without touching this, and
+    // the shell is what says an id names no app. Public, like the page at `/`.
+    let boot_page = ServeFile::new(web_dir.join("index.html"));
+
     Router::new()
         .merge(protected)
+        .merge(webdav)
         .merge(auth::router())
+        .route_service("/app/{id}", boot_page.clone())
+        .route_service("/app/{id}/", boot_page)
         .fallback(move |req: axum::extract::Request| {
             let web = web_dir.clone();
             async move { web_files::serve(&web, req).await }
@@ -126,36 +154,97 @@ pub fn app(jail: Jail, web_dir: PathBuf, auth: AuthState) -> Router {
 /// describes for other assets, which needs `ccosel-cas` to exist first. It discloses no more
 /// than `ListDir` already does: anything under the jail is already fair game to enumerate, this
 /// just answers "and can I have the bytes." — under the same permissions (see `access`).
+///
+/// A download by default. With `?inline=1`, a picture, recording or PDF comes with its own type
+/// instead, for the page to show it (the Viewer app). Either way it supports `Range`, which a
+/// browser needs to seek in audio and video, and is streamed rather than read into memory.
 async fn download(
     State(state): State<AppState>,
     user: Option<Extension<User>>,
     AxPath(path): AxPath<String>,
+    Query(params): Query<DownloadParams>,
+    req: axum::extract::Request,
 ) -> Response {
     state.scratch.touch(&path);
     let user = caller(user.as_ref().map(|u| &u.0));
     let Ok(real) = state.jail.authorize(&path, user, Need::Read) else {
         return StatusCode::FORBIDDEN.into_response();
     };
-    let Ok(bytes) = tokio::fs::read(&real).await else {
+    if !real.is_file() {
         return StatusCode::NOT_FOUND.into_response();
-    };
+    }
     let filename = real
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("download")
-        .replace('"', "_");
+        .replace(['"', '\\', '\r', '\n'], "_");
+    let shown = params
+        .inline
+        .is_some()
+        .then(|| inline_type(&real))
+        .flatten();
 
-    (
-        [
-            (header::CONTENT_TYPE, "application/octet-stream".to_owned()),
-            (
-                header::CONTENT_DISPOSITION,
-                format!("attachment; filename=\"{filename}\""),
-            ),
-        ],
-        bytes,
-    )
-        .into_response()
+    let mut resp = match ServeFile::new(&real).try_call(req).await {
+        Ok(resp) => resp.map(axum::body::Body::new),
+        Err(_) => return StatusCode::NOT_FOUND.into_response(),
+    };
+    let (kind, disposition) = match shown {
+        Some(kind) => (kind, "inline"),
+        None => ("application/octet-stream", "attachment"),
+    };
+    let headers = resp.headers_mut();
+    // Only ever the type chosen here. A browser that sniffed an uploaded file into HTML would run
+    // its scripts as this site, with the signed-in person's session.
+    headers.insert(header::CONTENT_TYPE, header::HeaderValue::from_static(kind));
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        header::HeaderValue::from_static("nosniff"),
+    );
+    if let Ok(v) = format!("{disposition}; filename=\"{filename}\"").parse() {
+        headers.insert(header::CONTENT_DISPOSITION, v);
+    }
+    resp
+}
+
+#[derive(serde::Deserialize)]
+struct DownloadParams {
+    /// Present (any value) to show the file in the page rather than download it.
+    inline: Option<String>,
+}
+
+/// The type a file is shown in the page with, for the kinds a browser can show and that can't
+/// run script: pictures, audio, video and PDF. Anything else (HTML and SVG included, which can)
+/// is only ever a download.
+fn inline_type(path: &std::path::Path) -> Option<&'static str> {
+    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+    Some(match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "avif" => "image/avif",
+        "bmp" => "image/bmp",
+        "ico" => "image/x-icon",
+        "heic" => "image/heic",
+        "heif" => "image/heif",
+        "tif" | "tiff" => "image/tiff",
+        "mp4" | "m4v" => "video/mp4",
+        "webm" => "video/webm",
+        "mov" => "video/quicktime",
+        "ogv" => "video/ogg",
+        "mkv" => "video/x-matroska",
+        "mp3" => "audio/mpeg",
+        "m4a" => "audio/mp4",
+        "aac" => "audio/aac",
+        "wav" => "audio/wav",
+        "ogg" | "oga" => "audio/ogg",
+        "opus" => "audio/opus",
+        "flac" => "audio/flac",
+        "caf" => "audio/x-caf",
+        "aif" | "aiff" => "audio/aiff",
+        "pdf" => "application/pdf",
+        _ => return None,
+    })
 }
 
 /// `GET /octave/figure/{client}/{seq}/{n}.png`: figure `n` as Octave's render job
@@ -205,6 +294,11 @@ pub async fn serve(
 ) -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
     println!("CCOSEL serving http://{addr}/");
-    axum::serve(listener, app(jail, web_dir, auth)).await?;
+    // With each connection's address, which `dav` counts failed sign-ins against.
+    axum::serve(
+        listener,
+        app(jail, web_dir, auth).into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await?;
     Ok(())
 }

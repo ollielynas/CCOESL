@@ -138,8 +138,8 @@ fn runs(ui: &mut Ui<'_>, path: &str, inlines: &[Inline], base: TextStyle) -> Opt
             None => {
                 ui.styled(&run.text, style);
             }
-            // The web and email: only the shell can open a tab.
-            Some(target) if markdown::is_external(target) => {
+            // The web, email, and apps' own pages: only the shell can open a tab.
+            Some(target) if markdown::is_external(target) || paths::is_app_page(target) => {
                 ui.open_url(&crate::label(icons::LINK, &run.text), target);
                 ui.tooltip(target);
             }

@@ -5,8 +5,8 @@ use std::ops::Range;
 
 use ccosel_abi::event::{TextDelta, encode_batch, encode_text_delta, event_kind};
 use ccosel_abi::{
-    Align, Cmd, CodeLang, DecodeError, Decoder, RespRecord, ResponseFlags, ScopeKind, TextStyle,
-    validate,
+    Align, Cmd, CodeLang, DecodeError, Decoder, MediaKind, RespRecord, ResponseFlags, ScopeKind,
+    TextStyle, validate,
 };
 
 use crate::{convert, highlight};
@@ -124,6 +124,18 @@ fn diff_range(old: &str, new: &str) -> (usize, usize, usize) {
     (prefix, old.len() - suffix, new.len() - suffix)
 }
 
+/// Where one `Media` command was drawn this frame, for the shell to lay the browser's own
+/// player over. Replay can only reserve the space: egui can't play audio or video.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MediaSlot {
+    pub local_id: u64,
+    pub src: String,
+    pub kind: MediaKind,
+    pub rect: egui::Rect,
+    /// The part of `rect` that is not scrolled or clipped out of view.
+    pub visible: egui::Rect,
+}
+
 /// Per-app replay state that must persist across frames.
 #[derive(Default)]
 pub struct Replayer {
@@ -138,6 +150,12 @@ pub struct Replayer {
     /// Widget ids and target URLs from `OpenUrl` commands this frame. The shell checks these to
     /// know when, and where, to open a new browser tab (see #19).
     open_url_ids: Vec<(u64, String)>,
+    /// Widget ids, app ids and arguments of this frame's `OpenApp` buttons.
+    open_apps: Vec<(u64, String, String)>,
+    /// Widget ids and paths of this frame's `CopyLink` buttons.
+    copy_links: Vec<(u64, String)>,
+    /// Where this frame's `Media` commands were drawn.
+    media: Vec<MediaSlot>,
 }
 
 impl Replayer {
@@ -171,6 +189,9 @@ impl Replayer {
         self.uploads.clear();
         self.project_uploads.clear();
         self.open_url_ids.clear();
+        self.open_apps.clear();
+        self.copy_links.clear();
+        self.media.clear();
         for cmd in &cmds {
             match *cmd {
                 Cmd::Tooltip { id, text } => {
@@ -179,6 +200,10 @@ impl Replayer {
                 Cmd::UploadFolder { id, dest } => self.uploads.push((id, dest.to_owned())),
                 Cmd::UploadProject { id } => self.project_uploads.push(id),
                 Cmd::OpenUrl { id, url, .. } => self.open_url_ids.push((id, url.to_owned())),
+                Cmd::OpenApp { id, app, arg, .. } => {
+                    self.open_apps.push((id, app.to_owned(), arg.to_owned()));
+                }
+                Cmd::CopyLink { id, path, .. } => self.copy_links.push((id, path.to_owned())),
                 _ => {}
             }
         }
@@ -190,6 +215,8 @@ impl Replayer {
             out: &mut out,
             text: &mut self.text,
             in_footer: false,
+            media: &mut self.media,
+            last: None,
         };
         cx.render(ui, &cmds, &closes, 0..cmds.len());
 
@@ -241,6 +268,24 @@ impl Replayer {
     pub fn open_url_ids(&self) -> &[(u64, String)] {
         &self.open_url_ids
     }
+
+    /// Widget ids, app ids and arguments of the `OpenApp` buttons in the last successfully
+    /// replayed frame. Starting the app is the shell's job.
+    pub fn open_apps(&self) -> &[(u64, String, String)] {
+        &self.open_apps
+    }
+
+    /// Widget ids and paths of the `CopyLink` buttons in the last successfully replayed frame.
+    /// Copying, with the page's address in front, is the shell's job.
+    pub fn copy_links(&self) -> &[(u64, String)] {
+        &self.copy_links
+    }
+
+    /// Where the last successfully replayed frame drew its audio, video and documents. Only
+    /// the ones actually on screen: a `Media` scrolled out of view or in a closed menu isn't.
+    pub fn media(&self) -> &[MediaSlot] {
+        &self.media
+    }
 }
 
 /// For each scope-opening command, the index of the command that closes it.
@@ -269,6 +314,7 @@ fn match_scopes(cmds: &[Cmd<'_>]) -> Vec<usize> {
 enum Field {
     Single,
     Multi,
+    View,
     /// With an error to mark: `(line, column)`, from 1.
     Code(CodeLang, Option<(u32, u32)>),
 }
@@ -286,6 +332,9 @@ struct Cx<'a> {
     text: &'a mut HashMap<u64, TextState>,
     /// Inside a `ScrollFooter`'s pinned row, where a field keeps the focus after Enter.
     in_footer: bool,
+    media: &'a mut Vec<MediaSlot>,
+    /// The widget drawn most recently, which a `ContextMenu` scope attaches to.
+    last: Option<egui::Response>,
 }
 
 impl Cx<'_> {
@@ -300,6 +349,7 @@ impl Cx<'_> {
             None => response,
         };
         self.out.push(to_record(local_id, &response));
+        self.last = Some(response);
     }
 
     fn text_edit(
@@ -310,7 +360,8 @@ impl Cx<'_> {
         set: Option<&str>,
         field: Field,
     ) {
-        let multiline = field != Field::Single;
+        let multiline = !matches!(field, Field::Single);
+        let view = matches!(field, Field::View);
         let is_new = !self.text.contains_key(&id);
         let state = self.text.entry(id).or_default();
         state.sync_from_guest(version, set, is_new);
@@ -333,6 +384,20 @@ impl Cx<'_> {
             }
             ui.fonts_mut(|f| f.layout_job(job))
         };
+        if view {
+            // A `&str` buffer is egui's read-only text: selectable and copyable, never changed.
+            let r = ui.add(
+                egui::TextEdit::multiline(&mut state.buf.as_str())
+                    .code_editor()
+                    .desired_width(f32::INFINITY)
+                    .id(egui::Id::new((self.app_instance, id))),
+            );
+            let mut rec = to_record(id, &r);
+            rec.aux = state.version;
+            self.out.push(rec);
+            self.last = Some(r);
+            return;
+        }
         let edit = if multiline {
             // Monospace, full width and tab-to-indent: this is for writing documents and
             // code, where columns line up and a tab should not move focus away.
@@ -374,10 +439,42 @@ impl Cx<'_> {
         if submitted {
             rec.flags |= ResponseFlags::SUBMITTED;
         }
-        if let Some(tip) = self.tooltips.get(&id) {
-            r.on_hover_text(*tip);
-        }
+        let r = match self.tooltips.get(&id) {
+            Some(tip) => r.on_hover_text(*tip),
+            None => r,
+        };
         self.out.push(rec);
+        self.last = Some(r);
+    }
+
+    /// A table's children into a `Grid`: each scope is a row, its widgets the row's cells. A
+    /// widget straight in the table, outside any row, takes a row of its own.
+    fn table_rows(
+        &mut self,
+        ui: &mut egui::Ui,
+        cmds: &[Cmd<'_>],
+        closes: &[usize],
+        range: Range<usize>,
+    ) {
+        let mut i = range.start;
+        while i < range.end {
+            let next = match cmds[i] {
+                Cmd::BeginScope { .. } | Cmd::BeginWindow { .. } => {
+                    let end = closes[i];
+                    self.render(ui, cmds, closes, i + 1..end);
+                    end + 1
+                }
+                _ => {
+                    self.render(ui, cmds, closes, i..i + 1);
+                    i + 1
+                }
+            };
+            // A tooltip belongs to the widget before it, not a row of its own.
+            if !matches!(cmds[i], Cmd::Tooltip { .. } | Cmd::Nop) {
+                ui.end_row();
+            }
+            i = next;
+        }
     }
 
     fn render(
@@ -429,31 +526,53 @@ impl Cx<'_> {
                 }
 
                 Cmd::Image { id, src, size } => {
-                    // Images are fetched by the *shell*, by URL, so they hit the browser's HTTP
-                    // cache and never occupy guest memory: egui asks the image loaders the
-                    // shell installed. Only this server's own paths, so an app can't have the
-                    // shell fetch from somewhere else on its behalf. Anything else, and any
-                    // host with no loader, gets a placeholder of the same size.
-                    // Exactly the size asked for, whatever the image's own shape, so the app's
-                    // layout never moves when the image arrives.
-                    let (rect, r) =
-                        ui.allocate_exact_size(convert::vec2(size), egui::Sense::click());
-                    if same_origin(src) && !ui.ctx().loaders().image.lock().is_empty() {
+                    // Images are fetched and decoded by the *shell*'s image loader, by URL, so
+                    // they hit the browser's HTTP cache and never occupy guest memory. A size
+                    // component of 0 means "fit": as wide as the row allows, and as tall as the
+                    // picture's own shape makes it.
+                    let size = convert::vec2(size);
+                    let r = if !same_origin(src) {
+                        // The shell only fetches this server's own paths. Other URLs stay as a
+                        // placeholder of the asked size, so an app can't have the shell fetch on
+                        // its behalf.
+                        let (rect, r) = ui.allocate_exact_size(size, egui::Sense::click());
                         if ui.is_rect_visible(rect) {
-                            egui::Image::new(src).paint_at(ui, rect);
+                            let visuals = ui.visuals();
+                            ui.painter()
+                                .rect_filled(rect, 4.0, visuals.extreme_bg_color);
+                            ui.painter().text(
+                                rect.center(),
+                                egui::Align2::CENTER_CENTER,
+                                src,
+                                egui::FontId::proportional(9.0),
+                                visuals.weak_text_color(),
+                            );
                         }
-                    } else if ui.is_rect_visible(rect) {
-                        let visuals = ui.visuals();
-                        ui.painter()
-                            .rect_filled(rect, 4.0, visuals.extreme_bg_color);
-                        ui.painter().text(
-                            rect.center(),
-                            egui::Align2::CENTER_CENTER,
-                            src,
-                            egui::FontId::proportional(9.0),
-                            visuals.weak_text_color(),
-                        );
-                    }
+                        r
+                    } else {
+                        let image = egui::Image::from_uri(src);
+                        if size.x > 0.0 && size.y > 0.0 {
+                            // Exactly the size asked for, loaded or not, so the layout around it
+                            // doesn't jump when the picture arrives.
+                            let (rect, r) = ui.allocate_exact_size(size, egui::Sense::click());
+                            if ui.is_rect_visible(rect) {
+                                image.paint_at(ui, rect);
+                            }
+                            r
+                        } else {
+                            let width = if size.x > 0.0 {
+                                size.x
+                            } else {
+                                ui.available_width()
+                            };
+                            ui.add(
+                                image
+                                    .sense(egui::Sense::click())
+                                    .max_width(width)
+                                    .shrink_to_fit(),
+                            )
+                        }
+                    };
                     self.finish(id, r);
                 }
 
@@ -487,6 +606,52 @@ impl Cx<'_> {
                     mark,
                 } => {
                     self.text_edit(ui, id, version, set, Field::Code(lang, mark));
+                }
+                Cmd::TextView { id, version, set } => {
+                    self.text_edit(ui, id, version, set, Field::View);
+                }
+
+                Cmd::OpenApp { id, label, .. } | Cmd::CopyLink { id, label, .. } => {
+                    // Like `OpenUrl`: the label only. What a click does is the shell's job.
+                    let r = add_with_shadow(ui, egui::Button::new(label));
+                    self.finish(id, r);
+                }
+
+                Cmd::Media {
+                    id,
+                    src,
+                    kind,
+                    size,
+                } => {
+                    let size = media_size(ui, kind, convert::vec2(size));
+                    let (rect, r) = ui.allocate_exact_size(size, egui::Sense::hover());
+                    // What shows until the browser's player is laid over it, and wherever the
+                    // shell can't lay one (another window on top of it).
+                    let visuals = ui.visuals();
+                    ui.painter()
+                        .rect_filled(rect, 0.0, visuals.extreme_bg_color);
+                    ui.painter().text(
+                        rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        match kind {
+                            MediaKind::Video => "▶ Video",
+                            MediaKind::Audio => "▶ Audio",
+                            MediaKind::Document => "Document",
+                        },
+                        egui::FontId::proportional(14.0),
+                        visuals.weak_text_color(),
+                    );
+                    let visible = rect.intersect(ui.clip_rect());
+                    if visible.is_positive() {
+                        self.media.push(MediaSlot {
+                            local_id: id,
+                            src: src.to_owned(),
+                            kind,
+                            rect,
+                            visible,
+                        });
+                    }
+                    self.finish(id, r);
                 }
 
                 Cmd::Selectable { id, text, selected } => {
@@ -668,6 +833,28 @@ impl Cx<'_> {
                                     self.render(ui, cmds, closes, inner.clone())
                                 });
                             }
+                            (ScopeKind::Table, _) => {
+                                egui::ScrollArea::horizontal()
+                                    .id_salt(self.egui_id(id))
+                                    .auto_shrink([false, true])
+                                    .show(ui, |ui| {
+                                        egui::Grid::new(self.egui_id(id))
+                                            .striped(true)
+                                            .spacing(egui::vec2(16.0, 4.0))
+                                            .show(ui, |ui| {
+                                                self.table_rows(ui, cmds, closes, inner.clone())
+                                            });
+                                    });
+                            }
+                            (ScopeKind::ContextMenu, _) => {
+                                // On whatever came just before. Its entries are drawn only
+                                // while the menu is open, so only then can they be clicked.
+                                if let Some(owner) = self.last.clone() {
+                                    owner.context_menu(|ui| {
+                                        self.render(ui, cmds, closes, inner.clone());
+                                    });
+                                }
+                            }
                             (ScopeKind::Wrapped, _) => {
                                 ui.horizontal_wrapped(|ui| {
                                     // Runs of styled text carry their own spaces, so the
@@ -705,6 +892,30 @@ impl Cx<'_> {
             i += 1;
         }
     }
+}
+
+/// The size a `Media` command takes when the app leaves some of it to the shell (`0.0`).
+fn media_size(ui: &egui::Ui, kind: MediaKind, asked: egui::Vec2) -> egui::Vec2 {
+    let width = if asked.x > 0.0 {
+        asked.x
+    } else {
+        ui.available_width()
+    };
+    let height = if asked.y > 0.0 {
+        asked.y
+    } else {
+        match kind {
+            MediaKind::Video => width * 9.0 / 16.0,
+            // The browser's own control bar.
+            MediaKind::Audio => 54.0,
+            // The rest of what is visible below here, like a `Scroll` scope.
+            MediaKind::Document => {
+                (ui.clip_rect().bottom() - ui.cursor().top() - ui.spacing().item_spacing.y)
+                    .max(240.0)
+            }
+        }
+    };
+    egui::vec2(width, height)
 }
 
 /// How far a button's or text field's shadow sits below and to the right of it.

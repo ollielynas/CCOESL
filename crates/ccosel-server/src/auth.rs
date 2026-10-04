@@ -31,6 +31,7 @@ use rand::distributions::Alphanumeric;
 use serde::{Deserialize, Serialize};
 
 use crate::AppState;
+use crate::app_passwords::{AppPasswords, Throttle};
 
 /// A login has this long to complete (land on `/auth/callback` with a valid `state`) before the
 /// `state` token is forgotten and the attempt has to restart.
@@ -140,8 +141,14 @@ pub struct AuthState {
     /// Set when Keycloak sits behind this server's `/idp` path. See [`crate::idp`].
     pub(crate) idp: Option<crate::idp::IdpProxy>,
     http: reqwest::Client,
-    pending_logins: Arc<Mutex<HashMap<String, Instant>>>,
+    /// Sign-ins under way, by their `state` token: when the token expires, and the page to go
+    /// back to once signed in.
+    pending_logins: Arc<Mutex<HashMap<String, (Instant, String)>>>,
     sessions: Arc<Mutex<HashMap<String, Session>>>,
+    /// What WebDAV clients sign in with. See [`crate::app_passwords`].
+    pub(crate) app_passwords: Arc<AppPasswords>,
+    /// Failed WebDAV sign-ins, per login and per client address.
+    pub(crate) throttle: Arc<Throttle>,
 }
 
 impl Default for AuthState {
@@ -159,7 +166,20 @@ impl AuthState {
             http: reqwest::Client::new(),
             pending_logins: Arc::new(Mutex::new(HashMap::new())),
             sessions: Arc::new(Mutex::new(HashMap::new())),
+            app_passwords: Arc::new(AppPasswords::in_memory()),
+            throttle: Arc::new(Throttle::default()),
         }
+    }
+
+    /// Keep app passwords in `store` rather than in memory, where a restart forgets them.
+    pub fn with_app_passwords(mut self, store: AppPasswords) -> Self {
+        self.app_passwords = Arc::new(store);
+        self
+    }
+
+    /// The app password store, for making one outside an RPC (tests, embedding).
+    pub fn app_passwords(&self) -> &AppPasswords {
+        &self.app_passwords
     }
 
     /// Where browsers reach this server, when that isn't simply `http://{Host}`: behind an
@@ -326,7 +346,36 @@ pub async fn require_session(
     next.run(req).await
 }
 
-async fn login(State(state): State<AppState>, headers: HeaderMap) -> Response {
+#[derive(Deserialize)]
+struct LoginParams {
+    /// The page to come back to once signed in, such as a shared link to one app's own page.
+    #[serde(rename = "return")]
+    return_to: Option<String>,
+}
+
+/// `to`, if it is a page of this site to send someone back to after signing in, or `/`. Only a
+/// path: anything that could name another site (`//evil.example`, `/\\evil.example`, a scheme)
+/// would make sign-in an open redirect.
+fn return_path(to: Option<&str>) -> String {
+    match to {
+        Some(p)
+            if p.starts_with('/')
+                && !p.starts_with("//")
+                && !p.contains('\\')
+                && p.len() <= 2048
+                && !p.chars().any(char::is_control) =>
+        {
+            p.to_owned()
+        }
+        _ => "/".to_owned(),
+    }
+}
+
+async fn login(
+    State(state): State<AppState>,
+    Query(params): Query<LoginParams>,
+    headers: HeaderMap,
+) -> Response {
     let Some(oauth) = &state.auth.oauth else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -336,12 +385,13 @@ async fn login(State(state): State<AppState>, headers: HeaderMap) -> Response {
     };
 
     let csrf = random_token(32);
-    state
-        .auth
-        .pending_logins
-        .lock()
-        .unwrap()
-        .insert(csrf.clone(), Instant::now() + LOGIN_TTL);
+    state.auth.pending_logins.lock().unwrap().insert(
+        csrf.clone(),
+        (
+            Instant::now() + LOGIN_TTL,
+            return_path(params.return_to.as_deref()),
+        ),
+    );
 
     let redirect_uri = format!("{}/auth/callback", state.auth.origin(&headers));
     let url = format!(
@@ -389,17 +439,20 @@ async fn callback(
         return (StatusCode::BAD_REQUEST, "missing state").into_response();
     };
 
-    {
+    let return_to = {
         let mut pending = state.auth.pending_logins.lock().unwrap();
-        pending.retain(|_, exp| *exp > Instant::now());
-        if pending.remove(&csrf).is_none() {
-            return (
-                StatusCode::BAD_REQUEST,
-                "login expired or was never started, try again",
-            )
-                .into_response();
+        pending.retain(|_, (exp, _)| *exp > Instant::now());
+        match pending.remove(&csrf) {
+            Some((_, to)) => to,
+            None => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    "login expired or was never started, try again",
+                )
+                    .into_response();
+            }
         }
-    }
+    };
 
     let redirect_uri = format!("{}/auth/callback", state.auth.origin(&headers));
     let forwarded = state.auth.backchannel_headers(&headers);
@@ -427,7 +480,7 @@ async fn callback(
         },
     );
 
-    let mut resp = Redirect::to("/").into_response();
+    let mut resp = Redirect::to(&return_to).into_response();
     resp.headers_mut().append(
         header::SET_COOKIE,
         format!(

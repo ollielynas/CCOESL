@@ -9,8 +9,9 @@ use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use ccosel_proto::account::Account;
+use ccosel_proto::account::{Account, CreateAppPasswordReq, RevokeAppPasswordReq};
 use ccosel_proto::build::CompileReq;
+use ccosel_proto::desktop::DesktopLayout;
 use ccosel_proto::fs::{ListDirReq, PathReq, SearchReq, WriteFileReq};
 use ccosel_proto::info::ServerInfoReply;
 use ccosel_proto::octave::{OctaveAnswerReq, OctaveControlReq, OctavePollReq, OctaveRunReq};
@@ -155,6 +156,28 @@ async fn dispatch(
         Method::OctaveAnswer => {
             run::<OctaveAnswerReq, _>(req, |a| (state.octave.answer(jail, user, &a), ""))
         }
+        Method::ImageInfo => run::<PathReq, _>(req, |a| (jail.image_info(a.path, user), a.path)),
+        // App passwords belong to whoever is signed in; anonymous callers have none to manage.
+        Method::ListAppPasswords => match user {
+            Some(name) => encode(&state.auth.app_passwords.list(name)),
+            None => Outcome::Err(server_error::DENIED, String::new()),
+        },
+        Method::CreateAppPassword => run::<CreateAppPasswordReq, _>(req, |a| {
+            let made = user
+                .ok_or(server_error::DENIED)
+                .and_then(|name| state.auth.app_passwords.create(name, a.name));
+            (made, "")
+        }),
+        Method::RevokeAppPassword => run::<RevokeAppPasswordReq, _>(req, |a| {
+            let revoked = user
+                .ok_or(server_error::DENIED)
+                .and_then(|name| state.auth.app_passwords.revoke(name, a.id));
+            (revoked, "")
+        }),
+        Method::LoadDesktop => encode(&crate::desktop::load(jail.root(), user)),
+        Method::SaveDesktop => run::<DesktopLayout, _>(req, |layout| {
+            (crate::desktop::save(jail.root(), user, &layout), "")
+        }),
     }
 }
 

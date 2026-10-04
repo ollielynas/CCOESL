@@ -37,7 +37,9 @@
   const fill = document.getElementById('fill');
   const note = document.getElementById('note');
 
-  const SHELL = './dist/ccosel-shell_bg.wasm';
+  // Absolute, because this page is also served at `/app/{id}` (one app on its own, no
+  // desktop), where `./dist/` would resolve to `/app/dist/`.
+  const SHELL = '/dist/ccosel-shell_bg.wasm';
 
   // Whether this server has Keycloak login turned on, and whether this browser is already
   // signed in — `/auth/*` exists independently of the wasm shell (see
@@ -61,7 +63,10 @@
     bar.style.display = 'none';
     const signIn = document.createElement('button');
     signIn.textContent = 'Sign in with Keycloak';
-    signIn.onclick = () => { location.href = '/auth/login'; };
+    // Back to this page afterwards: a shared link to one app's own page (`/app/viewer?open=..`)
+    // should still open that file once its reader has signed in.
+    const here = location.pathname + location.search;
+    signIn.onclick = () => { location.href = '/auth/login?return=' + encodeURIComponent(here); };
     boot.appendChild(signIn);
   }
 
@@ -100,7 +105,7 @@
     statusEl.textContent = 'Starting…';
     note.textContent = '';
 
-    const { default: init, start } = await import('./dist/ccosel-shell.js');
+    const { default: init, start } = await import('/dist/ccosel-shell.js');
     await init({ module_or_path: bytes });
 
     boot.remove();

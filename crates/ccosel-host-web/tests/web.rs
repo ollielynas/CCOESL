@@ -10,7 +10,7 @@
 #![cfg(target_arch = "wasm32")]
 
 use ccosel_abi::{Cmd, Decoder, RespRecord};
-use ccosel_host::{AppHost, AppInstance, FrameArgs};
+use ccosel_host::{AppHost, AppInstance, FrameArgs, OutboundCall};
 use ccosel_host_web::WebHost;
 use wasm_bindgen_test::*;
 
@@ -18,6 +18,15 @@ use wasm_bindgen_test::*;
 // opt *into* a browser.
 
 const GUEST: &[u8] = include_bytes!(env!("CCOSEL_GUEST_WASM"));
+
+/// Just the `ListDir` calls among what the guest sent. It also asks what the caller may do in
+/// the folder (`Access`), which these tests leave unanswered.
+fn listings(calls: Vec<OutboundCall>) -> Vec<OutboundCall> {
+    calls
+        .into_iter()
+        .filter(|c| c.method == ccosel_proto::Method::ListDir as u32)
+        .collect()
+}
 
 fn labels(buf: &[u8]) -> Vec<String> {
     Decoder::new(buf)
@@ -83,6 +92,7 @@ fn listing_reply(names: &[(&str, bool)]) -> Vec<u8> {
                 },
                 size: 3,
                 mtime_s: 0,
+                writable: true,
             })
             .collect(),
         truncated: false,
@@ -102,9 +112,8 @@ async fn rpc_round_trips_through_the_real_wasm_engine() {
     let f1 = app.frame(&FrameArgs::default()).expect("frame");
     assert!(labels(&f1.commands).contains(&"Loading…".to_owned()));
 
-    let calls = app.take_outbox();
+    let calls = listings(app.take_outbox());
     assert_eq!(calls.len(), 1, "one request for the initial listing");
-    assert_eq!(calls[0].method, ccosel_proto::Method::ListDir as u32);
     let req: ccosel_proto::fs::ListDirReq = postcard::from_bytes(&calls[0].args).unwrap();
     assert_eq!(req.path, "/");
 
@@ -134,7 +143,7 @@ async fn a_server_error_renders_without_a_decoder() {
     let mut app = host.instantiate(&module).expect("instantiate");
 
     app.frame(&FrameArgs::default()).expect("frame");
-    let calls = app.take_outbox();
+    let calls = listings(app.take_outbox());
 
     let payload =
         ccosel_abi::event::encode_error(ccosel_abi::event::rpc_error::DENIED, "outside the jail");

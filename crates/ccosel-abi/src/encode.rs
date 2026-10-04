@@ -131,6 +131,7 @@ impl Encoder {
                 self.u8(match cmd {
                     Cmd::TextEditMulti { .. } => OpCode::TextEditMulti as u8,
                     Cmd::TextEditCode { .. } => OpCode::TextEditCode as u8,
+                    Cmd::TextView { .. } => OpCode::TextView as u8,
                     _ => OpCode::TextEditSingle as u8,
                 });
                 self.u64(id);
@@ -153,6 +154,23 @@ impl Encoder {
                             self.u32(*line);
                             self.u32(*column);
                         }
+                    }
+                }
+            }
+            Cmd::TextView { id, version, set } => {
+                self.u8(match cmd {
+                    Cmd::TextView { .. } => OpCode::TextView as u8,
+                    _ => OpCode::TextEditSingle as u8,
+                });
+                self.u64(id);
+                self.u32(version);
+                // `None` means "you already hold the buffer, shell" — the common case, and the
+                // reason a text field costs 13 bytes per frame instead of the whole document.
+                match set {
+                    None => self.u8(0),
+                    Some(s) => {
+                        self.u8(1);
+                        self.str(s);
                     }
                 }
             }
@@ -201,6 +219,37 @@ impl Encoder {
                 self.u64(id);
                 self.str(text);
                 self.u8(u8::from(selected));
+            }
+            Cmd::OpenApp {
+                id,
+                label,
+                app,
+                arg,
+            } => {
+                self.u8(OpCode::OpenApp as u8);
+                self.u64(id);
+                self.str(label);
+                self.str(app);
+                self.str(arg);
+            }
+            Cmd::CopyLink { id, label, path } => {
+                self.u8(OpCode::CopyLink as u8);
+                self.u64(id);
+                self.str(label);
+                self.str(path);
+            }
+            Cmd::Media {
+                id,
+                src,
+                kind,
+                size,
+            } => {
+                self.u8(OpCode::Media as u8);
+                self.u64(id);
+                self.str(src);
+                self.u8(kind as u8);
+                self.f32(size.x);
+                self.f32(size.y);
             }
         }
     }

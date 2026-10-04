@@ -29,7 +29,9 @@ pub use decode::{Cmd, DecodeError, Decoder, validate};
 pub use encode::Encoder;
 pub use event::{Event, EventBatch, EventError, EventHeader, decode_batch, encode_batch};
 pub use frame::{FrameInput, FrameOutput, RespRecord, ResponseFlags, Slice};
-pub use geom::{Align, CodeLang, Color32, Layout, Pos2, Rect, ScopeKind, TextStyle, Vec2};
+pub use geom::{
+    Align, CodeLang, Color32, Layout, MediaKind, Pos2, Rect, ScopeKind, TextStyle, Vec2,
+};
 pub use id::{hash_bytes, hash_id, hash_str};
 pub use opcode::OpCode;
 
@@ -39,7 +41,7 @@ pub use opcode::OpCode;
 ///
 /// A new opcode bumps this, unlike a new RPC method: an old shell's decoder has no arm for it
 /// and would discard every frame that uses it, so a clean refusal to load is better.
-pub const ABI_VERSION: u32 = 8;
+pub const ABI_VERSION: u32 = 9;
 
 /// Maximum scope nesting a guest may emit. Bounds the host's `Vec<egui::Ui>` stack so a
 /// malicious or buggy guest cannot drive it into unbounded recursion.

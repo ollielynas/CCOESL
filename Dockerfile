@@ -20,10 +20,19 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     && version="$(sed -n 's/^wasm-bindgen = "=\(.*\)"/\1/p' Cargo.toml)" \
     && test -n "$version" \
     && cargo install wasm-bindgen-cli --version "$version" --locked
+# The build caches below are shared by every checkout built on this machine (all at /src), and
+# cargo trusts a cached artifact that is newer than its source. So another checkout's build of
+# an older version of one of our crates, made after this checkout's source was last edited,
+# would be reused here, silently: the image would hold that checkout's code, not this one's
+# (#92). And `COPY . .` keeps each file's mtime from whichever build first copied that content.
+# Touching the sources makes this build's the newest, so every workspace crate is compiled
+# from them; crates.io dependencies are untouched and stay cached. `sharing=locked` stops a
+# concurrent build writing an older artifact between the touch and the compile.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/src/target \
-    --mount=type=cache,target=/src/apps/target \
-    cargo xtask build-web \
+    --mount=type=cache,target=/src/target,sharing=locked \
+    --mount=type=cache,target=/src/apps/target,sharing=locked \
+    find . -path ./target -prune -o -path ./apps/target -prune -o -type f -exec touch {} + \
+    && cargo xtask build-web \
     && cargo build --release -p ccosel-server \
     && cp target/release/ccosel-server /usr/local/bin/ccosel-server
 

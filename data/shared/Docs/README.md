@@ -4,6 +4,11 @@ Welcome. CCOSEL is a desktop that runs in your browser. Apps open in windows, an
 live on the server rather than on the computer you are using, so they are there from any
 machine on the network.
 
+When you are signed in, the desktop remembers which apps you had open and where their windows
+were, and puts them back the next time you open it, on any computer. It saves a few seconds after
+you stop moving things, so the last change before you close the tab may not be kept. Without
+signing in, every visit starts with nothing open.
+
 ## Apps
 
 - [Files](Apps/file-browser.md): browse the server's folders, and upload and download files
@@ -12,7 +17,13 @@ machine on the network.
 - [Server](Apps/server-dashboard.md): live graphs of how the server is doing
 - [Compiler](Apps/rust-compiler.md): build a Rust project on the server and download the result
 - [Octave](Apps/octave.md): run GNU Octave code, keep variables between commands, and plot
-- [Account](Apps/account.md): see who you are signed in as, and sign out
+- [Account](Apps/account.md): see who you are signed in as, sign out, and make app passwords
+- [Viewer](Apps/viewer.md): look at pictures, music, videos, PDFs and text files, and share them
+
+You can also [open your files as a drive](WebDAV.md) on your own computer, with WebDAV.
+
+Any app can also be opened on its own, in a tab with no desktop around it. The
+[links to each app's own page](app-links.md) are in one place.
 
 ## Where your files go
 

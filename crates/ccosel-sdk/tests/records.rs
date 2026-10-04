@@ -4,7 +4,7 @@
 //! This is the loop app authors get: write UI, assert the command stream, no browser.
 
 use ccosel_abi::{Cmd, Decoder, RespRecord, ResponseFlags};
-use ccosel_sdk::{App, FrameCtx, Recorder, RpcCtx, Text, Ui, Vec2};
+use ccosel_sdk::{App, FrameCtx, PageInfo, Recorder, RpcCtx, Text, Ui, Vec2};
 
 struct Demo {
     clicks: u32,
@@ -36,7 +36,8 @@ impl App for Demo {
 
 fn record(app: &mut Demo, rec: &mut Recorder) -> Vec<u8> {
     let rpc = RpcCtx::new();
-    let mut ui = Ui::root(rec, FrameCtx::default(), &rpc);
+    let page = PageInfo::default();
+    let mut ui = Ui::root(rec, FrameCtx::default(), &rpc, &page);
     app.update(&mut ui);
     rec.commands().to_vec()
 }
@@ -300,7 +301,8 @@ fn deeply_nested_scopes_still_produce_a_valid_buffer() {
 
     let mut rec = Recorder::new();
     let rpc = RpcCtx::new();
-    let mut ui = Ui::root(&mut rec, FrameCtx::default(), &rpc);
+    let page = PageInfo::default();
+    let mut ui = Ui::root(&mut rec, FrameCtx::default(), &rpc, &page);
     Deep.update(&mut ui);
     ccosel_abi::validate(rec.commands()).unwrap();
 }
@@ -326,7 +328,8 @@ fn uploads_finished_reads_the_shells_count() {
     let rpc = RpcCtx::new();
     // The id the button will get, found by recording it once.
     let id = {
-        let mut ui = Ui::root(&mut rec, FrameCtx::default(), &rpc);
+        let page = PageInfo::default();
+        let mut ui = Ui::root(&mut rec, FrameCtx::default(), &rpc, &page);
         ui.upload_folder("/");
         decode(rec.commands())
             .into_iter()
@@ -341,7 +344,8 @@ fn uploads_finished_reads_the_shells_count() {
         aux: 3,
         ..Default::default()
     }]);
-    let mut ui = Ui::root(&mut rec, FrameCtx::default(), &rpc);
+    let page = PageInfo::default();
+    let mut ui = Ui::root(&mut rec, FrameCtx::default(), &rpc, &page);
     assert_eq!(ui.upload_folder("/").uploads_finished(), 3);
 }
 
@@ -350,7 +354,8 @@ fn uploaded_project_is_none_until_the_shell_reports_a_folder() {
     let mut rec = Recorder::new();
     let rpc = RpcCtx::new();
     let id = {
-        let mut ui = Ui::root(&mut rec, FrameCtx::default(), &rpc);
+        let page = PageInfo::default();
+        let mut ui = Ui::root(&mut rec, FrameCtx::default(), &rpc, &page);
         assert_eq!(ui.upload_project().uploaded_project(), None);
         decode(rec.commands())
             .into_iter()
@@ -365,6 +370,7 @@ fn uploaded_project_is_none_until_the_shell_reports_a_folder() {
         aux: 1234,
         ..Default::default()
     }]);
-    let mut ui = Ui::root(&mut rec, FrameCtx::default(), &rpc);
+    let page = PageInfo::default();
+    let mut ui = Ui::root(&mut rec, FrameCtx::default(), &rpc, &page);
     assert_eq!(ui.upload_project().uploaded_project(), Some(1234));
 }

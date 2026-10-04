@@ -43,6 +43,8 @@ pub struct AppWindow<I: AppInstance> {
     pub default_size: [f32; 2],
     /// Minimised or maximised, from the title bar.
     pub placement: Placement,
+    /// What it was opened on, if anything, so a remembered desktop can open it on that again.
+    pub launch_arg: Option<String>,
     instance: I,
     replayer: Replayer,
     /// Responses from the previous frame, handed back to the guest on the next one.
@@ -61,32 +63,57 @@ pub struct AppWindow<I: AppInstance> {
     uploads_finished: HashMap<u64, u32>,
 }
 
+/// What the shell tells an app before its first frame, as one batch: facts about the page
+/// (its `origin`, which only the browser knows), then what it was opened on, if anything. Page
+/// facts come first so an app's `open` can already use them. Nothing at all if there is
+/// nothing to say.
+pub fn first_events(origin: &str, launch_arg: Option<&str>) -> VecDeque<Vec<u8>> {
+    use ccosel_abi::event::{encode_batch, encode_page_info, event_kind};
+
+    let page = encode_page_info(&[("origin", origin)]);
+    let mut events: Vec<(u32, u32, &[u8])> = Vec::new();
+    if !origin.is_empty() {
+        events.push((event_kind::PAGE_INFO, 0, &page));
+    }
+    if let Some(arg) = launch_arg {
+        events.push((event_kind::LAUNCH, 0, arg.as_bytes()));
+    }
+    let mut queue = VecDeque::new();
+    if !events.is_empty() {
+        queue.push_back(encode_batch(&events));
+    }
+    queue
+}
+
 impl<I: AppInstance> AppWindow<I> {
+    /// A window of `app` in a page at `origin`, opened on `launch_arg` if there is one.
     pub fn new(
         instance: I,
         instance_id: u64,
-        app_id: &'static str,
-        title: String,
-        icon: &'static str,
-        color: egui::Color32,
-        default_size: [f32; 2],
+        app: &crate::registry::AppEntry,
+        origin: &str,
+        launch_arg: Option<&str>,
     ) -> Self {
+        // Reaches the app before its first frame, through the same queue as everything else
+        // the shell tells it.
+        let events = first_events(origin, launch_arg);
         Self {
-            title,
-            icon,
-            color,
-            app_id,
+            title: app.name.to_owned(),
+            icon: app.icon,
+            color: app.color,
+            app_id: app.id,
             instance_id,
             open: true,
-            default_size,
+            default_size: app.default_size,
             placement: Placement::default(),
+            launch_arg: launch_arg.map(str::to_owned),
             instance,
             replayer: Replayer::new(),
             responses: Vec::new(),
             frame_index: 0,
             last_commands: Vec::new(),
             error: None,
-            events: Rc::new(RefCell::new(VecDeque::new())),
+            events: Rc::new(RefCell::new(events)),
             alive: Rc::new(Cell::new(true)),
             uploads_finished: HashMap::new(),
         }
@@ -111,6 +138,11 @@ impl<I: AppInstance> AppWindow<I> {
             .find(|&id| self.clicked(id))
     }
 
+    /// Where something dropped on this window goes: wherever its upload button would send it.
+    pub fn drop_target(&self) -> Option<crate::upload::DropTarget> {
+        crate::upload::drop_target(self.replayer.uploads(), self.replayer.project_uploads())
+    }
+
     /// The target of the `OpenUrl` button clicked this frame, if any.
     pub fn clicked_open_url(&self) -> Option<String> {
         self.replayer
@@ -118,6 +150,29 @@ impl<I: AppInstance> AppWindow<I> {
             .iter()
             .find(|(id, _)| self.clicked(*id))
             .map(|(_, url)| url.clone())
+    }
+
+    /// The app and argument of the `OpenApp` button clicked this frame, if any.
+    pub fn clicked_open_app(&self) -> Option<(String, String)> {
+        self.replayer
+            .open_apps()
+            .iter()
+            .find(|(id, ..)| self.clicked(*id))
+            .map(|(_, app, arg)| (app.clone(), arg.clone()))
+    }
+
+    /// The path of the `CopyLink` button clicked this frame, if any.
+    pub fn clicked_copy_link(&self) -> Option<String> {
+        self.replayer
+            .copy_links()
+            .iter()
+            .find(|(id, _)| self.clicked(*id))
+            .map(|(_, path)| path.clone())
+    }
+
+    /// Where this frame drew the app's audio, video and documents.
+    pub fn media(&self) -> &[ccosel_host::MediaSlot] {
+        self.replayer.media()
     }
 
     fn clicked(&self, local_id: u64) -> bool {
@@ -240,5 +295,50 @@ impl<I: AppInstance> AppWindow<I> {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ccosel_abi::event::{decode_batch, event_kind, page_info};
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    use super::first_events;
+
+    #[wasm_bindgen_test]
+    fn an_app_is_told_its_page_origin_then_what_it_was_opened_on() {
+        let queue = first_events("https://ccosel.example.com", Some("/Docs/a.md"));
+        assert_eq!(
+            queue.len(),
+            1,
+            "one batch, so both arrive before the first frame"
+        );
+        let events = decode_batch(&queue[0]).unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].kind, event_kind::PAGE_INFO);
+        assert_eq!(events[0].call_id, 0);
+        assert_eq!(
+            page_info(events[0].payload, "origin"),
+            Some("https://ccosel.example.com")
+        );
+        assert_eq!(events[1].kind, event_kind::LAUNCH);
+        assert_eq!(events[1].payload, b"/Docs/a.md");
+    }
+
+    #[wasm_bindgen_test]
+    fn without_a_launch_argument_only_the_page_is_described() {
+        let queue = first_events("http://192.168.1.20:8777", None);
+        let events = decode_batch(&queue[0]).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, event_kind::PAGE_INFO);
+    }
+
+    #[wasm_bindgen_test]
+    fn with_nothing_to_say_nothing_is_sent() {
+        assert!(first_events("", None).is_empty());
+        let queue = first_events("", Some("/x"));
+        let events = decode_batch(&queue[0]).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, event_kind::LAUNCH);
     }
 }

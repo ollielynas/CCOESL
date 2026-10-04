@@ -7,10 +7,14 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::Arc;
 
+use ccosel_abi::event::event_kind;
 use ccosel_connection::Background;
 use ccosel_host::AppHost;
 use ccosel_host_web::{WebHost, WebInstance};
+use ccosel_proto::Method;
+use ccosel_proto::desktop::DesktopLayout;
 use ccosel_transport::{PendingKey, Transport};
 use js_sys::WebAssembly;
 
@@ -18,12 +22,16 @@ use crate::http_wire::{HttpWire, Inbox};
 
 use crate::app_window::AppWindow;
 use crate::background;
-use crate::chrome;
+use crate::chrome::{self, Placement};
+use crate::clipboard;
 use crate::fetch;
 use crate::fullscreen;
-use crate::registry::{AppEntry, catalog};
+use crate::image_loader::BrowserImageLoader;
+use crate::media::{MediaOverlay, Placed};
+use crate::registry::{AppEntry, catalog, find, solo_url};
+use crate::session::{self, Autosave, OnScreen, SHELL_INSTANCE, Save, ShellSink};
 use crate::theme;
-use crate::upload::{self, Uploads};
+use crate::upload::{self, Drops, Uploads};
 
 /// Dock badge geometry, shared between `dock_item` (which paints it) and `app_menu` (which
 /// needs to know the dock's on-screen height so its popup can sit above it without overlapping).
@@ -45,6 +53,8 @@ const DOCK_DIVIDER_WIDTH: f32 = 14.0;
 const MENU_GAP: f32 = 12.0;
 /// Space between the bars' edges and their content.
 const BAR_PAD: f32 = 14.0;
+/// The status bar's upload progress bar.
+const UPLOAD_BAR_WIDTH: f32 = 90.0;
 
 /// Where the wallpaper image is served from. A plain static file under `web/`, alongside
 /// `index.html` — `ServeDir` serves it with no server changes needed.
@@ -52,9 +62,19 @@ pub const WALLPAPER_URL: &str = "/wallpaper.jpg";
 
 /// A launch in flight, or its outcome. Launching is async (fetch + compile); the render loop
 /// is not, so results land here and the next frame picks them up.
+///
+/// `restored` is the window's place in a remembered desktop, back to front, for one being
+/// reopened from it.
 enum Launch {
-    Ready(Box<AppWindow<WebInstance>>),
-    Failed { name: String, error: String },
+    Ready {
+        window: Box<AppWindow<WebInstance>>,
+        restored: Option<usize>,
+    },
+    Failed {
+        name: String,
+        error: String,
+        restored: Option<usize>,
+    },
 }
 
 pub struct Desktop {
@@ -88,16 +108,36 @@ pub struct Desktop {
     wallpaper_pending: Rc<RefCell<Option<Result<egui::ColorImage, String>>>>,
     /// Whether the app menu popup is open.
     app_menu_open: bool,
-    /// Folder uploads started from apps' `UploadFolder` buttons.
+    /// Folder uploads started from apps' `UploadFolder` buttons, or by a drop on their window.
     uploads: Uploads,
-    /// The last finished upload's summary and when to stop showing it, so "Uploaded photos:
-    /// 12 files" stays in the status bar long enough to read.
-    upload_notice: Option<(String, f64)>,
+    /// Files and folders dropped on the page, until the frame routes them to a window.
+    drops: Drops,
+    /// A passing message and when to stop showing it: the last finished upload's summary, so
+    /// "Uploaded photos: 12 files" stays in the status bar long enough to read, or "Link copied".
+    notice: Option<(String, f64)>,
+    /// The browser's own players laid over the canvas, for apps' audio, video and PDFs.
+    media: MediaOverlay,
+    /// The app id from a `/app/{id}` page, which shows that one app filling the page with no
+    /// desktop around it. `None` is the desktop.
+    solo: Option<String>,
+    /// Replies to the shell's own calls (see `session`), and the next id for one.
+    shell_calls: ShellSink,
+    next_shell_call: u32,
+    /// The call loading the remembered desktop, while it is on its way.
+    load_call: Option<u32>,
+    autosave: Autosave,
+    /// Remembered windows still opening, and the stacking place of each one that has.
+    restoring: usize,
+    restore_order: Vec<(usize, u64)>,
 }
 
 impl Desktop {
-    pub fn new(egui_ctx: egui::Context) -> Self {
+    /// `solo` is the app a `/app/{id}` page shows on its own, and `solo_arg` what that page opens
+    /// it on (`?open=...`).
+    pub fn new(egui_ctx: egui::Context, solo: Option<String>, solo_arg: Option<String>) -> Self {
         theme::apply(&egui_ctx);
+        // Pictures apps draw by URL are fetched and decoded by the browser.
+        egui_ctx.add_image_loader(Arc::new(BrowserImageLoader::default()));
 
         let replies: Inbox = Rc::new(RefCell::new(Vec::new()));
         let wire = HttpWire::new("/rpc", replies.clone(), egui_ctx.clone());
@@ -119,13 +159,38 @@ impl Desktop {
             wallpaper_pending: Rc::new(RefCell::new(None)),
             app_menu_open: false,
             uploads: Uploads::default(),
-            upload_notice: None,
+            drops: Drops::default(),
+            notice: None,
+            media: MediaOverlay::default(),
+            solo,
+            shell_calls: ShellSink::default(),
+            next_shell_call: 1,
+            load_call: None,
+            autosave: Autosave::default(),
+            restoring: 0,
+            restore_order: Vec::new(),
         };
-        // Open something on first boot: an empty desktop with no affordance is a worse first
-        // impression than a window the user can close.
-        if let Some(first) = desktop.registry.first().cloned() {
-            desktop.launch(&first);
+        if let Err(e) = desktop.drops.listen(desktop.egui_ctx.clone()) {
+            desktop
+                .errors
+                .push(format!("drag and drop is unavailable: {e:?}"));
         }
+        if let Some(id) = desktop.solo.clone() {
+            match find(&id) {
+                Some(entry) => {
+                    set_page_title(entry.name);
+                    desktop.launch(&entry, solo_arg);
+                }
+                None => desktop
+                    .errors
+                    .push(format!("There is no app called “{id}”.")),
+            }
+            // No wallpaper: the app covers the whole page.
+            return desktop;
+        }
+        // Whatever this person had open last time. A fresh start opens nothing: the empty
+        // desktop points at the dock.
+        desktop.load_desktop();
         if desktop.background == Background::Image {
             desktop.load_wallpaper();
         }
@@ -165,7 +230,18 @@ impl Desktop {
         }
     }
 
-    pub fn launch(&mut self, entry: &AppEntry) {
+    /// Starts `entry` in a new window, opened on `arg` if there is one (see `App::open`).
+    pub fn launch(&mut self, entry: &AppEntry, arg: Option<String>) {
+        self.launch_placed(entry, arg, None);
+    }
+
+    /// [`Self::launch`], at `placed`'s position in a remembered desktop and with its placement.
+    fn launch_placed(
+        &mut self,
+        entry: &AppEntry,
+        arg: Option<String>,
+        placed: Option<(usize, Placement)>,
+    ) {
         let entry = entry.clone();
         let modules = self.modules.clone();
         let inbox = self.inbox.clone();
@@ -176,12 +252,22 @@ impl Desktop {
         *pending.borrow_mut() += 1;
 
         wasm_bindgen_futures::spawn_local(async move {
-            let result = launch_inner(&entry, &modules, &next_id).await;
+            let result = launch_inner(&entry, &modules, &next_id, arg.as_deref()).await;
+            let restored = placed.as_ref().map(|(i, _)| *i);
             let outcome = match result {
-                Ok(window) => Launch::Ready(Box::new(window)),
+                Ok(mut window) => {
+                    if let Some((_, placement)) = placed {
+                        window.placement = placement;
+                    }
+                    Launch::Ready {
+                        window: Box::new(window),
+                        restored,
+                    }
+                }
                 Err(error) => Launch::Failed {
                     name: entry.name.to_owned(),
                     error,
+                    restored,
                 },
             };
             inbox.borrow_mut().push(outcome);
@@ -192,9 +278,16 @@ impl Desktop {
     }
 
     fn drain_inbox(&mut self) {
-        for launch in self.inbox.borrow_mut().drain(..) {
+        let launches: Vec<Launch> = self.inbox.borrow_mut().drain(..).collect();
+        for launch in launches {
+            let restored = match &launch {
+                Launch::Ready { restored, .. } | Launch::Failed { restored, .. } => *restored,
+            };
             match launch {
-                Launch::Ready(mut w) => {
+                Launch::Ready { window: mut w, .. } => {
+                    if let Some(i) = restored {
+                        self.restore_order.push((i, w.instance_id));
+                    }
                     // Two windows of the same app need distinguishable taskbar entries, or the
                     // taskbar stops being a way to find a particular window.
                     let n = self.windows.iter().filter(|x| x.app_id == w.app_id).count();
@@ -203,9 +296,151 @@ impl Desktop {
                     }
                     self.windows.push(*w);
                 }
-                Launch::Failed { name, error } => {
+                Launch::Failed { name, error, .. } => {
                     self.errors.push(format!("{name}: {error}"));
                 }
+            }
+            if restored.is_some() {
+                self.restoring -= 1;
+                if self.restoring == 0 {
+                    self.stack_restored();
+                }
+            }
+        }
+    }
+
+    /// Ask the server for the desktop this person had last time.
+    fn load_desktop(&mut self) {
+        let call = self.shell_call(Method::LoadDesktop, &());
+        self.load_call = Some(call);
+    }
+
+    /// Make one of the shell's own calls, returning its id. Sent with the frame's other calls.
+    fn shell_call<T: serde::Serialize>(&mut self, method: Method, req: &T) -> u32 {
+        let call = self.next_shell_call;
+        self.next_shell_call += 1;
+        let args = postcard::to_allocvec(req).unwrap_or_default();
+        let now_ms = self.egui_ctx.input(|i| i.time) * 1000.0;
+        self.transport.enqueue(
+            PendingKey {
+                instance: SHELL_INSTANCE,
+                call,
+            },
+            method as u16,
+            args,
+            Rc::new(self.shell_calls.clone()),
+            now_ms,
+        );
+        call
+    }
+
+    /// Act on replies to the shell's own calls: open the remembered desktop once it arrives,
+    /// and say so if it couldn't be loaded or saved.
+    fn drain_shell_calls(&mut self) {
+        let batches: Vec<Vec<u8>> = self.shell_calls.queue.borrow_mut().drain(..).collect();
+        for batch in batches {
+            let Ok(events) = ccosel_abi::decode_batch(&batch) else {
+                continue;
+            };
+            for event in events {
+                let is_load = Some(event.call_id) == self.load_call;
+                match (event.kind, is_load) {
+                    (event_kind::RPC_OK, true) => {
+                        self.load_call = None;
+                        match postcard::from_bytes::<DesktopLayout>(event.payload) {
+                            Ok(layout) => self.restore(layout),
+                            Err(_) => self.load_failed("the server's answer didn't make sense"),
+                        }
+                    }
+                    (event_kind::RPC_ERR, true) => {
+                        self.load_call = None;
+                        let (_, detail) = ccosel_abi::event::decode_error(event.payload);
+                        self.load_failed(detail);
+                    }
+                    (event_kind::RPC_ERR, false) => {
+                        let e = "your desktop couldn't be saved; it will be tried again".to_owned();
+                        if !self.errors.contains(&e) {
+                            self.errors.push(e);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    /// Start with nothing open. Nothing is saved this visit either: saving now would replace
+    /// the desktop that couldn't be loaded with whatever happens to be open.
+    fn load_failed(&mut self, why: &str) {
+        self.errors.push(format!(
+            "your desktop from last time couldn't be loaded: {why}"
+        ));
+    }
+
+    /// Reopen the windows of a remembered desktop where they were. An app that no longer
+    /// exists, or a damaged place, is left out.
+    fn restore(&mut self, layout: DesktopLayout) {
+        for (i, saved) in layout.windows.iter().enumerate() {
+            let (Some(entry), Some(rect)) = (find(&saved.app), session::rect_of(saved)) else {
+                continue;
+            };
+            let placement = Placement::restored(rect, saved.minimized, saved.maximized);
+            self.restoring += 1;
+            self.launch_placed(&entry, saved.arg.clone(), Some((i, placement)));
+        }
+        self.autosave.loaded(layout);
+    }
+
+    /// Once every remembered window is open, put them back in the order they were stacked:
+    /// they finish opening in whatever order their apps load.
+    fn stack_restored(&mut self) {
+        let mut order = std::mem::take(&mut self.restore_order);
+        order.sort_unstable();
+        for (_, id) in order {
+            self.egui_ctx
+                .move_to_top(egui::LayerId::new(egui::Order::Middle, window_id(id)));
+        }
+    }
+
+    /// The windows on screen as a layout to remember, back to front.
+    fn current_layout(&self, ctx: &egui::Context) -> DesktopLayout {
+        let stacking: Vec<egui::LayerId> = ctx.memory(|m| m.layer_ids().collect());
+        let mut windows: Vec<&AppWindow<WebInstance>> = self.windows.iter().collect();
+        windows.sort_by_key(|w| {
+            let layer = egui::LayerId::new(egui::Order::Middle, window_id(w.instance_id));
+            stacking.iter().position(|l| *l == layer).unwrap_or(0)
+        });
+        session::layout(windows.into_iter().map(|w| {
+            OnScreen {
+                app: w.app_id,
+                arg: w.launch_arg.as_deref(),
+                rect: w
+                    .placement
+                    .normal_rect()
+                    .or_else(|| ctx.memory(|m| m.area_rect(window_id(w.instance_id)))),
+                minimized: w.placement.minimized,
+                maximized: w.placement.is_maximized(),
+            }
+        }))
+    }
+
+    /// Save the desktop once it has settled after a change. Not while windows are still opening,
+    /// which would save a desktop with some of them missing.
+    fn autosave(&mut self, ctx: &egui::Context, now_ms: f64) {
+        if self.restoring > 0 || *self.pending.borrow() > 0 {
+            return;
+        }
+        let current = self.current_layout(ctx);
+        match self.autosave.tick(now_ms, current) {
+            Save::Nothing => {}
+            Save::At(at) => {
+                // Nothing else may be redrawing by then, and the save must still happen.
+                ctx.request_repaint_after(std::time::Duration::from_millis(
+                    (at - now_ms).max(0.0) as u64 + 1,
+                ));
+            }
+            Save::Now(layout) => {
+                self.shell_call(Method::SaveDesktop, &layout);
             }
         }
     }
@@ -222,15 +457,25 @@ impl Desktop {
         if !replies.is_empty() {
             self.transport.on_replies(replies);
         }
+        self.drain_shell_calls();
         // Expire deadlines and reap calls belonging to windows that have gone.
         self.transport.tick(now_ms);
         self.drain_uploads(now_ms);
+        self.route_drops(&ctx);
 
-        self.paint_background(&ctx);
-        self.status_bar(&ctx);
-        self.empty_state(ui);
-        self.app_menu(&ctx);
-        self.dock(&ctx);
+        if self.solo.is_some() {
+            // Panels before the central one, which takes whatever space they leave.
+            self.solo_notices(ui);
+            if self.windows.is_empty() {
+                self.solo_placeholder(ui);
+            }
+        } else {
+            self.paint_background(&ctx);
+            self.status_bar(&ctx);
+            self.empty_state(ui);
+            self.app_menu(&ctx);
+            self.dock(&ctx);
+        }
 
         let desktop = desktop_rect(&ctx);
         let shown: Vec<egui::Id> = self
@@ -244,36 +489,46 @@ impl Desktop {
         // Closing a window drops the instance, which is the only way to reclaim a guest's
         // memory — wasm linear memory cannot shrink, so a live instance holds its high-water
         // mark forever.
+        // Apps another app asked to open, started once the loop no longer borrows the windows.
+        let mut to_open: Vec<(String, String)> = Vec::new();
         for window in &mut self.windows {
             // A minimised app gets no frames, the same as a suspended one: its replies wait in
             // its queue until its dock item brings it back.
             if window.placement.minimized {
                 continue;
             }
-            let id = window_id(window.instance_id);
-            let mut placement = std::mem::take(&mut window.placement);
-            let actions = chrome::show_window(
-                &ctx,
-                id,
-                &mut placement,
-                desktop,
-                window.default_size.into(),
-                window.icon,
-                &window.title.clone(),
-                // The active window's bar is filled with its app's colour, the same as its dock
-                // badge, so the two read as one thing.
-                (active == Some(id)).then_some(window.color),
-                |ui| {
-                    // `auto_shrink(false)` claims the whole window body regardless of how much
-                    // the app actually drew, so dragging the window bigger than its content
-                    // leaves blank space rather than the window snapping back to fit. It also
-                    // means a long listing scrolls instead of growing the window without bound.
-                    egui::ScrollArea::vertical()
-                        .auto_shrink([false, false])
-                        .show(ui, |ui| window.ui(ui));
-                },
-            );
-            window.placement = placement;
+            // On an app's own page it fills the page: no title bar, so nothing closes it.
+            let close = if self.solo.is_some() {
+                solo_window(ui, window);
+                false
+            } else {
+                let id = window_id(window.instance_id);
+                let mut placement = std::mem::take(&mut window.placement);
+                let actions = chrome::show_window(
+                    &ctx,
+                    id,
+                    &mut placement,
+                    desktop,
+                    window.default_size.into(),
+                    window.icon,
+                    &window.title.clone(),
+                    // The active window's bar is filled with its app's colour, the same as its
+                    // dock badge, so the two read as one thing.
+                    (active == Some(id)).then_some(window.color),
+                    |ui| {
+                        // `auto_shrink(false)` claims the whole window body regardless of how
+                        // much the app actually drew, so dragging the window bigger than its
+                        // content leaves blank space rather than the window snapping back to
+                        // fit. It also means a long listing scrolls instead of growing the
+                        // window without bound.
+                        egui::ScrollArea::vertical()
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| window.ui(ui));
+                    },
+                );
+                window.placement = placement;
+                actions.close
+            };
 
             // Acted on in the frame the click is drawn: browsers only open a picker or a tab
             // in response to a user action, and the next frame could be too late.
@@ -289,6 +544,29 @@ impl Desktop {
                 && let Err(e) = upload::open_url(&url)
             {
                 self.errors.push(format!("{}: {e}", window.title));
+            }
+            if let Some((app, arg)) = window.clicked_open_app() {
+                if self.solo.is_some() {
+                    // No desktop to open a window on: that app's own page, in a new tab.
+                    if let Err(e) = upload::open_url(&solo_url(&app, &arg)) {
+                        self.errors.push(format!("{}: {e}", window.title));
+                    }
+                } else {
+                    to_open.push((app, arg));
+                }
+            }
+            if let Some(path) = window.clicked_copy_link() {
+                let link = format!("{}{path}", page_origin());
+                self.notice = Some(match clipboard::copy(&link) {
+                    Ok(()) => (format!("Link copied: {link}"), now_ms + 6000.0),
+                    // Still worth showing: it can be copied from here by hand.
+                    Err(e) => (
+                        format!("Couldn't copy ({e}). The link is {link}"),
+                        now_ms + 20000.0,
+                    ),
+                });
+                self.egui_ctx
+                    .request_repaint_after(std::time::Duration::from_millis(6100));
             }
 
             // Anything the guest asked for during that frame.
@@ -312,7 +590,7 @@ impl Desktop {
                 });
             }
 
-            if actions.close {
+            if close {
                 window.close();
             }
         }
@@ -325,6 +603,77 @@ impl Desktop {
             self.transport.forget_instance(window.instance_id);
         }
         self.windows.retain(|w| w.open);
+
+        for (app, arg) in to_open {
+            match find(&app) {
+                Some(entry) => self.launch(&entry, Some(arg)),
+                None => self.errors.push(format!("There is no app called “{app}”.")),
+            }
+        }
+        self.sync_media(&ctx);
+        if self.solo.is_none() {
+            self.autosave(&ctx, now_ms);
+        }
+    }
+
+    /// Lay the browser's players over where apps drew their audio, video and documents this
+    /// frame. A minimised window's are gone with it.
+    fn sync_media(&mut self, ctx: &egui::Context) {
+        let solo = self.solo.is_some();
+        let placed: Vec<Placed<'_>> = self
+            .windows
+            .iter()
+            .filter(|w| !w.placement.minimized)
+            .flat_map(|w| {
+                // On an app's own page it is drawn under every area; on the desktop, in its own.
+                let layer = Some(if solo {
+                    egui::LayerId::background()
+                } else {
+                    egui::LayerId::new(egui::Order::Middle, window_id(w.instance_id))
+                });
+                w.media().iter().map(move |slot| Placed {
+                    instance: w.instance_id,
+                    layer,
+                    slot,
+                })
+            })
+            .collect();
+        if let Err(e) = self.media.sync(ctx, &placed) {
+            let e = format!("media: {e}");
+            if !self.errors.contains(&e) {
+                self.errors.push(e);
+            }
+        }
+    }
+
+    /// Hand each drop to the window it landed on, which uploads it the way its own upload button
+    /// would. Where it landed is looked up in last frame's layers, which is what was on screen
+    /// when the user let go.
+    fn route_drops(&mut self, ctx: &egui::Context) {
+        for dropped in self.drops.take() {
+            let layer = ctx.layer_id_at(dropped.pos).map(|l| l.id);
+            // On an app's own page the app is the whole page, so anywhere counts as on it.
+            let solo = self.solo.is_some();
+            let window = self.windows.iter().find(|w| {
+                !w.placement.minimized && (solo || Some(window_id(w.instance_id)) == layer)
+            });
+            let Some(window) = window else {
+                self.errors
+                    .push("upload: drop files onto an app window to upload them".to_owned());
+                continue;
+            };
+            match window.drop_target() {
+                Some(target) => self.uploads.start_dropped(
+                    window.instance_id,
+                    target,
+                    dropped.entries,
+                    ctx.clone(),
+                ),
+                None => self
+                    .errors
+                    .push(format!("upload: {} doesn't take uploads", window.title)),
+            }
+        }
     }
 
     /// Tell each finished upload's window, so its app can re-list the folder, and make the
@@ -347,17 +696,17 @@ impl Desktop {
             for f in &done.failures {
                 self.errors.push(format!("upload: {f}"));
             }
-            self.upload_notice = Some((done.status(), now_ms + 6000.0));
+            self.notice = Some((done.status(), now_ms + 6000.0));
             // Nothing else may redraw by then, and the notice must still go away.
             self.egui_ctx
                 .request_repaint_after(std::time::Duration::from_millis(6100));
         }
         if self
-            .upload_notice
+            .notice
             .as_ref()
             .is_some_and(|(_, until)| now_ms > *until)
         {
-            self.upload_notice = None;
+            self.notice = None;
         }
     }
 
@@ -445,9 +794,21 @@ impl Desktop {
                             let upload = self
                                 .uploads
                                 .status()
-                                .or_else(|| self.upload_notice.as_ref().map(|(s, _)| s.clone()));
-                            if let Some(text) = upload {
+                                .or_else(|| self.notice.as_ref().map(|(s, _)| s.clone()));
+                            if upload.is_some() {
                                 ui.label(status_text("\u{00b7}".to_owned()));
+                            }
+                            // Right to left, so the bar goes in before the text: on the text's
+                            // right it stays put while the text changes width, where on its
+                            // left it would jiggle with every file.
+                            if let Some(fraction) = self.uploads.progress() {
+                                ui.add(
+                                    egui::ProgressBar::new(fraction)
+                                        .desired_width(UPLOAD_BAR_WIDTH)
+                                        .desired_height(8.0),
+                                );
+                            }
+                            if let Some(text) = upload {
                                 ui.label(egui::RichText::new(text).small().color(t.ink));
                             }
                         });
@@ -467,7 +828,11 @@ impl Desktop {
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
             .show(ui, |ui| {
-                if !self.windows.is_empty() || *self.pending.borrow() > 0 {
+                // Nor while the remembered desktop is on its way: it is about to fill this.
+                if !self.windows.is_empty()
+                    || *self.pending.borrow() > 0
+                    || self.load_call.is_some()
+                {
                     return;
                 }
                 let area = ui.max_rect();
@@ -501,6 +866,65 @@ impl Desktop {
                             egui::RichText::new("Pick an app from the dock").color(t.text_dim),
                         );
                     });
+                });
+            });
+    }
+
+    /// On an app's own page, what the status bar would otherwise say: upload progress and
+    /// errors, in a strip along the bottom. Nothing at all while there is nothing to say.
+    fn solo_notices(&self, ui: &mut egui::Ui) {
+        let upload = self
+            .uploads
+            .status()
+            .or_else(|| self.notice.as_ref().map(|(s, _)| s.clone()));
+        if upload.is_none() && self.errors.is_empty() {
+            return;
+        }
+        let t = theme::tokens();
+        egui::Panel::bottom("solo-notices")
+            .frame(
+                egui::Frame::NONE
+                    .fill(t.surface)
+                    .inner_margin(egui::Margin::symmetric(BAR_PAD as i8, 5)),
+            )
+            .show(ui, |ui| {
+                theme::paint_rule(ui.painter(), ui.max_rect(), egui::Align::Min);
+                if let Some(text) = upload {
+                    ui.horizontal(|ui| {
+                        if let Some(fraction) = self.uploads.progress() {
+                            ui.add(
+                                egui::ProgressBar::new(fraction)
+                                    .desired_width(UPLOAD_BAR_WIDTH)
+                                    .desired_height(8.0),
+                            );
+                        }
+                        ui.label(egui::RichText::new(text).small().color(t.ink));
+                    });
+                }
+                for error in &self.errors {
+                    ui.colored_label(ui.visuals().error_fg_color, error);
+                }
+            });
+    }
+
+    /// On an app's own page, before the app is up or when it can't be: loading, or a way back
+    /// to the desktop when the page names no app or the app failed to start.
+    fn solo_placeholder(&self, ui: &mut egui::Ui) {
+        let t = theme::tokens();
+        let loading = *self.pending.borrow() > 0;
+        egui::CentralPanel::default()
+            .frame(egui::Frame::NONE.fill(t.surface))
+            .show(ui, |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.add_space(ui.available_height() * 0.35);
+                    if loading {
+                        ui.spinner();
+                    } else {
+                        ui.label(
+                            egui::RichText::new("This app couldn't be opened.").color(t.text_dim),
+                        );
+                        ui.hyperlink_to("Go to the desktop", "/");
+                    }
                 });
             });
     }
@@ -580,7 +1004,7 @@ impl Desktop {
             });
 
         if let Some(entry) = to_launch {
-            self.launch(&entry);
+            self.launch(&entry, None);
         }
     }
 
@@ -665,6 +1089,7 @@ async fn launch_inner(
     entry: &AppEntry,
     modules: &Rc<RefCell<HashMap<&'static str, WebAssembly::Module>>>,
     next_id: &Rc<RefCell<u64>>,
+    arg: Option<&str>,
 ) -> Result<AppWindow<WebInstance>, String> {
     let host = WebHost::new();
 
@@ -687,15 +1112,40 @@ async fn launch_inner(
         *n
     };
 
-    Ok(AppWindow::new(
-        instance,
-        id,
-        entry.id,
-        entry.name.to_owned(),
-        entry.icon,
-        entry.color,
-        entry.default_size,
-    ))
+    Ok(AppWindow::new(instance, id, entry, &page_origin(), arg))
+}
+
+/// On an app's own page, the app fills everything the notice strip leaves, with the same
+/// scrolling a window body has.
+fn solo_window(ui: &mut egui::Ui, window: &mut AppWindow<WebInstance>) {
+    let t = theme::tokens();
+    egui::CentralPanel::default()
+        .frame(
+            egui::Frame::NONE
+                .fill(t.surface)
+                .inner_margin(egui::Margin::same(12)),
+        )
+        .show(ui, |ui| {
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| window.ui(ui));
+        });
+}
+
+/// The address this page was loaded from, such as `http://192.168.1.20:8777`, which a shared
+/// link needs in front of its path. Only the browser knows it, and behind a tunnel it is the
+/// public one. Every app is told it too, as `PAGE_INFO` (see `app_window::first_events`).
+fn page_origin() -> String {
+    web_sys::window()
+        .and_then(|w| w.location().origin().ok())
+        .unwrap_or_default()
+}
+
+/// Names the browser tab after the app on its own page, so several of them can be told apart.
+fn set_page_title(app: &str) {
+    if let Some(document) = web_sys::window().and_then(|w| w.document()) {
+        document.set_title(&format!("{app} · CCOSEL"));
+    }
 }
 
 fn window_id(instance_id: u64) -> egui::Id {

@@ -59,7 +59,10 @@ fn recognises_what_older_versions_wrote_to_env() {
 #[test]
 fn urls_point_at_the_idp_path() {
     assert_eq!(realm_url(), "http://127.0.0.1:8080/idp/realms/ccosel");
-    assert_eq!(admin_console_url(), "http://localhost:8080/idp/admin/");
+    assert_eq!(
+        admin_console_url(),
+        "http://localhost:8080/idp/admin/master/console/#/ccosel"
+    );
 }
 
 #[test]

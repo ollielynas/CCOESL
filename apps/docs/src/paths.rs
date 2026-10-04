@@ -58,6 +58,12 @@ pub fn is_doc(path: &str) -> bool {
     lower.ends_with(".md") || lower.ends_with(".markdown")
 }
 
+/// Whether a link is one app's own page (`/app/clock`), which is a page of this site to open in
+/// a tab, not a file on the server.
+pub fn is_app_page(target: &str) -> bool {
+    target.starts_with("/app/")
+}
+
 /// A document's name as a title: `getting-started.md` reads as `getting-started`.
 pub fn title(path: &str) -> &str {
     let n = name(path);

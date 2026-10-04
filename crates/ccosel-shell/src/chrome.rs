@@ -39,8 +39,25 @@ pub struct Placement {
 }
 
 impl Placement {
+    /// A window remembered from last time: back at `rect`, minimised or maximised as it was.
+    /// For a maximised one, `rect` is where it goes when un-maximised.
+    pub fn restored(rect: Rect, minimized: bool, maximized: bool) -> Self {
+        Self {
+            minimized,
+            maximized_from: maximized.then_some(rect),
+            // The first time it is shown it is pinned there once, the way un-maximising works.
+            restore_to: (!maximized).then_some(rect),
+            reposition_to: None,
+        }
+    }
+
     pub fn is_maximized(&self) -> bool {
         self.maximized_from.is_some()
+    }
+
+    /// While maximised, the rect it goes back to: the one to remember it by.
+    pub fn normal_rect(&self) -> Option<Rect> {
+        self.maximized_from
     }
 
     /// Maximise a window that currently fills `current`, or restore a maximised one. With no
@@ -511,6 +528,45 @@ mod tests {
         let grip = rig.title_bar(0).left_center() + vec2(60.0, 0.0);
         rig.drag(grip, vec2(50.0, 30.0));
         assert_eq!(rig.rect(0).min - before.min, vec2(50.0, 30.0));
+    }
+
+    /// A window reopened from a remembered desktop goes back where it was, and is an ordinary
+    /// window after that.
+    #[wasm_bindgen_test]
+    fn a_restored_window_opens_where_it_was() {
+        let mut rig = Rig::new(1);
+        let was = Rect::from_min_size(egui::pos2(200.0, 150.0), vec2(320.0, 240.0));
+        rig.windows[0].1 = Placement::restored(was, false, false);
+        rig.frame(vec![]);
+        rig.frame(vec![]);
+        assert_eq!(rig.rect(0), was);
+        assert_eq!(rig.windows[0].1.normal_rect(), None);
+
+        let grip = rig.title_bar(0).left_center() + vec2(60.0, 0.0);
+        rig.drag(grip, vec2(20.0, 10.0));
+        assert_eq!(rig.rect(0).min - was.min, vec2(20.0, 10.0));
+    }
+
+    #[wasm_bindgen_test]
+    fn a_restored_maximized_window_is_maximized_and_unmaximizes_to_where_it_was() {
+        let mut rig = Rig::new(1);
+        let was = Rect::from_min_size(egui::pos2(200.0, 150.0), vec2(320.0, 240.0));
+        rig.windows[0].1 = Placement::restored(was, false, true);
+        rig.frame(vec![]);
+        assert!(rig.windows[0].1.is_maximized());
+        assert_eq!(rig.rect(0), DESKTOP);
+        assert_eq!(rig.windows[0].1.normal_rect(), Some(was));
+
+        rig.click(rig.title_button(0, 1));
+        rig.frame(vec![]);
+        rig.frame(vec![]);
+        assert_eq!(rig.rect(0), was);
+    }
+
+    #[wasm_bindgen_test]
+    fn a_restored_minimized_window_stays_minimized() {
+        let was = Rect::from_min_size(egui::pos2(200.0, 150.0), vec2(320.0, 240.0));
+        assert!(Placement::restored(was, true, false).minimized);
     }
 
     #[wasm_bindgen_test]

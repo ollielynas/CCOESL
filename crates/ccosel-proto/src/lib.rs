@@ -15,10 +15,12 @@ extern crate alloc;
 
 pub mod account;
 pub mod build;
+pub mod desktop;
 pub mod fs;
 pub mod info;
 pub mod octave;
 pub mod scratch;
+pub mod upload;
 
 use serde::{Deserialize, Serialize};
 
@@ -26,7 +28,9 @@ use serde::{Deserialize, Serialize};
 /// `ccosel_abi::ABI_VERSION`, which governs the guest↔shell boundary.
 pub const PROTO_VERSION: u32 = 1;
 
-/// Numeric method ids are wire ABI: append, never renumber.
+/// Numeric method ids are wire ABI: never renumber existing ones. New ids are randomly
+/// generated (see "Wire IDs" in CONTRIBUTING.md) so parallel branches do not collide on
+/// the next sequential number.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(u16)]
 pub enum Method {
@@ -41,10 +45,16 @@ pub enum Method {
     CreateDir = 9,
     Access = 10,
     Search = 11,
-    OctaveRun = 12,
-    OctavePoll = 13,
-    OctaveControl = 14,
-    OctaveAnswer = 15,
+    ImageInfo = 12,
+    ListAppPasswords = 13,
+    CreateAppPassword = 14,
+    RevokeAppPassword = 15,
+    LoadDesktop = 16,
+    SaveDesktop = 17,
+    OctaveRun = 478,
+    OctavePoll = 479,
+    OctaveControl = 480,
+    OctaveAnswer = 481,
 }
 
 impl Method {
@@ -61,10 +71,16 @@ impl Method {
             9 => Some(Self::CreateDir),
             10 => Some(Self::Access),
             11 => Some(Self::Search),
-            12 => Some(Self::OctaveRun),
-            13 => Some(Self::OctavePoll),
-            14 => Some(Self::OctaveControl),
-            15 => Some(Self::OctaveAnswer),
+            12 => Some(Self::ImageInfo),
+            13 => Some(Self::ListAppPasswords),
+            14 => Some(Self::CreateAppPassword),
+            15 => Some(Self::RevokeAppPassword),
+            16 => Some(Self::LoadDesktop),
+            17 => Some(Self::SaveDesktop),
+            478 => Some(Self::OctaveRun),
+            479 => Some(Self::OctavePoll),
+            480 => Some(Self::OctaveControl),
+            481 => Some(Self::OctaveAnswer),
             _ => None,
         }
     }
@@ -162,4 +178,7 @@ pub mod server_error {
     pub const TOO_LARGE: u32 = 10;
     /// `CreateDir`, or creating a file, where something already exists.
     pub const EXISTS: u32 = 11;
+    /// Over a limit on how many of something a caller may have (see
+    /// `account::MAX_APP_PASSWORDS`).
+    pub const LIMIT: u32 = 12;
 }

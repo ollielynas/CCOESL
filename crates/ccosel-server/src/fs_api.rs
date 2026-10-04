@@ -3,8 +3,8 @@
 use std::path::{Component, Path, PathBuf};
 
 use ccosel_proto::fs::{
-    AccessReply, DirEntry, DirListing, EntryKind, FileText, ListDirReq, MAX_TEXT_BYTES, SearchHit,
-    SearchReply, SearchReq, WriteFileReq,
+    AccessReply, DirEntry, DirListing, EntryKind, FileText, ImageInfoReply, ListDirReq,
+    MAX_TEXT_BYTES, SearchHit, SearchReply, SearchReq, WriteFileReq,
 };
 use ccosel_proto::server_error;
 
@@ -33,6 +33,29 @@ impl Need {
             Self::Read => p.read,
             Self::Write => p.write,
         }
+    }
+}
+
+/// Whether `p` allows `need`, and if not, the error that says so. Something the caller may not
+/// read answers `NOT_FOUND`, exactly as if it were not there, so no answer can tell a hidden
+/// file or folder apart from a missing one. `DENIED` is only for something the caller can see
+/// but not change.
+fn check(p: Perms, need: Need) -> Result<(), u32> {
+    if !p.read {
+        Err(server_error::NOT_FOUND)
+    } else if !need.granted(p) {
+        Err(server_error::DENIED)
+    } else {
+        Ok(())
+    }
+}
+
+/// What is allowed by both of two sets of rules: those for a path as asked for, and those for
+/// where it really leads.
+fn both(a: Perms, b: Perms) -> Perms {
+    Perms {
+        read: a.read && b.read,
+        write: a.write && b.write,
     }
 }
 
@@ -91,7 +114,7 @@ impl Jail {
 
     /// [`Jail::resolve`], but only if `user` may do `need` to the path — checked both on the
     /// path as asked for and on where it really leads, so a symlink cannot lend a private
-    /// folder the permissions of a public one.
+    /// folder the permissions of a public one. See [`check`] for which error a refusal is.
     pub fn authorize(
         &self,
         requested: &str,
@@ -99,20 +122,30 @@ impl Jail {
         need: Need,
     ) -> Result<PathBuf, u32> {
         let parts = access::components(requested)?;
-        if !need.granted(access::perms(&self.root, &parts, user)) {
-            return Err(server_error::DENIED);
-        }
-        let real = self.resolve(requested)?;
-        match access::perms_of_real(&self.root, &real, user) {
-            Some(p) if need.granted(p) => Ok(real),
-            _ => Err(server_error::DENIED),
-        }
+        check(access::perms(&self.root, &parts, user), need)?;
+        let real = self.find(requested)?;
+        check(self.perms_of_real(&real, user), need)?;
+        Ok(real)
+    }
+
+    /// [`Jail::resolve`] for a caller: a symlink leading out of the jail is as absent as
+    /// anything else they may not read.
+    fn find(&self, requested: &str) -> Result<PathBuf, u32> {
+        self.resolve(requested).map_err(|e| match e {
+            server_error::DENIED => server_error::NOT_FOUND,
+            e => e,
+        })
+    }
+
+    /// The rules for a real path, or none at all if it is not in the jail.
+    fn perms_of_real(&self, real: &Path, user: Option<&str>) -> Perms {
+        access::perms_of_real(&self.root, real, user).unwrap_or_default()
     }
 
     /// Where a new entry `requested` would go, if `user` may create it: its parent must exist
     /// and be a folder, and the caller needs write permission for the new path. Returns the
     /// real parent joined with the new name.
-    fn authorize_new(&self, requested: &str, user: Option<&str>) -> Result<PathBuf, u32> {
+    pub fn authorize_new(&self, requested: &str, user: Option<&str>) -> Result<PathBuf, u32> {
         let mut parts = access::components(requested)?;
         let Some(name) = parts.pop() else {
             // The root itself is never "new".
@@ -120,29 +153,41 @@ impl Jail {
         };
         let mut lexical = parts.clone();
         lexical.push(name.clone());
-        if !access::perms(&self.root, &lexical, user).write {
-            return Err(server_error::DENIED);
-        }
-        let parent = self.resolve(&parts.join("/"))?;
+        check(access::perms(&self.root, &lexical, user), Need::Write)?;
+        let parent = self.find(&parts.join("/"))?;
         if !parent.is_dir() {
             return Err(server_error::NOT_A_DIRECTORY);
         }
         let target = parent.join(&name);
-        match access::perms_of_real(&self.root, &target, user) {
-            Some(p) if p.write => Ok(target),
-            _ => Err(server_error::DENIED),
-        }
+        check(self.perms_of_real(&target, user), Need::Write)?;
+        Ok(target)
     }
 
-    /// What `user` may do with `requested`, which need not exist.
+    /// What `user` may do with `requested`. Something missing and something hidden from them
+    /// both answer no access at all, so this cannot find a hidden folder by guessing its name.
     pub fn access(&self, requested: &str, user: Option<&str>) -> Result<AccessReply, u32> {
         let parts = access::components(requested)?;
-        let p = access::perms(&self.root, &parts, user);
+        let p = match self.authorize(requested, user, Need::Read) {
+            Ok(real) => both(
+                access::perms(&self.root, &parts, user),
+                self.perms_of_real(&real, user),
+            ),
+            Err(_) => Perms::default(),
+        };
         Ok(AccessReply {
             read: p.read,
             write: p.write,
             user: user.map(str::to_owned),
         })
+    }
+
+    /// A picture's size and EXIF details (see [`crate::image_info`]), if the caller may read it.
+    pub fn image_info(&self, requested: &str, user: Option<&str>) -> Result<ImageInfoReply, u32> {
+        let real = self.authorize(requested, user, Need::Read)?;
+        if !real.is_file() {
+            return Err(server_error::NOT_FOUND);
+        }
+        Ok(crate::image_info::read(&real))
     }
 
     pub fn read_file(&self, requested: &str, user: Option<&str>) -> Result<FileText, u32> {
@@ -261,9 +306,66 @@ impl Jail {
         Ok(reply)
     }
 
+    /// The entries of a folder the caller may read, leaving out everything in it they may not.
+    /// Each entry is checked the way opening it would be, both as named and where it really
+    /// leads, so a symlink to somewhere private is left out like the private folder itself.
     pub fn list_dir(&self, req: &ListDirReq<'_>, user: Option<&str>) -> Result<DirListing, u32> {
-        let dir = self.authorize(req.path, user, Need::Read)?;
-        let parts = access::components(req.path)?;
+        let listing = self.visible_entries(req.path, user, MAX_ENTRIES)?;
+        let mut entries: Vec<DirEntry> = listing
+            .entries
+            .into_iter()
+            .map(|e| DirEntry {
+                kind: if e.meta.is_dir() {
+                    EntryKind::Dir
+                } else if e.meta.is_file() {
+                    EntryKind::File
+                } else if e.meta.is_symlink() {
+                    EntryKind::Symlink
+                } else {
+                    EntryKind::Other
+                },
+                size: e.meta.len(),
+                mtime_s: e
+                    .meta
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(0),
+                writable: e.perms.write,
+                name: e.name,
+            })
+            .collect();
+
+        // Directories first, then name. Sorting here rather than in the app means every client
+        // agrees, and a guest does not pay to sort a large listing.
+        entries.sort_by(|a, b| {
+            b.is_dir()
+                .cmp(&a.is_dir())
+                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+        });
+
+        Ok(DirListing {
+            entries,
+            truncated: listing.truncated,
+        })
+    }
+
+    /// What [`Jail::list_dir`] shows, unsorted and with each entry's own metadata (not
+    /// following a symlink), at most `limit` of them. Also where the folder really is.
+    pub fn visible_entries(
+        &self,
+        requested: &str,
+        user: Option<&str>,
+        limit: usize,
+    ) -> Result<Visible, u32> {
+        let dir = self.authorize(requested, user, Need::Read)?;
+        let parts = access::components(requested)?;
+        // A plain file has its folder's rules, so they are worked out once, not per file.
+        let here = both(
+            access::perms(&self.root, &parts, user),
+            self.perms_of_real(&dir, user),
+        );
 
         let meta = std::fs::metadata(&dir).map_err(|_| server_error::IO)?;
         if !meta.is_dir() {
@@ -275,7 +377,7 @@ impl Jail {
         let mut truncated = false;
 
         for item in read {
-            if entries.len() >= MAX_ENTRIES {
+            if entries.len() >= limit {
                 truncated = true;
                 break;
             }
@@ -289,45 +391,209 @@ impl Jail {
             if name == ACCESS_FILE {
                 continue;
             }
-            // A folder the caller may not open is not shown at all: listing `/home` shows each
-            // user their own folder and nobody else's.
-            if meta.is_dir() {
+            // `DirEntry::metadata` does not follow symlinks, so `meta` is about the entry
+            // itself: a real folder, a real file, or a link to be followed and checked.
+            let perms = if meta.is_file() {
+                here
+            } else if meta.is_dir() {
+                // A folder can have rules of its own. One the caller may not open is not shown
+                // at all: listing `/home` shows each user their own folder and nobody else's.
                 let mut child = parts.clone();
                 child.push(name.clone());
-                if !access::perms(&self.root, &child, user).read {
-                    continue;
+                both(
+                    access::perms(&self.root, &child, user),
+                    self.perms_of_real(&item.path(), user),
+                )
+            } else {
+                let child = format!("{}/{name}", parts.join("/"));
+                match self.authorize(&child, user, Need::Read) {
+                    Ok(_) => Perms {
+                        read: true,
+                        write: self.authorize(&child, user, Need::Write).is_ok(),
+                    },
+                    // Dangling, out of the jail, or somewhere the caller may not read.
+                    Err(_) => continue,
                 }
+            };
+            if !perms.read {
+                continue;
             }
-
-            entries.push(DirEntry {
-                name,
-                kind: if meta.is_dir() {
-                    EntryKind::Dir
-                } else if meta.is_file() {
-                    EntryKind::File
-                } else if meta.is_symlink() {
-                    EntryKind::Symlink
-                } else {
-                    EntryKind::Other
-                },
-                size: meta.len(),
-                mtime_s: meta
-                    .modified()
-                    .ok()
-                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map(|d| d.as_secs() as i64)
-                    .unwrap_or(0),
-            });
+            entries.push(Entry { name, meta, perms });
         }
 
-        // Directories first, then name. Sorting here rather than in the app means every client
-        // agrees, and a guest does not pay to sort a large listing.
-        entries.sort_by(|a, b| {
-            b.is_dir()
-                .cmp(&a.is_dir())
-                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
-        });
-
-        Ok(DirListing { entries, truncated })
+        Ok(Visible {
+            dir,
+            entries,
+            truncated,
+        })
     }
+
+    /// Where the existing entry `requested` is, if `user` may remove it, without following it
+    /// if it is a symlink. Removing something changes the folder it is in as well as the thing
+    /// itself, so it needs:
+    ///
+    /// - write on the folder it is in, so nothing can be taken out of a read-only folder, and
+    ///   `/home/{user}` itself (in `/home`, which nobody may change) stays put;
+    /// - write on the entry, which for a folder with rules of its own is not the same thing;
+    /// - for a folder, write on **every** folder inside it, hidden ones included. Otherwise a
+    ///   folder whose `.access` grants less could be removed by removing its parent.
+    ///
+    /// A symlink is removed as a link, so only the first applies to it, but it has to be one
+    /// the caller can see: one to somewhere they may not read is as absent as that place.
+    pub fn check_removable(&self, requested: &str, user: Option<&str>) -> Result<PathBuf, u32> {
+        let mut parts = access::components(requested)?;
+        let Some(name) = parts.pop() else {
+            // The root of the jail is never removed.
+            return Err(server_error::DENIED);
+        };
+        let parent = parts.join("/");
+        // The folder itself has to be visible before whether it is writable says anything.
+        self.authorize(requested, user, Need::Read)?;
+        let parent_real = self.authorize(&parent, user, Need::Write)?;
+        let target = parent_real.join(&name);
+        let meta = std::fs::symlink_metadata(&target).map_err(|_| server_error::NOT_FOUND)?;
+        if meta.is_symlink() {
+            return Ok(target);
+        }
+        parts.push(name);
+        check(
+            both(
+                access::perms(&self.root, &parts, user),
+                self.perms_of_real(&target, user),
+            ),
+            Need::Write,
+        )?;
+        if meta.is_dir() {
+            self.check_tree(&target, user, Need::Write)?;
+        }
+        Ok(target)
+    }
+
+    /// Every folder under the real folder `top`, however deep, allows `need`. Symlinks are not
+    /// followed: removing one removes the link, and copying one checks it as it is copied.
+    fn check_tree(&self, top: &Path, user: Option<&str>, need: Need) -> Result<(), u32> {
+        let mut stack = vec![top.to_path_buf()];
+        while let Some(dir) = stack.pop() {
+            let read = std::fs::read_dir(&dir).map_err(|_| server_error::IO)?;
+            for item in read {
+                let item = item.map_err(|_| server_error::IO)?;
+                let meta = item.metadata().map_err(|_| server_error::IO)?;
+                if meta.is_dir() {
+                    let p = self.perms_of_real(&item.path(), user);
+                    // Something inside the caller cannot see stops them as surely as something
+                    // they cannot change, but saying `NOT_FOUND` about a folder they can see
+                    // would be wrong: it is there, they just may not do this to all of it.
+                    if !need.granted(p) {
+                        return Err(server_error::DENIED);
+                    }
+                    stack.push(item.path());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Remove `requested`, a file, link or whole folder, if [`Jail::check_removable`] allows.
+    pub fn remove(&self, requested: &str, user: Option<&str>) -> Result<(), u32> {
+        let target = self.check_removable(requested, user)?;
+        let meta = std::fs::symlink_metadata(&target).map_err(|_| server_error::NOT_FOUND)?;
+        if meta.is_dir() {
+            std::fs::remove_dir_all(&target)
+        } else {
+            std::fs::remove_file(&target)
+        }
+        .map_err(|_| server_error::IO)
+    }
+
+    /// Where `requested` would be written, as a new entry or replacing a file that is already
+    /// there: write on where it goes, and if a file is there, everything removing it needs.
+    /// A folder already there is `EXISTS`; replacing one is a removal and a creation, which
+    /// is for the caller to ask for separately.
+    pub fn check_writable_target(
+        &self,
+        requested: &str,
+        user: Option<&str>,
+    ) -> Result<PathBuf, u32> {
+        let target = self.authorize_new(requested, user)?;
+        match std::fs::symlink_metadata(&target) {
+            Ok(meta) if meta.is_dir() => Err(server_error::EXISTS),
+            Ok(_) => self.check_removable(requested, user),
+            Err(_) => Ok(target),
+        }
+    }
+
+    /// Move `from` to `to`: removing it from where it is, and creating it where it goes.
+    /// What it holds keeps its own rules (any `.access` in it moves with it) but otherwise
+    /// takes on those of where it lands, like anything else created there.
+    pub fn rename(&self, from: &str, to: &str, user: Option<&str>) -> Result<(), u32> {
+        let source = self.check_removable(from, user)?;
+        let dest = self.check_writable_target(to, user)?;
+        if dest.starts_with(&source) {
+            // Into itself.
+            return Err(server_error::DENIED);
+        }
+        std::fs::rename(&source, &dest).map_err(|_| server_error::IO)
+    }
+
+    /// Where to write the contents of the file `requested`: [`Jail::check_writable_target`],
+    /// except that a symlink already there is written through, so it also needs write where
+    /// it really leads. Otherwise a link in a writable folder would let anyone change what it
+    /// points at.
+    pub fn write_target(&self, requested: &str, user: Option<&str>) -> Result<PathBuf, u32> {
+        let target = self.check_writable_target(requested, user)?;
+        if target.is_symlink() {
+            return self.authorize(requested, user, Need::Write);
+        }
+        Ok(target)
+    }
+
+    /// Copy the file `from` to `to`. It needs read on `from` and what writing `to` needs.
+    pub fn copy_file(&self, from: &str, to: &str, user: Option<&str>) -> Result<(), u32> {
+        let source = self.authorize(from, user, Need::Read)?;
+        if !source.is_file() {
+            return Err(server_error::DENIED);
+        }
+        let dest = self.write_target(to, user)?;
+        std::fs::copy(&source, &dest)
+            .map(|_| ())
+            .map_err(|_| server_error::IO)
+    }
+
+    /// Whether `user` may read all of `requested`: it, and for a folder every folder inside
+    /// it. Copying a folder needs this, so a copy is never quietly missing what the caller
+    /// could not see.
+    pub fn check_readable_tree(&self, requested: &str, user: Option<&str>) -> Result<(), u32> {
+        let real = self.authorize(requested, user, Need::Read)?;
+        if real.is_dir() {
+            self.check_tree(&real, user, Need::Read)?;
+        }
+        Ok(())
+    }
+
+    /// The real path of `requested` without following it if it is a symlink, if `user` may
+    /// see it: what a WebDAV client is told about the entry itself.
+    pub fn locate(&self, requested: &str, user: Option<&str>) -> Result<PathBuf, u32> {
+        let mut parts = access::components(requested)?;
+        let real = self.authorize(requested, user, Need::Read)?;
+        let Some(name) = parts.pop() else {
+            return Ok(real);
+        };
+        Ok(self.find(&parts.join("/"))?.join(name))
+    }
+}
+
+/// One entry of [`Visible`].
+pub struct Entry {
+    pub name: String,
+    /// About the entry itself: a symlink's own metadata, not its target's.
+    pub meta: std::fs::Metadata,
+    pub perms: Perms,
+}
+
+/// What [`Jail::visible_entries`] found.
+pub struct Visible {
+    /// Where the folder really is.
+    pub dir: PathBuf,
+    pub entries: Vec<Entry>,
+    pub truncated: bool,
 }

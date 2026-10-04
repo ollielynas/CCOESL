@@ -13,7 +13,8 @@ the owner, outside contributors, and the Claude agents that work tickets.
 
 ## One-time setup
 
-You need `rustup` and `node`; the rest is two `cargo install`s.
+You need `rustup`, `node`, `curl` and Docker (for `cargo xtask test-image`); the rest is two
+`cargo install`s.
 
 ```sh
 cargo install cargo-llvm-cov --locked                       # the per-app coverage gate
@@ -48,9 +49,15 @@ Each CI job is one `cargo xtask` command. To reproduce a red job, run the same c
 | `test-wasm` | `cargo xtask test-wasm` | A browser-backend test fails under node | — |
 | `apps-coverage` | `cargo xtask coverage` | An app has no documentation page, or is under the coverage bar | See [Adding an app](#adding-an-app) and [Testing apps](#testing-apps) |
 | `build-web` | `cargo xtask build-web` | The build breaks, or an app exceeds 100 KiB gzipped | Trim the app; avoid float `Display` |
+| `test-image` | `cargo xtask test-image` | The Docker image doesn't build, or a person couldn't use it: sign in through `/idp`, use the apps, build in the Compiler, keep their account and files when the container is replaced | Read the step it names; the container's log is printed below it |
 | `ci-ok` | *(GitHub only)* | Any job above did not succeed | It's the one required check |
 
 `cargo xtask ci` runs all of them in order. `cargo xtask` alone lists every command.
+
+`test-image` is the slowest, because it builds the whole image and waits for Keycloak to start
+twice. It publishes the container on free loopback ports, so a dev server on 8777 doesn't get in
+its way, and it removes the container and volume it made. `cargo xtask test-image --no-build`
+reruns the checks against the last image it built.
 
 ## Testing apps
 
@@ -78,6 +85,9 @@ Real examples: `apps/clock/src/tests.rs` (time as an input) and `apps/file-brows
 2. Wire the remaining pieces:
    - Register it in `crates/ccosel-shell/src/registry.rs` (the catalog) and in the `guests`
      list in `build_web()` in `xtask/src/main.rs`. Neither is checked automatically yet.
+   - Being in the catalog gives it its own page at `/app/<id>`, with nothing to add on the
+     server. List that link in `data/shared/Docs/app-links.md`; `cargo xtask test-wasm` fails
+     until you do.
 3. **Write its user documentation** in `data/shared/Docs/Apps/<name>.md`, and link it from the
    list in `data/shared/Docs/README.md`. `new-app` creates a stub; replace it. This is what
    people read in the Docs app, so write it for them: what the app is for and how to use each
@@ -88,16 +98,47 @@ Real examples: `apps/clock/src/tests.rs` (time as an input) and `apps/file-brows
      the app does.
 4. Give the app real state to test: clippy rejects `MyApp::default()` on a unit struct.
 
+## Wire IDs
+
+Some numbers are part of the wire ABI: `Method` in `ccosel-proto`, `OpCode` in
+`ccosel-abi`. Values already on `main` are frozen — never renumber them. When you introduce a
+**new** one, give it a randomly generated value, not the next sequential number. Sequential
+ids collide the moment two branches both append; random ones do not.
+
+Generate the value from a real RNG. Do not invent a number that looks random — that is
+how parallel agents end up picking the same id:
+
+```sh
+python3 -c 'import random; print(random.randint(0, 65535))'   # u16, for Method
+python3 -c 'import random; print(random.randint(0, 255))'     # u8, for OpCode
+```
+
+or with Node:
+
+```sh
+node -e 'console.log(Math.floor(Math.random() * 65536))'
+node -e 'console.log(Math.floor(Math.random() * 256))'
+```
+
+For `OpCode`, the value must fall outside the reserved ranges listed in
+`crates/ccosel-abi/src/opcode.rs`. Re-run the command if it lands inside one.
+
 ## Tickets
 
-Work is tracked as GitHub issues. Open one with the **Agent task** form: a goal, and acceptance
-criteria that a test or a reviewer can check. Write it so someone with no context could finish it.
+Work is tracked as GitHub issues. Use one of the task forms:
+
+- **Agent task** for work a Claude agent should do with `/work-issue`.
+- **Human task** for work that is too complex for an agent run and must be done manually.
+
+Both forms ask for a goal and acceptance criteria that a test or reviewer can check. Write them so
+someone with no context could finish the work.
 
 - **Outside contributors:** pick an open issue, or open one first for anything larger than a
   small fix so the direction is agreed before you build it. Fork, branch, and open a PR.
-- **The owner can hand a ticket to a Claude agent** with `/work-issue <number>`. The agent works
-  in its own git worktree on a branch named `agent/<number>-<slug>`, runs `cargo xtask ci` until
-  it is green, opens a PR that says `Closes #<number>`, and stops. It never merges.
+- **The owner can hand an Agent task ticket to a Claude agent** with `/work-issue <number>`.
+  Agents must not start **Human task** tickets. The agent works in its own git worktree on a branch
+  named `agent/<number>-<slug>`, runs `cargo xtask ci` until it is green, opens a PR that says
+  `Closes #<number>`, and stops. It never merges.
 - Feedback goes on the PR as ordinary review comments. For an agent's PR the owner then runs
   `/address-feedback <pr-number>`, and the agent replies to each comment and pushes fixes.
 
@@ -153,3 +194,5 @@ cargo xtask review 10 --checkout-only    # just check it out, to read it in your
 | An app is under the bar | The table printed by `cargo xtask coverage` shows hits/lines per app; add tests for the branches you haven't covered |
 | `use of default to create a unit struct` | Give the app a field, or construct it as `MyApp` rather than `MyApp::default()` |
 | `run this from your own checkout` (from `cargo xtask review`) | You ran it inside `../<repo>-review`, which it replaces; run it from your usual checkout |
+| `docker is required for test-image` | Install Docker, and make sure your user can run `docker` without `sudo` |
+| `login is off` (from `cargo xtask test-image`) | Keycloak didn't start or couldn't be set up in the container. Its reason is in the container log printed after the error |

@@ -22,8 +22,9 @@ use crate::access::{self, User};
 /// body is buffered in full before the handler runs, so leaving it uncapped would let one
 /// upload exhaust server memory. axum's own default (2 MiB, see `DefaultBodyLimit`) is too
 /// small for a folder carrying binaries or images, so the `/upload` route raises it to this
-/// value explicitly rather than inheriting the default.
-pub const MAX_UPLOAD_BYTES: usize = 64 * 1024 * 1024;
+/// value explicitly rather than inheriting the default. It lives in `ccosel_proto` so the shell
+/// can refuse an oversized file before reading it.
+pub const MAX_UPLOAD_BYTES: usize = ccosel_proto::upload::MAX_FILE_BYTES as usize;
 
 #[derive(Debug, Deserialize)]
 pub struct UploadParams {
@@ -52,8 +53,11 @@ pub async fn upload(
         return StatusCode::FORBIDDEN.into_response();
     };
     parts.push(params.filename.clone());
-    if params.filename == access::ACCESS_FILE || !access::perms(root, &parts, user).write {
+    if params.filename == access::ACCESS_FILE {
         return StatusCode::FORBIDDEN.into_response();
+    }
+    if let Some(refused) = refusal(access::perms(root, &parts, user)) {
+        return refused.into_response();
     }
 
     let dir = match resolve_dir_create(state.jail.root(), &params.path).await {
@@ -63,8 +67,9 @@ pub async fn upload(
 
     let file_path = dir.join(&params.filename);
     // Checked again where the folder really is, in case a symlink led somewhere else.
-    if !access::perms_of_real(root, &file_path, user).is_some_and(|p| p.write) {
-        return StatusCode::FORBIDDEN.into_response();
+    let real = access::perms_of_real(root, &file_path, user).unwrap_or_default();
+    if let Some(refused) = refusal(real) {
+        return refused.into_response();
     }
 
     if let Err(e) = tokio::fs::write(&file_path, &body).await {
@@ -73,6 +78,18 @@ pub async fn upload(
     }
 
     StatusCode::OK.into_response()
+}
+
+/// Why an upload with these permissions is refused, if it is. A folder the caller may not
+/// read is `404`, as if it were not there, like everywhere else (see `fs_api::check`).
+fn refusal(p: access::Perms) -> Option<StatusCode> {
+    if !p.read {
+        Some(StatusCode::NOT_FOUND)
+    } else if !p.write {
+        Some(StatusCode::FORBIDDEN)
+    } else {
+        None
+    }
 }
 
 /// No path separator (so the client cannot smuggle a subdirectory or an escape into what is

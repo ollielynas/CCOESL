@@ -3,6 +3,7 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
+use ccosel_server::app_passwords::AppPasswords;
 use ccosel_server::auth::{AuthState, OAuthConfig};
 use ccosel_server::fs_api::Jail;
 use ccosel_server::idp::IdpProxy;
@@ -71,8 +72,25 @@ async fn main() -> anyhow::Result<()> {
             }
         },
     }
-    .with_public_url(public_url);
+    .with_public_url(public_url)
+    .with_app_passwords(open_app_passwords(&jail)?);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     ccosel_server::serve(addr, jail, web, auth).await
+}
+
+/// The app password store, in this server's data folder. It holds password hashes, so it must
+/// never be somewhere the file routes can reach: a jail containing the data folder is refused.
+fn open_app_passwords(jail: &Jail) -> anyhow::Result<AppPasswords> {
+    let dir = keycloak::data_dir().unwrap_or_else(|| PathBuf::from("data"));
+    std::fs::create_dir_all(&dir)?;
+    let dir = dir.canonicalize()?;
+    if dir.starts_with(jail.root()) {
+        anyhow::bail!(
+            "the data folder {} is inside the served folder {}; serve a different --root",
+            dir.display(),
+            jail.root().display()
+        );
+    }
+    AppPasswords::open(dir.join("app-passwords.json"))
 }

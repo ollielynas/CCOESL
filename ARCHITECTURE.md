@@ -74,6 +74,14 @@ Consequences worth knowing before writing an app:
   user types. Neither side resends the buffer each frame.
 - `available_width` is last frame's. Use the shell-side responsive helpers, or add hysteresis,
   or layout will oscillate.
+- An app cannot see the browser, so what only the page knows the shell tells it once, before
+  the first frame: a `PAGE_INFO` event of `key=value` lines, read as `ui.page()`. Today that is
+  the page's `origin` (`ui.page().origin()`), the address to put in front of a link that must
+  work from another machine. It is the browser's own, so it is right behind a tunnel or proxy,
+  where the server could only guess. It is `None` under a shell too old to send it. New facts
+  are new keys, never a new `FrameInput` field: `FrameInput` is fixed-size, and changing it
+  bumps `ABI_VERSION` and invalidates every cached module. An app built before an event kind
+  existed drops it, since `call_id` zero matches no call.
 
 ## Keeping modules small — the whole thesis
 
@@ -138,6 +146,12 @@ Compiled `WebAssembly.Module`s are cached per app id, so a second window of the 
 the fetch and the compile — the expensive half of a launch. That cache is where IndexedDB will
 slot in to make it free across sessions too.
 
+The desktop is remembered per signed-in person: which windows are open, what they were opened
+on, where, and in what order (`crates/ccosel-shell/src/session.rs`). The shell compares the
+windows with the last save every frame and saves once they have differed for five seconds, so a
+drag costs one request, not one per frame. The server keeps each layout in `<jail>/.desktops`,
+which `access::perms` puts out of everyone's reach. A fresh desktop opens nothing.
+
 Closing a window drops the instance. That is the only way to reclaim a guest's memory: wasm
 linear memory cannot shrink, so a live instance holds its high-water mark forever.
 
@@ -200,8 +214,8 @@ navigate 2, return 2. Three windows (two File Browsers plus the Clock) totalled 
 
 ## Who may see what
 
-Permissions live on the **server** and cover every route (`/rpc`, `/files`, `/upload`), so no
-app can get around them and none has to reimplement them. They are set per folder in an
+Permissions live on the **server** and cover every route (`/rpc`, `/files`, `/upload`,
+`/dav`), so no app or client can get around them and none has to reimplement them. They are set per folder in an
 `.access` file (`read:` and `write:` lines naming users, `@users` or `*`) and inherited by
 everything below it until a folder sets its own. With no `.access` anywhere, everything is open,
 as before. `/home/{user}` is built in and private to its owner. `.access` files themselves are
@@ -213,6 +227,23 @@ sign-in session, so it is the Keycloak login. With login turned off, every calle
 they have no home folder, and only folders open to `*` are theirs to use. Apps ask the server what they
 may do (`Access`, `FileText::writable`) so they can hide buttons that would fail, but the
 server re-checks every write.
+
+WebDAV (`/dav`, `ccosel-server/src/dav.rs`) is the one route that takes something other than
+the session cookie: HTTP Basic with an app password (`app_passwords.rs`), which is all a
+mounted drive can send, and never the cookie, whose `SameSite=Lax` does not cover methods
+like `DELETE`. It becomes the same `User`. `dav-server` speaks the protocol over a file system
+that sends every call through `Jail`, never its own `LocalFs`. WebDAV also brings operations
+nothing else had, with these rules:
+
+- **Delete** needs write on the entry, on the folder it is in, and on every folder inside it,
+  hidden ones included, so a folder whose `.access` grants less cannot go with its parent.
+- **Move** needs what delete needs on the source, and write where it lands.
+- **Copy** needs read on all of the source, so a copy is never quietly incomplete, and write
+  where it lands.
+- **Replacing** something at the destination needs what deleting it needs.
+
+`dav-server` carries out a folder delete or copy one entry at a time, so each is checked whole
+before it starts and refused whole, not stopped halfway.
 
 ## Replay, concretely
 

@@ -1,7 +1,8 @@
 //! Command stream opcodes.
 //!
 //! Numeric values are part of the ABI: a cached app module compiled against version N must
-//! still decode correctly. Add new opcodes, never renumber existing ones.
+//! still decode correctly. Never renumber existing ones. New opcodes get a randomly
+//! generated value outside the reserved ranges (see "Wire IDs" in CONTRIBUTING.md).
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -42,9 +43,23 @@ pub enum OpCode {
     Styled = 0x11,
     /// A clickable row that shows whether it is the selected one, like an entry in a file tree.
     Selectable = 0x12,
+    /// A button that has the shell start another app, handing it `arg` (for the Viewer, a file
+    /// path) as its launch argument. On the desktop that is a new window; on an app's own page,
+    /// a new tab at that app's own page.
+    OpenApp = 0x13,
+    /// A button that copies a link to this server to the clipboard: `path` (such as
+    /// `/app/viewer?open=...`) after the address the page was loaded from, which only the shell
+    /// knows. The shell says so once it has.
+    CopyLink = 0x14,
+    /// Audio, video or a PDF, played or shown by the *browser* in an element the shell lays over
+    /// the canvas: egui can draw neither, and the browser already has every decoder it ships.
+    Media = 0x15,
+    /// Read-only multi-line text, selectable and copyable. Same payload and protocol as
+    /// `TextEditMulti`, so a long file costs its bytes once, not every frame.
+    TextView = 0x16,
     /// A multi-line text area for source code, coloured by the shell for a `CodeLang`. The
     /// `TextEditMulti` payload and protocol, then the language, then an optional error mark.
-    TextEditCode = 0x13,
+    TextEditCode = 0x17,
     // 0x40..0x4F reserved for subtree caching (BeginCached / EndCached / CachedRef).
     // Not implemented yet, but the space is reserved so adding it is not an ABI break.
 }
@@ -70,7 +85,11 @@ impl OpCode {
             0x10 => Some(Self::TextEditMulti),
             0x11 => Some(Self::Styled),
             0x12 => Some(Self::Selectable),
-            0x13 => Some(Self::TextEditCode),
+            0x13 => Some(Self::OpenApp),
+            0x14 => Some(Self::CopyLink),
+            0x15 => Some(Self::Media),
+            0x16 => Some(Self::TextView),
+            0x17 => Some(Self::TextEditCode),
             _ => None,
         }
     }

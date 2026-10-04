@@ -728,6 +728,7 @@ fn entry(name: &str, kind: EntryKind) -> DirEntry {
         kind,
         size: 0,
         mtime_s: 0,
+        writable: true,
     }
 }
 
@@ -978,7 +979,7 @@ fn figures_on_screen_are_drawn_by_octave() {
     h.frame();
     h.frame();
     assert_eq!(
-        h.images(),
+        h.image_widgets(),
         [(
             "/octave/figure/1/2/2.png".to_owned(),
             Vec2::new(464.0, 349.0)
@@ -999,7 +1000,7 @@ fn a_wide_figure_is_shown_scaled_down() {
     h.reply::<OctavePoll>(&done("", rendered((1280, 960))));
     h.frame();
     h.frame();
-    assert_eq!(h.images()[0].1, Vec2::new(640.0, 480.0));
+    assert_eq!(h.image_widgets()[0].1, Vec2::new(640.0, 480.0));
 }
 
 #[test]
@@ -1107,7 +1108,7 @@ fn a_figure_a_command_draws_is_shown_under_it() {
     };
     assert_eq!(h.app.log.last(), Some(&(kind, url.clone())));
     // Narrower than in the Figures tab: it sits among lines of text.
-    assert_eq!(h.images(), [(url, Vec2::new(480.0, 360.0))]);
+    assert_eq!(h.image_widgets(), [(url, Vec2::new(480.0, 360.0))]);
     assert!(h.app.inline.is_empty());
 
     // Its caption opens the Figures tab, which already has the image.
@@ -1116,7 +1117,7 @@ fn a_figure_a_command_draws_is_shown_under_it() {
     assert_eq!(h.app.tab, Tab::Figures);
     h.frame();
     assert!(h.app.job.is_none(), "nothing to draw again");
-    assert_eq!(h.images()[0].1, Vec2::new(640.0, 480.0));
+    assert_eq!(h.image_widgets()[0].1, Vec2::new(640.0, 480.0));
 }
 
 #[test]
@@ -1469,7 +1470,7 @@ fn a_figure_drawn_mid_script_is_shown_before_the_question_about_it() {
         [LineKind::Input, LineKind::Output, figure, LineKind::Output]
     );
     assert_eq!(h.app.log[2].1, url);
-    assert_eq!(h.images(), [(url, Vec2::new(480.0, 360.0))]);
+    assert_eq!(h.image_widgets(), [(url, Vec2::new(480.0, 360.0))]);
     assert!(h.has_label("  Do you see a window with a sine wave? (y/n): "));
 }
 

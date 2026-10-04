@@ -26,6 +26,19 @@
 //! `.access` files are invisible through the API: not listed, not readable, not writable. They
 //! are configuration for whoever runs the server, not content.
 //!
+//! Read and write are all there is, so operations made of several steps are defined by them
+//! (see `fs_api::Jail::check_removable` and its neighbours, used by WebDAV):
+//!
+//! - **Removing** something needs write on it, on the folder it is in, and for a folder, on
+//!   every folder inside it, including any the caller cannot see. So `/home/{user}` itself,
+//!   in `/home` which nobody may change, stays put, and a folder whose `.access` grants less
+//!   than its parent's cannot be removed along with the parent.
+//! - **Moving** needs what removing needs at the source, and write at the destination. What
+//!   moves keeps any `.access` inside it and otherwise takes on the destination's rules.
+//! - **Copying** needs read on all of the source, every folder inside it included, and write
+//!   at the destination. `.access` files are not copied.
+//! - **Replacing** what is already at a destination needs what removing it needs.
+//!
 //! Who the caller is comes from a [`User`] request extension, which `auth::require_session`
 //! sets from the sign-in session. With login turned off, every caller is anonymous.
 
@@ -97,6 +110,11 @@ pub fn components(requested: &str) -> Result<Vec<String>, u32> {
 
 /// What `user` may do with the path `parts` (from [`components`]) under `root`.
 pub fn perms(root: &Path, parts: &[String], user: Option<&str>) -> Perms {
+    // Everyone's saved desktops: only the server's own code, for the caller's own file, reads
+    // these (see `crate::desktop`).
+    if parts.first().is_some_and(|p| p == crate::desktop::DIR) {
+        return Perms::NONE;
+    }
     if parts.first().is_some_and(|p| p == HOME) {
         return match parts.get(1) {
             // `/home` itself: listable by anyone signed in (the listing is filtered down to
