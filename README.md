@@ -37,6 +37,7 @@ The user documentation, the same pages the Docs app shows, starts at
 |---|---|---|
 | **Files** | Browse the server's folders; upload, download and delete files | [file-browser.md](data/shared/Docs/Apps/file-browser.md) |
 | **Docs** | Read, write and search documents, including the user documentation | [docs.md](data/shared/Docs/Apps/docs.md) |
+| **Go** | Play Go against GNU Go on a 9×9, 13×13 or 19×19 board | [go.md](data/shared/Docs/Apps/go.md) |
 | **Viewer** | Look at pictures, music, videos, PDFs and text files, and share them | [viewer.md](data/shared/Docs/Apps/viewer.md) |
 | **Compiler** | Build a Rust project on the server and download the result | [rust-compiler.md](data/shared/Docs/Apps/rust-compiler.md) |
 | **Server** | Live graphs of how the server is doing | [server-dashboard.md](data/shared/Docs/Apps/server-dashboard.md) |
@@ -61,7 +62,7 @@ These are open tickets.
 - **Files**: compress and extract tar / gzip archives (#73)
 - **Viewer**: server-side conversion of Apple formats such as HEIC and HEVC (#81)
 - **Clock**: a sunlight map with timezones (#88)
-- **Chess** against GNU Chess (#76), and **Go** against GNU Go (#77)
+- **Chess** against GNU Chess (#76)
 - **Spreadsheet** backed by GNU Gnumeric (#75)
 - **Music Score** backed by GNU LilyPond (#74)
 - **Messages**: inbox, 1:1 and group chats, and file sharing (#49)
