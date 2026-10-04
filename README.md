@@ -35,7 +35,7 @@ The user documentation, the same pages the Docs app shows, starts at
 
 | App | What it does | Docs |
 |---|---|---|
-| **Files** | Browse the server's folders, upload (including drag-and-drop) and download files | [file-browser.md](data/shared/Docs/Apps/file-browser.md) |
+| **Files** | Browse the server's folders; upload, download and delete files | [file-browser.md](data/shared/Docs/Apps/file-browser.md) |
 | **Docs** | Read, write and search documents, including the user documentation | [docs.md](data/shared/Docs/Apps/docs.md) |
 | **Viewer** | Look at pictures, music, videos, PDFs and text files, and share them | [viewer.md](data/shared/Docs/Apps/viewer.md) |
 | **Compiler** | Build a Rust project on the server and download the result | [rust-compiler.md](data/shared/Docs/Apps/rust-compiler.md) |
@@ -58,7 +58,7 @@ These have an open pull request.
 These are open tickets.
 
 - **Compiler**: C and C++ projects with GCC (#72)
-- **Files**: delete files and folders (#52), compress and extract tar / gzip archives (#73)
+- **Files**: compress and extract tar / gzip archives (#73)
 - **Viewer**: server-side conversion of Apple formats such as HEIC and HEVC (#81)
 - **Clock**: a sunlight map with timezones (#88)
 - **Chess** against GNU Chess (#76), and **Go** against GNU Go (#77)

@@ -145,6 +145,8 @@ pub struct Replayer {
     /// checks these against the frame's clicks to know when to open the folder picker, and
     /// where the chosen folder goes.
     uploads: Vec<(u64, String)>,
+    /// Which of `uploads` are `UploadFiles` buttons, whose picker chooses files, not a folder.
+    file_uploads: Vec<u64>,
     /// Widget ids of this frame's `UploadProject` buttons.
     project_uploads: Vec<u64>,
     /// Widget ids and target URLs from `OpenUrl` commands this frame. The shell checks these to
@@ -188,6 +190,7 @@ impl Replayer {
         let mut tooltips: HashMap<u64, &str> = HashMap::new();
         self.uploads.clear();
         self.project_uploads.clear();
+        self.file_uploads.clear();
         self.open_url_ids.clear();
         self.open_apps.clear();
         self.copy_links.clear();
@@ -198,6 +201,10 @@ impl Replayer {
                     tooltips.insert(id, text);
                 }
                 Cmd::UploadFolder { id, dest } => self.uploads.push((id, dest.to_owned())),
+                Cmd::UploadFiles { id, dest } => {
+                    self.uploads.push((id, dest.to_owned()));
+                    self.file_uploads.push(id);
+                }
                 Cmd::UploadProject { id } => self.project_uploads.push(id),
                 Cmd::OpenUrl { id, url, .. } => self.open_url_ids.push((id, url.to_owned())),
                 Cmd::OpenApp { id, app, arg, .. } => {
@@ -251,10 +258,16 @@ impl Replayer {
         Some(encode_batch(&events))
     }
 
-    /// Widget ids and destination folders of the `UploadFolder` buttons in the last
-    /// successfully replayed frame. Acting on a click (the picker, the upload) is the shell's job.
+    /// Widget ids and destination folders of the `UploadFolder` and `UploadFiles` buttons in
+    /// the last successfully replayed frame. Acting on a click (the picker, the upload) is the
+    /// shell's job.
     pub fn uploads(&self) -> &[(u64, String)] {
         &self.uploads
+    }
+
+    /// Whether upload button `id` picks files (`UploadFiles`) rather than a folder.
+    pub fn picks_files(&self, id: u64) -> bool {
+        self.file_uploads.contains(&id)
     }
 
     /// Widget ids of the `UploadProject` buttons in the last successfully replayed frame.
@@ -465,6 +478,11 @@ impl Cx<'_> {
 
                 Cmd::UploadFolder { id, .. } => {
                     let r = add_with_shadow(ui, egui::Button::new("⬆ Upload folder"));
+                    self.finish(id, r);
+                }
+
+                Cmd::UploadFiles { id, .. } => {
+                    let r = add_with_shadow(ui, egui::Button::new("⬆ Upload files"));
                     self.finish(id, r);
                 }
 

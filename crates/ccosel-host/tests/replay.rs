@@ -408,6 +408,45 @@ fn a_link_is_underlined_at_rest_and_plain_text_is_not() {
 }
 
 #[test]
+fn upload_files_is_drawn_and_tracked_as_a_file_picker() {
+    let buf = encode(&[
+        Cmd::UploadFolder {
+            id: 60,
+            dest: "/Documents",
+        },
+        Cmd::UploadFiles {
+            id: 61,
+            dest: "/Documents",
+        },
+    ]);
+    let ctx = egui::Context::default();
+    let mut r = Replayer::new();
+    let recs = frame(&ctx, &mut r, &buf, raw_input()).unwrap();
+    assert_eq!(
+        recs.iter().map(|r| r.local_id).collect::<Vec<_>>(),
+        vec![60, 61]
+    );
+    // Both upload into a folder, so a drop on the window goes to either the same way.
+    assert_eq!(
+        r.uploads(),
+        &[
+            (60, "/Documents".to_string()),
+            (61, "/Documents".to_string())
+        ]
+    );
+    assert!(!r.picks_files(60));
+    assert!(r.picks_files(61));
+
+    // Forgotten with the frame it came from.
+    let next = encode(&[Cmd::UploadFolder {
+        id: 61,
+        dest: "/Documents",
+    }]);
+    frame(&ctx, &mut r, &next, raw_input()).unwrap();
+    assert!(!r.picks_files(61));
+}
+
+#[test]
 fn upload_project_is_drawn_and_tracked() {
     let buf = encode(&[Cmd::UploadProject { id: 50 }, Cmd::UploadProject { id: 51 }]);
     let ctx = egui::Context::default();
