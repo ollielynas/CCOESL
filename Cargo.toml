@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "crates/ccosel-abi",
+    "crates/ccosel-chess",
     "crates/ccosel-connection",
     "crates/ccosel-gitignore",
     "crates/ccosel-proto",
@@ -32,6 +33,7 @@ ccosel-abi = { path = "crates/ccosel-abi" }
 ccosel-connection = { path = "crates/ccosel-connection" }
 ccosel-gitignore = { path = "crates/ccosel-gitignore" }
 ccosel-proto = { path = "crates/ccosel-proto" }
+ccosel-chess = { path = "crates/ccosel-chess" }
 ccosel-host = { path = "crates/ccosel-host" }
 ccosel-cas = { path = "crates/ccosel-cas" }
 ccosel-transport = { path = "crates/ccosel-transport" }

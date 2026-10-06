@@ -729,6 +729,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "ccosel-chess"
+version = "0.1.0"
+
+[[package]]
 name = "ccosel-connection"
 version = "0.1.0"
 
@@ -802,6 +806,7 @@ dependencies = [
  "axum",
  "base64",
  "bytes",
+ "ccosel-chess",
  "ccosel-proto",
  "dav-server",
  "dotenvy",
