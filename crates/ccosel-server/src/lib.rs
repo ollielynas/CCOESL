@@ -7,6 +7,7 @@ pub mod access;
 pub mod app_passwords;
 pub mod auth;
 pub mod build_api;
+pub mod chess_api;
 pub mod dav;
 pub mod desktop;
 pub mod fs_api;
@@ -57,6 +58,8 @@ pub struct AppState {
     pub stats: Arc<stats::Stats>,
     /// Temporary project folders. See `scratch`.
     pub scratch: Arc<scratch::Scratch>,
+    /// GNU Chess, for the Chess app. See `chess_api`.
+    pub engine: Arc<chess_api::Engine>,
     /// WebDAV at `/dav`. See `dav`.
     pub dav: dav_server::DavHandler<Option<String>>,
 }
@@ -89,6 +92,7 @@ pub fn app(jail: Jail, web_dir: PathBuf, auth: AuthState) -> Router {
     let jail = Arc::new(jail);
     let state = AppState {
         scratch,
+        engine: Arc::new(chess_api::Engine::default()),
         dav: dav::handler(jail.clone()),
         jail,
         auth,

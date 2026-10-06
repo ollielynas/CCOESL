@@ -11,6 +11,7 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use ccosel_proto::account::{Account, CreateAppPasswordReq, RevokeAppPasswordReq};
 use ccosel_proto::build::CompileReq;
+use ccosel_proto::chess::EngineMoveReq;
 use ccosel_proto::desktop::DesktopLayout;
 use ccosel_proto::fs::{ListDirReq, PathReq, SearchReq, WriteFileReq};
 use ccosel_proto::info::ServerInfoReply;
@@ -117,6 +118,27 @@ async fn dispatch(
                 .and_then(|_| crate::build_api::compile(jail, &state.jobs, &a));
             (result, a.path)
         }),
+        Method::EngineMove => {
+            let Ok(args) = postcard::from_bytes::<EngineMoveReq>(req.args) else {
+                return Outcome::Err(server_error::MALFORMED, String::new());
+            };
+            let (moves, level) = (args.moves.to_owned(), args.level);
+            let engine = state.engine.clone();
+            // The engine thinks for up to a couple of seconds: on a thread meant for waiting,
+            // not one of the few the other calls are answered on.
+            let reply = tokio::task::spawn_blocking(move || {
+                engine.best_move(&EngineMoveReq {
+                    moves: &moves,
+                    level,
+                })
+            })
+            .await;
+            match reply {
+                Ok(Ok(reply)) => encode(&reply),
+                Ok(Err(code)) => Outcome::Err(code, String::new()),
+                Err(_) => Outcome::Err(server_error::IO, String::new()),
+            }
+        }
         Method::ServerInfo => {
             let host = stats::sample_host();
             let info = ServerInfoReply {
