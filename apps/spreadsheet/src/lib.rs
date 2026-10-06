@@ -13,14 +13,18 @@
 //!
 //! Only the window on screen is ever asked for (`SheetRange`), so a sheet of a million rows
 //! costs what twenty rows do.
+//!
+//! A sidebar, like the Docs app's, lists your files and the shared ones as a tree of folders and
+//! spreadsheets: click one to open it. It folds away to give the grid the whole window.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
+use ccosel_proto::fs::{Access, EntryKind, ListDir, ListDirReq, PathReq};
 use ccosel_proto::sheet::{
     CellView, RangeReq, Sheet, SheetDone, SheetOp, SheetRange, SheetReq, can_save_as, cell_name,
     column_name,
 };
-use ccosel_sdk::{App, Poll, Text, Ui};
+use ccosel_sdk::{App, Poll, Text, TextStyle, Ui};
 
 /// The window of cells on screen.
 pub const ROWS: u32 = 20;
@@ -29,10 +33,48 @@ pub const COLS: u32 = 8;
 /// Four times a second while the server works: an edit's result should follow it closely.
 const POLL_MS: u32 = 250;
 
+/// How deep the sidebar tree goes.
+const TREE_DEPTH: usize = 8;
+
+/// The file endings the sidebar lists: the formats Gnumeric opens that people keep sheets in.
+const SHEET_ENDINGS: [&str; 7] = [
+    ".xlsx",
+    ".xls",
+    ".ods",
+    ".gnumeric",
+    ".csv",
+    ".tsv",
+    ".xlsm",
+];
+
+/// Whether `name` is a spreadsheet the sidebar should list.
+pub fn is_sheet(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    SHEET_ENDINGS.iter().any(|e| lower.ends_with(e))
+}
+
+/// `dir` joined with `name`.
+fn join(dir: &str, name: &str) -> String {
+    if dir.ends_with('/') {
+        format!("{dir}{name}")
+    } else {
+        format!("{dir}/{name}")
+    }
+}
+
+/// The folder `path` is in.
+fn parent(path: &str) -> String {
+    match path.trim_end_matches('/').rfind('/') {
+        Some(0) | None => "/".to_owned(),
+        Some(i) => path[..i].to_owned(),
+    }
+}
+
 /// What the job in flight is doing, for what to say about it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Kind {
     Open,
+    New,
     Edit,
     Save,
 }
@@ -47,8 +89,13 @@ pub struct Spreadsheet {
     loaded: String,
     /// The cell to go to, as a name like `B20`.
     goto: Text,
-    /// The file the workbook was opened from, which Save writes back to.
+    /// The file Save writes back to: the one the workbook was opened from or last saved as.
+    /// `None` for a new workbook that hasn't been saved.
     file: Option<String>,
+    /// Whether the sidebar is shown.
+    sidebar: bool,
+    /// Folders open in the sidebar tree.
+    expanded: BTreeSet<String>,
     session: u64,
     sheets: Vec<String>,
     sheet: u16,
@@ -82,6 +129,8 @@ impl Default for Spreadsheet {
             loaded: String::new(),
             goto: Text::new(""),
             file: None,
+            sidebar: true,
+            expanded: BTreeSet::new(),
             session: 0,
             sheets: Vec::new(),
             sheet: 0,
@@ -123,6 +172,12 @@ pub fn parse_cell(name: &str) -> Option<(u32, u32)> {
 #[derive(Default, PartialEq)]
 struct Actions {
     open: bool,
+    /// A file clicked in the sidebar.
+    open_path: Option<String>,
+    new: bool,
+    toggle_sidebar: bool,
+    /// A folder opened or closed in the sidebar.
+    toggle: Option<String>,
     save: bool,
     save_as: bool,
     set: bool,
@@ -140,6 +195,20 @@ fn moved(at: u32, by: i64) -> u32 {
 impl Spreadsheet {
     fn toolbar(&mut self, ui: &mut Ui<'_>, act: &mut Actions) {
         ui.horizontal(|ui| {
+            act.toggle_sidebar = ui
+                .button(if self.sidebar {
+                    "◀ Files"
+                } else {
+                    "▶ Files"
+                })
+                .clicked();
+            ui.tooltip(if self.sidebar {
+                "Hide the list of files"
+            } else {
+                "Show the list of files"
+            });
+            act.new = ui.button("📄 New").clicked();
+            ui.tooltip("Start a new, empty spreadsheet");
             ui.label("File");
             ui.text_edit(&mut self.path);
             ui.tooltip("A .xlsx, .ods, .gnumeric or .csv file on the server");
@@ -154,6 +223,7 @@ impl Spreadsheet {
         if let Some((kind, _)) = &self.job {
             ui.label(match kind {
                 Kind::Open => "Opening…",
+                Kind::New => "Starting a new spreadsheet…",
                 Kind::Edit => "Calculating…",
                 Kind::Save => "Saving…",
             });
@@ -239,6 +309,79 @@ impl Spreadsheet {
         });
     }
 
+    /// Your files and the shared ones, as trees of folders and spreadsheets.
+    fn files(&self, ui: &mut Ui<'_>, act: &mut Actions) {
+        // Who the server thinks this is, which is where "My files" lives.
+        let user = match ui.rpc().get::<Access>(&PathReq { path: "/" }) {
+            Poll::Ready(a) => a.user.clone(),
+            _ => None,
+        };
+        let mut places = Vec::new();
+        if let Some(name) = &user {
+            places.push(("🏠 My files", join("/home", name)));
+        }
+        places.push(("👥 Shared", "/".to_owned()));
+        ui.scroll(|ui| {
+            for (title, root) in &places {
+                ui.push_id(root, |ui| {
+                    ui.styled(title, TextStyle::STRONG);
+                    self.tree(ui, root, 0, act);
+                });
+            }
+        });
+    }
+
+    /// One folder's spreadsheets and subfolders, and the open subfolders' under them.
+    fn tree(&self, ui: &mut Ui<'_>, dir: &str, depth: usize, act: &mut Actions) {
+        let listing = match ui.rpc().get::<ListDir>(&ListDirReq { path: dir }) {
+            Poll::Ready(listing) => listing,
+            Poll::Pending => {
+                ui.styled("Loading…", TextStyle::WEAK);
+                return;
+            }
+            Poll::Failed(_) => {
+                ui.styled("Can't be listed", TextStyle::WEAK);
+                return;
+            }
+        };
+        let mut shown = 0;
+        for entry in &listing.entries {
+            let is_dir = entry.kind == EntryKind::Dir;
+            // Home folders have a place of their own above.
+            if (!is_dir && !is_sheet(&entry.name)) || (dir == "/" && entry.name == "home") {
+                continue;
+            }
+            shown += 1;
+            let path = join(dir, &entry.name);
+            ui.push_id(&entry.name, |ui| {
+                if is_dir {
+                    let open = self.expanded.contains(&path);
+                    let icon = if open { "📂" } else { "📁" };
+                    if ui
+                        .selectable(false, &format!("{icon} {}", entry.name))
+                        .clicked()
+                    {
+                        act.toggle = Some(path.clone());
+                    }
+                    if open && depth + 1 < TREE_DEPTH {
+                        ui.indent(|ui| self.tree(ui, &path, depth + 1, act));
+                    }
+                } else {
+                    let here = self.file.as_deref() == Some(path.as_str());
+                    if ui.selectable(here, &format!("📄 {}", entry.name)).clicked() {
+                        act.open_path = Some(path.clone());
+                    }
+                }
+            });
+        }
+        if shown == 0 {
+            ui.styled("No spreadsheets", TextStyle::WEAK | TextStyle::ITALIC);
+        }
+        if listing.truncated {
+            ui.styled("(more not shown)", TextStyle::WEAK);
+        }
+    }
+
     fn range_req(&self) -> RangeReq {
         RangeReq {
             session: self.session,
@@ -307,11 +450,18 @@ impl Spreadsheet {
         rpc.invalidate::<Sheet>(&req);
         self.job = None;
         self.changed = true;
+        if let (Ok(_), SheetOp::Save { path }) = (&result, &req.op) {
+            // The sidebar shows the file, if it is a new one.
+            rpc.invalidate::<ListDir>(&ListDirReq {
+                path: &parent(path),
+            });
+        }
         match result {
             Ok(done) => self.finished(kind, &req, done),
             Err(why) => {
                 let what = match kind {
                     Kind::Open => "open it",
+                    Kind::New => "start a new spreadsheet",
                     Kind::Edit => "change the cell",
                     Kind::Save => "save it",
                 };
@@ -329,16 +479,14 @@ impl Spreadsheet {
     fn finished(&mut self, kind: Kind, req: &SheetReq, done: SheetDone) {
         match (kind, &req.op) {
             (Kind::Open, SheetOp::Open { path }) => {
-                self.session = done.session;
-                self.file = Some(path.clone());
-                self.sheet = 0;
-                self.top = 0;
-                self.left = 0;
-                self.cells.clear();
-                self.typed.clear();
-                self.queue.clear();
-                self.select((0, 0));
+                self.begin(done.session, Some(path.clone()));
                 self.status = Some(format!("Opened {path}"));
+            }
+            (Kind::New, SheetOp::New) => {
+                self.begin(done.session, None);
+                self.status = Some(
+                    "A new spreadsheet. Type a name in File and press Save as to keep it.".into(),
+                );
             }
             (
                 Kind::Edit,
@@ -352,12 +500,27 @@ impl Spreadsheet {
                 }
             }
             (Kind::Save, SheetOp::Save { path }) => {
+                // Save writes here from now on.
+                self.file = Some(path.clone());
                 self.status = Some(format!("Saved {path}"));
             }
             _ => {}
         }
         self.sheets = done.sheets;
         self.version = done.version;
+    }
+
+    /// Show `session`, just opened or made, from its first cell.
+    fn begin(&mut self, session: u64, file: Option<String>) {
+        self.session = session;
+        self.file = file;
+        self.sheet = 0;
+        self.top = 0;
+        self.left = 0;
+        self.cells.clear();
+        self.typed.clear();
+        self.queue.clear();
+        self.select((0, 0));
     }
 
     /// Show what an edit changed straight away, before the window is read again.
@@ -397,7 +560,7 @@ impl Spreadsheet {
     fn request(&mut self, op: SheetOp) -> SheetReq {
         self.seq = self.seq.wrapping_add(1);
         SheetReq {
-            session: if matches!(op, SheetOp::Open { .. }) {
+            session: if matches!(op, SheetOp::Open { .. } | SheetOp::New) {
                 0
             } else {
                 self.session
@@ -407,21 +570,47 @@ impl Spreadsheet {
         }
     }
 
+    /// Start opening or making a workbook, unless something is still in flight.
+    fn start(&mut self, kind: Kind, op: SheetOp) {
+        if self.job.is_some() || !self.queue.is_empty() {
+            self.status = Some("Wait for the last change to finish first.".to_owned());
+            return;
+        }
+        self.status = None;
+        let req = self.request(op);
+        self.job = Some((kind, req));
+    }
+
     fn apply(&mut self, act: Actions) {
         self.changed |= act != Actions::default();
+        if act.toggle_sidebar {
+            self.sidebar = !self.sidebar;
+        }
+        if let Some(folder) = act.toggle
+            && !self.expanded.remove(&folder)
+        {
+            self.expanded.insert(folder);
+        }
+        if let Some(path) = act.open_path {
+            self.path.set(&path);
+            self.start(Kind::Open, SheetOp::Open { path });
+        }
         if act.open {
             let path = self.path.as_str().trim().to_owned();
             if path.is_empty() {
                 self.status = Some("Type the path of a spreadsheet to open.".to_owned());
-            } else if self.job.is_some() || !self.queue.is_empty() {
-                self.status = Some("Wait for the last change to finish first.".to_owned());
             } else {
-                self.status = None;
-                let req = self.request(SheetOp::Open { path });
-                self.job = Some((Kind::Open, req));
+                self.start(Kind::Open, SheetOp::Open { path });
             }
         }
-        if act.save || act.save_as {
+        if act.new {
+            self.start(Kind::New, SheetOp::New);
+        }
+        if act.save && self.file.is_none() {
+            self.status = Some(
+                "This spreadsheet has no file yet: type a name in File and press Save as.".into(),
+            );
+        } else if act.save || act.save_as {
             let path = if act.save {
                 self.file.clone().unwrap_or_default()
             } else {
@@ -502,15 +691,28 @@ impl App for Spreadsheet {
         // Each part under its own id, so a status line appearing above the grid doesn't change
         // the ids of the fields and cells below it.
         let mut act = Actions::default();
-        ui.push_id("toolbar", |ui| self.toolbar(ui, &mut act));
-        if self.session == 0 {
-            ui.separator();
-            ui.label("Open a .xlsx, .ods, .gnumeric or .csv file to start.");
-        } else {
-            ui.push_id("formula", |ui| self.formula_bar(ui, &mut act));
-            ui.push_id("tabs", |ui| self.tabs(ui, &mut act));
-            ui.push_id("grid", |ui| self.grid(ui, &mut act));
-        }
+        let main = |this: &mut Self, ui: &mut Ui<'_>, act: &mut Actions| {
+            ui.push_id("toolbar", |ui| this.toolbar(ui, act));
+            if this.session == 0 {
+                ui.separator();
+                ui.label(
+                    "Open a .xlsx, .ods, .gnumeric or .csv file to start, or press New for an \
+                     empty one.",
+                );
+            } else {
+                ui.push_id("formula", |ui| this.formula_bar(ui, act));
+                ui.push_id("tabs", |ui| this.tabs(ui, act));
+                ui.push_id("grid", |ui| this.grid(ui, act));
+            }
+        };
+        // The same layout whether or not the sidebar shows, so hiding it doesn't change the ids
+        // of the fields beside it, which would lose what is typed in them.
+        ui.horizontal_top(|ui| {
+            if self.sidebar {
+                ui.push_id("files", |ui| ui.side_column(|ui| self.files(ui, &mut act)));
+            }
+            ui.push_id("main", |ui| ui.vertical(|ui| main(self, ui, &mut act)));
+        });
         self.apply(act);
     }
 

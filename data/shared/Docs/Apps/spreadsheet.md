@@ -7,10 +7,28 @@ files you save open in Excel, LibreOffice and Gnumeric.
 It opens `.xlsx` (Excel), `.ods` (LibreOffice and OpenOffice), `.gnumeric` and `.csv` files,
 and most other spreadsheet files Gnumeric can read.
 
-## Opening a file
+## Finding and opening a file
 
-Type the file's path in the **File** box, such as `/home/your-name/budget.xlsx`, and press
-**📂 Open**. A big file can take a few seconds; the app says "Opening…" meanwhile.
+The sidebar on the left lists your spreadsheets:
+
+- **🏠 My files** is your own folder, when you are signed in.
+- **👥 Shared** is everything else on the server you can see.
+
+Click a folder (📁) to open it and see what is inside, and click it again to close it. Click a
+spreadsheet (📄) to open it; the one you have open is highlighted. Only spreadsheet files are
+listed, so the tree stays short.
+
+**◀ Files** folds the sidebar away to give the grid the whole window, and **▶ Files** brings it
+back.
+
+You can also type a file's path in the **File** box, such as `/home/your-name/budget.xlsx`, and
+press **📂 Open**. A big file can take a few seconds; the app says "Opening…" meanwhile.
+
+## Starting a new spreadsheet
+
+Press **📄 New** for an empty spreadsheet with one sheet. It isn't a file yet: to keep it, type a
+name in the **File** box, such as `/home/your-name/plan.xlsx`, and press **Save as**. After that,
+**💾 Save** saves to that file.
 
 If the file has more than one sheet, each sheet's name appears as a tab above the grid. Click a
 tab to show that sheet.
@@ -49,7 +67,7 @@ has been worked out. It means the same.
 
 - **💾 Save** saves to the file you opened, in its own format.
 - **Save as** saves to the file named in the **File** box. The ending of the name chooses the
-  format: `.xlsx`, `.ods`, `.gnumeric` or `.csv`.
+  format: `.xlsx`, `.ods`, `.gnumeric` or `.csv`. From then on, **💾 Save** saves there.
 
 Saving as `.csv` keeps only the first sheet and only values, not formulas, because that is all a
 CSV file can hold. Use one of the other formats to keep everything.

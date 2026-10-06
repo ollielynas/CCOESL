@@ -1,9 +1,13 @@
+use ccosel_proto::fs::{AccessReply, DirEntry, DirListing, EntryKind};
 use ccosel_proto::sheet::{RangeReply, SheetStatus};
 use ccosel_sdk::testing::{Harness, rpc_error};
 
 use super::*;
 
 const SESSION: u64 = 77;
+
+const START: &str =
+    "Open a .xlsx, .ods, .gnumeric or .csv file to start, or press New for an empty one.";
 
 fn view(row: u32, col: u32, raw: &str, shown: &str) -> CellView {
     CellView {
@@ -90,7 +94,7 @@ fn opened(sheets: &[&str]) -> Harness<Spreadsheet> {
 fn before_opening_anything_it_says_how_to_start() {
     let mut h = Harness::new(Spreadsheet::default());
     h.frame();
-    assert!(h.has_label("Open a .xlsx, .ods, .gnumeric or .csv file to start."));
+    assert!(h.has_label(START));
     assert!(!h.has_button("💾 Save"));
     assert_eq!(h.outstanding::<SheetRange>(), 0);
     assert_eq!(
@@ -133,7 +137,7 @@ fn opening_is_polled_until_it_finishes() {
     h.frame();
     h.frame();
     assert!(h.has_label("Could not open it: Gnumeric couldn't do it: not a spreadsheet"));
-    assert!(h.has_label("Open a .xlsx, .ods, .gnumeric or .csv file to start."));
+    assert!(h.has_label(START));
 }
 
 #[test]
@@ -399,5 +403,193 @@ fn cell_names_are_read_like_a_spreadsheet() {
     assert_eq!(parse_cell("ZZ1"), Some((0, 701)));
     for bad in ["", "A", "12", "A0", "1A", "A-1", "ABCD1", "A1B"] {
         assert_eq!(parse_cell(bad), None, "{bad:?}");
+    }
+}
+
+fn entry(name: &str, kind: EntryKind) -> DirEntry {
+    DirEntry {
+        name: name.into(),
+        kind,
+        size: 10,
+        mtime_s: 0,
+        writable: true,
+    }
+}
+
+fn listing(entries: Vec<DirEntry>) -> DirListing {
+    DirListing {
+        entries,
+        truncated: false,
+    }
+}
+
+/// Answers the sidebar's questions: who this is, and the listings of the shared folder and theirs.
+fn sidebar_for(
+    h: &mut Harness<Spreadsheet>,
+    user: Option<&str>,
+    home: DirListing,
+    shared: DirListing,
+) {
+    h.reply::<Access>(&AccessReply {
+        read: true,
+        write: true,
+        user: user.map(String::from),
+    });
+    h.frame();
+    // The shared folder was asked for first, before it was known whose folder is theirs.
+    h.reply::<ListDir>(&shared);
+    if user.is_some() {
+        h.reply::<ListDir>(&home);
+    }
+    h.frame();
+}
+
+#[test]
+fn the_sidebar_lists_your_spreadsheets_and_the_shared_ones() {
+    let mut h = Harness::new(Spreadsheet::default());
+    h.frame();
+    assert!(h.has_text("Loading…"));
+    sidebar_for(
+        &mut h,
+        Some("ann"),
+        listing(vec![
+            entry("budget.xlsx", EntryKind::File),
+            entry("notes.md", EntryKind::File),
+        ]),
+        listing(vec![
+            entry("Reports", EntryKind::Dir),
+            entry("home", EntryKind::Dir),
+            entry("team.ods", EntryKind::File),
+        ]),
+    );
+    assert!(h.has_text("🏠 My files") && h.has_text("👥 Shared"));
+    let rows: Vec<String> = h.selectables().into_iter().map(|(t, _)| t).collect();
+    assert_eq!(rows, ["📄 budget.xlsx", "📁 Reports", "📄 team.ods"]);
+
+    // A folder opens to show what is in it, and closes again.
+    press(&mut h, "📁 Reports");
+    assert_eq!(h.outstanding::<ListDir>(), 1);
+    h.reply::<ListDir>(&listing(vec![]));
+    h.frame();
+    assert!(h.has_button("📂 Reports") || h.selectables().iter().any(|(t, _)| t == "📂 Reports"));
+    assert!(h.has_text("No spreadsheets"));
+    press(&mut h, "📂 Reports");
+    assert!(h.selectables().iter().any(|(t, _)| t == "📁 Reports"));
+}
+
+#[test]
+fn clicking_a_spreadsheet_in_the_sidebar_opens_it() {
+    let mut h = Harness::new(Spreadsheet::default());
+    h.frame();
+    sidebar_for(
+        &mut h,
+        None,
+        listing(vec![]),
+        listing(vec![entry("team.ods", EntryKind::File)]),
+    );
+    assert!(
+        !h.has_text("🏠 My files"),
+        "signed out: no folder of your own"
+    );
+    press(&mut h, "📄 team.ods");
+    assert_eq!(h.text_fields()[0], "/team.ods");
+    assert_eq!(h.outstanding::<Sheet>(), 1);
+    h.reply::<Sheet>(&done(1, &["Sheet1"], vec![]));
+    h.frame();
+    h.frame();
+    assert!(h.has_label("Opened /team.ods"));
+    assert!(
+        h.selectables().contains(&("📄 team.ods".to_owned(), true)),
+        "the open one is marked"
+    );
+}
+
+#[test]
+fn a_folder_that_cannot_be_listed_says_so() {
+    let mut h = Harness::new(Spreadsheet::default());
+    h.frame();
+    h.reply::<Access>(&AccessReply {
+        read: true,
+        write: true,
+        user: None,
+    });
+    h.frame();
+    h.fail::<ListDir>(rpc_error::DENIED);
+    h.frame();
+    assert!(h.has_text("Can't be listed"));
+}
+
+#[test]
+fn the_sidebar_folds_away() {
+    let mut h = Harness::new(Spreadsheet::default());
+    h.frame();
+    assert!(h.has_text("👥 Shared"));
+    press(&mut h, "◀ Files");
+    assert!(!h.has_text("👥 Shared"));
+    assert!(h.has_button("▶ Files"));
+    press(&mut h, "▶ Files");
+    assert!(h.has_text("👥 Shared"));
+}
+
+#[test]
+fn a_new_spreadsheet_has_to_be_saved_as_something() {
+    let mut h = Harness::new(Spreadsheet::default());
+    h.frame();
+    press(&mut h, "📄 New");
+    assert!(h.has_label("Starting a new spreadsheet…"));
+    let Some((_, req)) = &h.app.job else {
+        panic!("a new spreadsheet should be on its way");
+    };
+    assert_eq!((req.session, &req.op), (0, &SheetOp::New));
+    h.reply::<Sheet>(&done(1, &["Sheet1"], vec![]));
+    h.frame();
+    h.frame();
+    assert!(h.has_label("A new spreadsheet. Type a name in File and press Save as to keep it."));
+    assert!(h.has_label("A1"));
+
+    press(&mut h, "💾 Save");
+    assert!(
+        h.has_label("This spreadsheet has no file yet: type a name in File and press Save as.")
+    );
+    assert_eq!(h.outstanding::<Sheet>(), 0);
+
+    h.type_text(0, "/home/ann/new.xlsx");
+    h.frame();
+    press(&mut h, "Save as");
+    h.reply::<Sheet>(&done(1, &["Sheet1"], vec![]));
+    h.frame();
+    h.frame();
+    assert!(h.has_label("Saved /home/ann/new.xlsx"));
+    // From now on Save writes there.
+    press(&mut h, "💾 Save");
+    let Some((_, req)) = &h.app.job else {
+        panic!("a save should be in flight");
+    };
+    assert_eq!(
+        req.op,
+        SheetOp::Save {
+            path: "/home/ann/new.xlsx".into()
+        }
+    );
+}
+
+#[test]
+fn a_new_spreadsheet_that_fails_says_why() {
+    let mut h = Harness::new(Spreadsheet::default());
+    h.frame();
+    press(&mut h, "📄 New");
+    h.reply::<Sheet>(&failed("couldn't make room for it"));
+    h.frame();
+    h.frame();
+    assert!(h.has_label("Could not start a new spreadsheet: couldn't make room for it"));
+}
+
+#[test]
+fn spreadsheet_files_are_recognised_by_their_ending() {
+    for yes in ["a.xlsx", "B.ODS", "c.gnumeric", "d.csv", "e.xls", "f.tsv"] {
+        assert!(is_sheet(yes), "{yes}");
+    }
+    for no in ["a.md", "b.txt", "xlsx", "c.pdf"] {
+        assert!(!is_sheet(no), "{no}");
     }
 }
