@@ -144,6 +144,14 @@ pub fn catalog() -> Vec<AppEntry> {
             url: "/dist/docs.wasm",
             default_size: [560.0, 560.0],
         },
+        AppEntry {
+            id: "music-score",
+            name: "Music Score",
+            icon: egui_phosphor::regular::MUSIC_NOTES,
+            color: egui::Color32::from_rgb(0xdb, 0x27, 0x77),
+            url: "/dist/music-score.wasm",
+            default_size: [620.0, 680.0],
+        },
     ]
 }
 
