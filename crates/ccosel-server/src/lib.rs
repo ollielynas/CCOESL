@@ -10,11 +10,13 @@ pub mod build_api;
 pub mod dav;
 pub mod desktop;
 pub mod fs_api;
+pub mod gnumeric;
 pub mod idp;
 pub mod image_info;
 pub mod keycloak;
 pub mod rpc;
 pub mod scratch;
+pub mod sheet_api;
 pub mod stats;
 pub mod upload_api;
 
@@ -57,6 +59,8 @@ pub struct AppState {
     pub stats: Arc<stats::Stats>,
     /// Temporary project folders. See `scratch`.
     pub scratch: Arc<scratch::Scratch>,
+    /// Workbooks open in the Spreadsheet app. See `sheet_api`.
+    pub sheets: Arc<sheet_api::Sheets>,
     /// WebDAV at `/dav`. See `dav`.
     pub dav: dav_server::DavHandler<Option<String>>,
 }
@@ -89,6 +93,10 @@ pub fn app(jail: Jail, web_dir: PathBuf, auth: AuthState) -> Router {
     let jail = Arc::new(jail);
     let state = AppState {
         scratch,
+        sheets: Arc::new(
+            sheet_api::Sheets::new(Arc::new(sheet_api::Ssconvert::default()))
+                .expect("create a directory for open spreadsheets"),
+        ),
         dav: dav::handler(jail.clone()),
         jail,
         auth,
