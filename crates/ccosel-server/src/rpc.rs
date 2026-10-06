@@ -14,6 +14,7 @@ use ccosel_proto::build::CompileReq;
 use ccosel_proto::desktop::DesktopLayout;
 use ccosel_proto::fs::{ListDirReq, PathReq, SearchReq, WriteFileReq};
 use ccosel_proto::info::ServerInfoReply;
+use ccosel_proto::sheet::{RangeReq, SheetReq};
 use ccosel_proto::{Method, PROTO_VERSION, WireReply, WireRequest, WireResult, server_error};
 
 use serde::Serialize;
@@ -117,6 +118,8 @@ async fn dispatch(
                 .and_then(|_| crate::build_api::compile(jail, &state.jobs, &a));
             (result, a.path)
         }),
+        Method::Sheet => run::<SheetReq, _>(req, |a| (state.sheets.run(jail, user, &a), "")),
+        Method::SheetRange => run::<RangeReq, _>(req, |a| (state.sheets.range(user, &a), "")),
         Method::ServerInfo => {
             let host = stats::sample_host();
             let info = ServerInfoReply {

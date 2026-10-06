@@ -54,6 +54,12 @@ RUN apt-get update \
        fi \
     && rm -rf /var/lib/apt/lists/*
 
+# The Spreadsheet app opens, recalculates and saves workbooks with Gnumeric's `ssconvert`, which
+# needs no display (see `sheet_api`).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends gnumeric \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY --from=build /usr/local/bin/ccosel-server /usr/local/bin/ccosel-server
 COPY --from=build /src/web /srv/ccosel/web
 # The Docs app's pages. A new named volume starts with these; an existing one keeps its own.

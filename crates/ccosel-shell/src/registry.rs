@@ -144,6 +144,14 @@ pub fn catalog() -> Vec<AppEntry> {
             url: "/dist/docs.wasm",
             default_size: [560.0, 560.0],
         },
+        AppEntry {
+            id: "spreadsheet",
+            name: "Spreadsheet",
+            icon: egui_phosphor::regular::TABLE,
+            color: egui::Color32::from_rgb(0x16, 0xa3, 0x4a),
+            url: "/dist/spreadsheet.wasm",
+            default_size: [720.0, 600.0],
+        },
     ]
 }
 

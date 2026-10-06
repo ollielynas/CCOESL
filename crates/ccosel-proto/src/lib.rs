@@ -19,6 +19,7 @@ pub mod desktop;
 pub mod fs;
 pub mod info;
 pub mod scratch;
+pub mod sheet;
 pub mod upload;
 
 use serde::{Deserialize, Serialize};
@@ -51,6 +52,8 @@ pub enum Method {
     LoadDesktop = 16,
     SaveDesktop = 17,
     Remove = 51459,
+    Sheet = 33682,
+    SheetRange = 63874,
 }
 
 impl Method {
@@ -74,6 +77,8 @@ impl Method {
             16 => Some(Self::LoadDesktop),
             17 => Some(Self::SaveDesktop),
             51459 => Some(Self::Remove),
+            33682 => Some(Self::Sheet),
+            63874 => Some(Self::SheetRange),
             _ => None,
         }
     }
