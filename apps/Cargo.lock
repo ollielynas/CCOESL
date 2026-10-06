@@ -38,6 +38,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "ccosel-chess"
+version = "0.1.0"
+
+[[package]]
 name = "ccosel-proto"
 version = "0.1.0"
 dependencies = [
@@ -53,6 +57,15 @@ dependencies = [
  "ccosel-proto",
  "postcard",
  "serde",
+]
+
+[[package]]
+name = "chess"
+version = "0.1.0"
+dependencies = [
+ "ccosel-chess",
+ "ccosel-proto",
+ "ccosel-sdk",
 ]
 
 [[package]]
