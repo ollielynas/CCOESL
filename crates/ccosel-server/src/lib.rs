@@ -14,6 +14,7 @@ pub mod idp;
 pub mod image_info;
 pub mod keycloak;
 pub mod rpc;
+pub mod score_api;
 pub mod scratch;
 pub mod stats;
 pub mod upload_api;
@@ -57,6 +58,8 @@ pub struct AppState {
     pub stats: Arc<stats::Stats>,
     /// Temporary project folders. See `scratch`.
     pub scratch: Arc<scratch::Scratch>,
+    /// Sheet music being engraved, and what it made. See `score_api`.
+    pub engraver: Arc<score_api::Engraver>,
     /// WebDAV at `/dav`. See `dav`.
     pub dav: dav_server::DavHandler<Option<String>>,
 }
@@ -89,6 +92,9 @@ pub fn app(jail: Jail, web_dir: PathBuf, auth: AuthState) -> Router {
     let jail = Arc::new(jail);
     let state = AppState {
         scratch,
+        engraver: Arc::new(
+            score_api::Engraver::new().expect("create a directory for engraved scores"),
+        ),
         dav: dav::handler(jail.clone()),
         jail,
         auth,
@@ -107,6 +113,7 @@ pub fn app(jail: Jail, web_dir: PathBuf, auth: AuthState) -> Router {
         )
         .route("/files/{*path}", get(download))
         .route("/scratch", post(new_scratch))
+        .route("/engraved/{key}/{name}", get(engraved))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             auth::require_session,
@@ -197,6 +204,37 @@ async fn download(
         header::HeaderValue::from_static("nosniff"),
     );
     if let Ok(v) = format!("{disposition}; filename=\"{filename}\"").parse() {
+        headers.insert(header::CONTENT_DISPOSITION, v);
+    }
+    resp
+}
+
+/// `GET /engraved/<key>/<name>`: a page, the PDF or the MIDI file of an engraved score (see
+/// `score_api`). Pages are shown in the page; the PDF and MIDI are downloads.
+async fn engraved(
+    State(state): State<AppState>,
+    AxPath((key, name)): AxPath<(String, String)>,
+    req: axum::extract::Request,
+) -> Response {
+    let Some((path, kind)) = state.engraver.file(&key, &name) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let mut resp = match ServeFile::new(&path).try_call(req).await {
+        Ok(resp) => resp.map(axum::body::Body::new),
+        Err(_) => return StatusCode::NOT_FOUND.into_response(),
+    };
+    let disposition = if kind == "image/png" {
+        "inline".to_owned()
+    } else {
+        format!("attachment; filename=\"{name}\"")
+    };
+    let headers = resp.headers_mut();
+    headers.insert(header::CONTENT_TYPE, header::HeaderValue::from_static(kind));
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        header::HeaderValue::from_static("nosniff"),
+    );
+    if let Ok(v) = disposition.parse() {
         headers.insert(header::CONTENT_DISPOSITION, v);
     }
     resp
