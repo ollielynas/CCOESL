@@ -104,7 +104,29 @@ pub struct Workbook {
     pub sheets: Vec<Sheet>,
 }
 
+/// A workbook of one empty sheet, `Sheet1`: the least Gnumeric reads as a workbook.
+const BLANK: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<gnm:Workbook xmlns:gnm="http://www.gnumeric.org/v10.dtd">
+  <gnm:SheetNameIndex>
+    <gnm:SheetName gnm:Cols="16384" gnm:Rows="1048576">Sheet1</gnm:SheetName>
+  </gnm:SheetNameIndex>
+  <gnm:Sheets>
+    <gnm:Sheet Visibility="GNM_SHEET_VISIBILITY_VISIBLE">
+      <gnm:Name>Sheet1</gnm:Name>
+      <gnm:MaxCol>-1</gnm:MaxCol>
+      <gnm:MaxRow>-1</gnm:MaxRow>
+      <gnm:Cells/>
+    </gnm:Sheet>
+  </gnm:Sheets>
+</gnm:Workbook>
+"#;
+
 impl Workbook {
+    /// A new workbook: one empty sheet.
+    pub fn blank() -> Self {
+        Self::parse(BLANK).expect("the blank workbook parses")
+    }
+
     /// Read uncompressed Gnumeric XML, as `ssconvert -T Gnumeric_XmlIO:sax:0` writes it.
     pub fn parse(xml: &str) -> Result<Self, String> {
         let bad = |what: &str| format!("the workbook couldn't be read ({what})");

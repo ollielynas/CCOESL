@@ -27,6 +27,9 @@ pub enum SheetOp {
     },
     /// Write the workbook to `path`, in the format its extension names.
     Save { path: String },
+    /// Start a new, empty workbook of one sheet as a new session. It has no file until it is
+    /// saved.
+    New,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]

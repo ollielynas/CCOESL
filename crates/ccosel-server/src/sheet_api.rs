@@ -336,7 +336,7 @@ impl Sheets {
                     job.clone(),
                 );
                 std::thread::spawn(move || {
-                    worker.finish(open(&*engine, &sessions, id, dir, owner, &real));
+                    worker.finish(open(&*engine, &sessions, id, dir, owner, Some(&real)));
                 });
             }
             SheetOp::Edit {
@@ -358,6 +358,19 @@ impl Sheets {
                     (self.engine.clone(), job.clone(), req.session, *sheet);
                 std::thread::spawn(move || {
                     worker.finish(recalculate(&*engine, &session, id, Some(sheet)));
+                });
+            }
+            SheetOp::New => {
+                let id = self.new_session_id();
+                let dir = self.root.join(id.to_string());
+                let (engine, sessions, owner, worker) = (
+                    self.engine.clone(),
+                    self.sessions.clone(),
+                    user.map(str::to_owned),
+                    job.clone(),
+                );
+                std::thread::spawn(move || {
+                    worker.finish(open(&*engine, &sessions, id, dir, owner, None));
                 });
             }
             SheetOp::Save { path } => {
@@ -424,17 +437,18 @@ impl Sheets {
     }
 }
 
-/// Opens `real` as session `id`, owned by `owner`, and makes room for it among the owner's.
+/// Opens `real`, or a new blank workbook without it, as session `id`, owned by `owner`, and
+/// makes room for it among the owner's.
 fn open(
     engine: &dyn Gnumeric,
     sessions: &Sessions,
     id: u64,
     dir: PathBuf,
     owner: Option<String>,
-    real: &Path,
+    real: Option<&Path>,
 ) -> Result<SheetDone, String> {
     std::fs::create_dir_all(&dir).map_err(|e| format!("couldn't make room for it ({e})"))?;
-    let book = match read_book(engine, real, &dir) {
+    let book = match real.map_or_else(|| Ok(Workbook::blank()), |r| read_book(engine, r, &dir)) {
         Ok(book) => book,
         Err(e) => {
             let _ = std::fs::remove_dir_all(&dir);

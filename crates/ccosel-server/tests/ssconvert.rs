@@ -151,3 +151,40 @@ fn open_edit_save_and_open_again_with_real_gnumeric() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn a_new_workbook_calculates_and_saves_with_real_gnumeric() {
+    if !enabled() {
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("ccosel-ssconvert-new-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let jail = Arc::new(Jail::new(&dir).unwrap());
+    let sheets = Sheets::new(Arc::new(Ssconvert::default())).unwrap();
+    let req = |session, seq, op| SheetReq { session, seq, op };
+    let id = wait(&sheets, &jail, &req(0, 1, SheetOp::New)).session;
+    for (seq, row, raw) in [(2, 0, "2"), (3, 1, "=A1*21")] {
+        let op = SheetOp::Edit {
+            sheet: 0,
+            row,
+            col: 0,
+            raw: raw.into(),
+        };
+        wait(&sheets, &jail, &req(id, seq, op));
+    }
+    assert_eq!(at(&cells(&sheets, id), 1, 0), pair("=A1*21", "42"));
+    let op = SheetOp::Save {
+        path: "/new.xlsx".into(),
+    };
+    wait(&sheets, &jail, &req(id, 4, op));
+    let op = SheetOp::Open {
+        path: "/new.xlsx".into(),
+    };
+    let again = wait(&sheets, &jail, &req(0, 5, op));
+    assert_eq!(
+        at(&cells(&sheets, again.session), 1, 0),
+        pair("=A1*21", "42")
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

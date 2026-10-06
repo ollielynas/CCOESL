@@ -474,3 +474,32 @@ fn shown_cells_skip_the_empty_ones() {
     assert_eq!(shown[&(2, 0)], "x,y");
     assert!(!shown.contains_key(&(1, 0)));
 }
+
+#[test]
+fn a_new_workbook_is_one_empty_sheet_that_can_be_edited_and_saved() {
+    let s = setup("new", Fake::default());
+    let done = wait(&s, None, &req(0, 1, SheetOp::New)).unwrap();
+    assert_ne!(done.session, 0);
+    assert_eq!(done.sheets, ["Sheet1"]);
+    assert!(range(&s, None, done.session, 0).is_empty());
+    let id = done.session;
+    wait(&s, None, &req(id, 2, edit_op(0, 0, "=6*7"))).unwrap();
+    assert_eq!(cell(&range(&s, None, id, 0), 0, 0).unwrap().raw, "=6*7");
+    wait(
+        &s,
+        None,
+        &req(
+            id,
+            3,
+            SheetOp::Save {
+                path: "/new.gnumeric".into(),
+            },
+        ),
+    )
+    .unwrap();
+    assert!(
+        std::fs::read_to_string(s.dir.join("new.gnumeric"))
+            .unwrap()
+            .contains("=6*7")
+    );
+}
