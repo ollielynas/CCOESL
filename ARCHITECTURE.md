@@ -269,6 +269,22 @@ limited to the project and the toolchain, read-only except the project's `target
 network (dependencies vendored or fetched by a separate step); and CPU, memory and time
 limits enforced from outside the build rather than by the build itself.
 
+### Engraving a score runs untrusted code too
+
+`Engrave` (the Music Score app) runs GNU LilyPond on whatever source the app sends. A `.ly` file
+can embed Scheme, and Scheme can do anything the server's user can: read and write files, run
+commands, use the network. LilyPond used to offer `-dsafe` to limit this, but it was removed in
+2.23.12 ([merge request !1522](https://gitlab.com/lilypond/lilypond/-/merge_requests/1522)) as
+"utterly broken and virtually impossible to fix", and 2.24, which Ubuntu 24.04 ships, has no
+safe mode at all. So the server runs LilyPond without one, and **engraving a score is running
+it**, exactly as building a project is.
+
+The same advice and the same eventual fix apply as for building above: only engrave scores you
+would be willing to run, and a real sandbox (no network, a read-only filesystem apart from the
+job's own directory, limits enforced from outside) is what would make this safe. The app's
+user documentation says so in plain words, since a score feels much less like code than a
+project does.
+
 ## Status
 
 - [x] `ccosel-abi` v0 — opcodes, frame structs, codec, validator, hostile-input tests

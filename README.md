@@ -39,6 +39,7 @@ The user documentation, the same pages the Docs app shows, starts at
 | **Docs** | Read, write and search documents, including the user documentation | [docs.md](data/shared/Docs/Apps/docs.md) |
 | **Viewer** | Look at pictures, music, videos, PDFs and text files, and share them | [viewer.md](data/shared/Docs/Apps/viewer.md) |
 | **Compiler** | Build a Rust project on the server and download the result | [rust-compiler.md](data/shared/Docs/Apps/rust-compiler.md) |
+| **Music Score** | Write music in LilyPond and see it engraved, with PDF and MIDI downloads | [music-score.md](data/shared/Docs/Apps/music-score.md) |
 | **Server** | Live graphs of how the server is doing | [server-dashboard.md](data/shared/Docs/Apps/server-dashboard.md) |
 | **Account** | See who you are signed in as, sign out, and make app passwords | [account.md](data/shared/Docs/Apps/account.md) |
 | **Clock** | A clock and stopwatch | [clock.md](data/shared/Docs/Apps/clock.md) |
@@ -63,7 +64,6 @@ These are open tickets.
 - **Clock**: a sunlight map with timezones (#88)
 - **Chess** against GNU Chess (#76), and **Go** against GNU Go (#77)
 - **Spreadsheet** backed by GNU Gnumeric (#75)
-- **Music Score** backed by GNU LilyPond (#74)
 - **Messages**: inbox, 1:1 and group chats, and file sharing (#49)
 - **Admin console** (#65) and **NAS** storage (#66)
 - **Fluid simulation** with OpenFOAM (#91)
