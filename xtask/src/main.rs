@@ -10,6 +10,7 @@ use std::process::Command;
 use anyhow::{Context, Result, bail};
 
 mod image;
+mod worktrees;
 
 /// App modules are the recurring download, so they get a hard budget. The shell is fetched
 /// once and cached forever, so it is reported but not gated.
@@ -64,6 +65,9 @@ fn main() -> Result<()> {
         }
         "review" => review(&std::env::args().skip(2).collect::<Vec<_>>()),
         "test-image" => image::test_image(&std::env::args().skip(2).collect::<Vec<_>>()),
+        "prune-worktrees" => {
+            worktrees::prune_worktrees(&std::env::args().skip(2).collect::<Vec<_>>())
+        }
         _ => {
             help();
             Ok(())
@@ -83,7 +87,9 @@ fn help() {
          \x20 cargo xtask new-app <name>   scaffold a new app crate under apps/\n\n\
          Trying a pull request (needs the GitHub CLI, `gh`):\n\n\
          \x20 cargo xtask review 10                  check PR #10 out in a fresh ../<repo>-review and serve it\n\
-         \x20 cargo xtask review 10 --checkout-only  just check it out, to read it in your editor\n\n\
+         \x20 cargo xtask review 10 --checkout-only  just check it out, to read it in your editor\n\
+         \x20 cargo xtask prune-worktrees           remove worktrees whose PR is merged or closed\n\
+         \x20                                       (and their branches); --dry-run lists them\n\n\
          Checks — what CI runs, one job each; `ci` runs them all and is the definition of done:\n\n\
          \x20 cargo xtask ci         fmt, clippy, test, test-wasm, coverage, build-web, then test-image\n\
          \x20 cargo xtask fmt        rustfmt --check on both workspaces\n\
