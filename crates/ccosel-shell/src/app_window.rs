@@ -130,6 +130,20 @@ impl<I: AppInstance> AppWindow<I> {
             .map(|(id, dest)| (*id, dest.clone(), self.replayer.picks_files(*id)))
     }
 
+    /// What the window is called: what the app asked for in its last frame, such as the file
+    /// the Viewer shows, or else the app's own name.
+    pub fn shown_title(&self) -> String {
+        self.replayer
+            .window_title()
+            .map_or_else(|| self.title.clone(), str::to_owned)
+    }
+
+    /// The size the app asked for its content area in its last frame, if it did. See
+    /// `Placement::size_once`.
+    pub fn asked_size(&self) -> Option<egui::Vec2> {
+        self.replayer.window_size()
+    }
+
     /// The `UploadProject` button clicked this frame, if any.
     pub fn clicked_project_upload(&self) -> Option<u64> {
         self.replayer

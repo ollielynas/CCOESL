@@ -1,34 +1,47 @@
-//! Copies of Apple-format files that every browser can show, made on the server.
+//! Pictures, video and sound in a form every browser shows, decided and made on the server.
 //!
-//! The Viewer hands pictures, audio and video straight to the browser, so the formats only
-//! Safari decodes (HEIC photos, HEVC and ProRes video, Apple Lossless and other Apple audio, and
-//! TIFF) come out blank anywhere else. For those, `/files/<path>?inline=1&as=web` sends a copy
-//! made with ffmpeg instead: JPEG, H.264 MP4, or AAC.
+//! The Viewer hands media straight to the browser, so whatever the browser can't decode comes
+//! out blank: HEIC and HEVC outside Safari, and everywhere SVG, TIFF, camera raw, OpenEXR,
+//! Photoshop, AVI, WMV, MPEG-2, 10-bit H.264, WMA, AC-3 and more. For the Viewer, the server
+//! looks at what a file really is (its first bytes, or ffprobe; never only its name) and either
+//! sends it as it is, when every browser shows it, or makes a copy that every browser does: a
+//! picture as WebP (an SVG as PNG), a video as H.264 MP4, a recording as AAC. `/files/<path>?
+//! inline=1&as=web` sends whichever it is.
 //!
-//! A copy is kept in a cache folder **outside** the jail, named by a hash of the original's real
-//! path, size and modification time, so changing the file makes a new one and viewing it again
-//! costs nothing. The cache has a size limit and drops the least recently used copies first.
-//! Nothing here checks permissions: the callers check them, exactly as for `/files`, before they
-//! ask, and a copy is only ever found from the real path a check has just passed.
+//! What was decided, and the copy, are kept in a cache folder **outside** the jail, named by a
+//! hash of the original's real path, size and modification time, so changing the file means
+//! deciding again and viewing it again costs nothing. The cache has a size limit and drops the
+//! least recently used first. Nothing here checks permissions: the callers check them, exactly
+//! as for `/files`, before they ask, and a copy is only ever found from the real path a check
+//! has just passed.
 //!
-//! Making a copy is a job, polled with the `WebCopy` call the way a build is polled, so the
-//! Viewer can show a long video conversion's progress instead of a blank player.
+//! Deciding and converting is a job, polled with the `WebCopy` call the way a build is polled,
+//! so the Viewer can show a long video conversion's progress instead of a blank player.
+
+pub mod plan;
+pub mod sniff;
+pub mod svg;
+mod tools;
 
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Read};
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
+pub use ccosel_proto::fs::Shown;
 use ccosel_proto::fs::WebCopyStatus;
 use sha2::{Digest, Sha256};
 
-/// What a file becomes.
+pub use plan::Probe;
+pub use tools::Tools;
+
+/// What a copy is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Target {
-    Jpeg,
+    Webp,
+    Png,
     Mp4,
     /// AAC in an MP4 (`.m4a`) container.
     Aac,
@@ -37,7 +50,8 @@ pub enum Target {
 impl Target {
     pub fn extension(self) -> &'static str {
         match self {
-            Self::Jpeg => "jpg",
+            Self::Webp => "webp",
+            Self::Png => "png",
             Self::Mp4 => "mp4",
             Self::Aac => "m4a",
         }
@@ -45,63 +59,217 @@ impl Target {
 
     pub fn content_type(self) -> &'static str {
         match self {
-            Self::Jpeg => "image/jpeg",
+            Self::Webp => "image/webp",
+            Self::Png => "image/png",
             Self::Mp4 => "video/mp4",
             Self::Aac => "audio/mp4",
         }
+    }
+
+    fn from_extension(ext: &str) -> Option<Self> {
+        [Self::Webp, Self::Png, Self::Mp4, Self::Aac]
+            .into_iter()
+            .find(|t| t.extension() == ext)
     }
 
     /// How long one conversion may run before it is stopped.
     pub fn time_limit(self) -> Duration {
         match self {
             Self::Mp4 => Duration::from_secs(30 * 60),
-            Self::Jpeg | Self::Aac => Duration::from_secs(2 * 60),
+            Self::Webp | Self::Png | Self::Aac => Duration::from_secs(2 * 60),
         }
     }
 }
 
-/// What `path` is converted to, by its extension, or `None` for a file browsers show as it is.
-pub fn target_for(path: &Path) -> Option<Target> {
-    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
-    Some(match ext.as_str() {
-        "heic" | "heif" | "tif" | "tiff" => Target::Jpeg,
-        "mov" => Target::Mp4,
-        "m4a" | "caf" | "aif" | "aiff" => Target::Aac,
-        _ => return None,
-    })
+/// `content_type` if it is one a file is ever sent to the Viewer as unconverted: pictures,
+/// video and sound, never anything a browser would run. A cached decision is read back through
+/// this, so even a tampered cache file can't make `/files` send HTML.
+pub fn media_type(content_type: &str) -> Option<&'static str> {
+    [
+        "image/jpeg",
+        "image/png",
+        "image/gif",
+        "image/webp",
+        "image/avif",
+        "image/bmp",
+        "image/x-icon",
+        "video/mp4",
+        "video/webm",
+        "audio/mpeg",
+        "audio/aac",
+        "audio/mp4",
+        "audio/flac",
+        "audio/wav",
+        "audio/ogg",
+        "audio/webm",
+    ]
+    .into_iter()
+    .find(|t| *t == content_type)
 }
 
-/// How a conversion went.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Converted {
-    /// The output file was written.
-    Made,
-    /// The input already plays everywhere (an `.m4a` that is already AAC): send it as it is.
-    AlreadyFine,
+/// How a copy is made.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Recipe {
+    /// A picture's first frame, by ffmpeg or ImageMagick. See [`sniff::Picture::Convert`].
+    Picture {
+        magick: Option<&'static str>,
+        magick_first: bool,
+    },
+    /// An SVG, drawn by resvg here in the server.
+    Svg,
+    Video {
+        /// The video is already H.264 every browser plays, so it only needs a new container.
+        copy_video: bool,
+        /// `None` without sound; `Some(true)` if the sound is AAC already, so it is copied.
+        audio: Option<bool>,
+        /// HDR (PQ or HLG), mapped to ordinary brightness.
+        tone_map: bool,
+        deinterlace: bool,
+        /// How long it is, for progress.
+        duration_us: Option<u64>,
+    },
+    Audio {
+        /// Above 48 kHz, so brought down to it.
+        resample: bool,
+    },
 }
 
-/// Something that turns a file into a web-friendly one. ffmpeg in the server; a fake in tests,
-/// so CI needs no ffmpeg.
+impl Recipe {
+    pub fn target(&self) -> Target {
+        match self {
+            Self::Picture { .. } => Target::Webp,
+            Self::Svg => Target::Png,
+            Self::Video { .. } => Target::Mp4,
+            Self::Audio { .. } => Target::Aac,
+        }
+    }
+}
+
+/// What a file is, and how it is shown.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Plan {
+    /// Every browser shows it as it is, sent with this type.
+    AsIs {
+        shown: Shown,
+        content_type: &'static str,
+    },
+    /// A copy is made.
+    Convert { shown: Shown, recipe: Recipe },
+    /// It isn't a picture, video or recording, or not one anything here can read.
+    NotMedia,
+}
+
+impl Plan {
+    fn shown(&self) -> Shown {
+        match self {
+            Self::AsIs { shown, .. } | Self::Convert { shown, .. } => *shown,
+            Self::NotMedia => Shown::NotMedia,
+        }
+    }
+}
+
+/// Something that looks inside and converts files. ffmpeg and ImageMagick in the server; a fake
+/// in tests, so CI needs neither.
 pub trait Converter: Send + Sync {
-    /// Convert `input` into `output` as `target`, within `limit`, reporting progress in
-    /// thousandths when it can tell. On failure, the reason, for a person to read.
+    /// What ffprobe makes of `input`, within `limit`, or `None` if it can't read it.
+    fn probe(&self, input: &Path, limit: Duration) -> Option<Probe>;
+
+    /// Make the copy of `input` at `output` by `recipe`, within `limit`, reporting progress in
+    /// thousandths when it can tell. On failure, the reason, for a person to read. Never asked
+    /// for [`Recipe::Svg`], which is drawn here.
     fn convert(
         &self,
         input: &Path,
         output: &Path,
-        target: Target,
+        recipe: &Recipe,
         limit: Duration,
         progress: &(dyn Fn(u16) + Sync),
-    ) -> Result<Converted, String>;
+    ) -> Result<(), String>;
 }
 
-/// What a finished job left.
+/// How long ffprobe may look at a file.
+const PROBE_LIMIT: Duration = Duration::from_secs(30);
+
+/// How much of a file is read to recognise a picture: its header, and for APNG the chunks before
+/// the first image data.
+const HEAD_BYTES: u64 = 1 << 20;
+
+/// The most of a GIF read to count its frames. A GIF's first frame is rarely more than a few
+/// megabytes; one whose is bigger than this is shown still.
+const GIF_BYTES: u64 = 64 << 20;
+
+/// What a finished job left: how the file is shown and what to send.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Ready {
-    /// Send this copy.
-    Copy(PathBuf, Target),
-    /// Send the original.
-    Original,
+pub struct Ready {
+    pub shown: Shown,
+    /// The copy to send, or `None` for the original.
+    pub copy: Option<(PathBuf, Target)>,
+    /// What the original is sent as, when it is sent as it is. Empty for [`Shown::NotMedia`].
+    pub content_type: String,
+    /// The size of what is shown, the right way up, when it is a picture or video.
+    pub size: Option<(u32, u32)>,
+}
+
+impl Ready {
+    /// One line, for the cache: `shown copy-extension type width height`, `-` for none.
+    fn to_line(&self) -> String {
+        let shown = match self.shown {
+            Shown::Picture => "picture",
+            Shown::Animated => "animated",
+            Shown::Video => "video",
+            Shown::Audio => "audio",
+            Shown::NotMedia => "none",
+        };
+        let copy = self.copy.as_ref().map_or("-", |(_, t)| t.extension());
+        let content_type = if self.content_type.is_empty() {
+            "-"
+        } else {
+            &self.content_type
+        };
+        let (w, h) = self
+            .size
+            .map_or(("-".to_owned(), "-".to_owned()), |(w, h)| {
+                (w.to_string(), h.to_string())
+            });
+        format!("v1 {shown} {copy} {content_type} {w} {h}")
+    }
+
+    /// What [`Self::to_line`] wrote, with the copy at `copy_path` for its extension.
+    fn from_line(line: &str, copy_path: impl Fn(Target) -> PathBuf) -> Option<Self> {
+        let mut parts = line.split_whitespace();
+        if parts.next()? != "v1" {
+            return None;
+        }
+        let shown = match parts.next()? {
+            "picture" => Shown::Picture,
+            "animated" => Shown::Animated,
+            "video" => Shown::Video,
+            "audio" => Shown::Audio,
+            "none" => Shown::NotMedia,
+            _ => return None,
+        };
+        let copy = match parts.next()? {
+            "-" => None,
+            ext => {
+                let target = Target::from_extension(ext)?;
+                Some((copy_path(target), target))
+            }
+        };
+        let content_type = match parts.next()? {
+            "-" => String::new(),
+            t => t.to_owned(),
+        };
+        let size = match (parts.next()?.parse().ok(), parts.next()?.parse().ok()) {
+            (Some(w), Some(h)) => Some((w, h)),
+            _ => None,
+        };
+        Some(Self {
+            shown,
+            copy,
+            content_type,
+            size,
+        })
+    }
 }
 
 const UNKNOWN: u32 = u32::MAX;
@@ -111,10 +279,12 @@ const FAILURE_RETENTION: Duration = Duration::from_secs(10 * 60);
 
 struct Job {
     permille: AtomicU32,
+    /// What the file is, once that's decided.
+    shown: Mutex<Option<Shown>>,
     done: Mutex<Option<(Result<Ready, String>, Instant)>>,
 }
 
-/// The cache of copies, and the jobs making them.
+/// The cache of decisions and copies, and the jobs making them.
 pub struct WebCopies {
     dir: PathBuf,
     max_bytes: u64,
@@ -134,9 +304,9 @@ impl WebCopies {
         }
     }
 
-    /// The name a copy of the real file `real` has: a hash of where it is, how big, when it
-    /// last changed, and what it becomes. Any change to the file is a different name.
-    pub fn key(real: &Path, target: Target) -> Option<String> {
+    /// The name everything about the real file `real` is kept under: a hash of where it is, how
+    /// big, and when it last changed. Any change to the file is a different name.
+    pub fn key(real: &Path) -> Option<String> {
         let meta = std::fs::metadata(real).ok()?;
         let mtime = meta
             .modified()
@@ -144,11 +314,11 @@ impl WebCopies {
             .duration_since(SystemTime::UNIX_EPOCH)
             .ok()?;
         let mut hash = Sha256::new();
+        hash.update(b"web-copy v2\0");
         hash.update(real.as_os_str().as_encoded_bytes());
         hash.update([0]);
         hash.update(meta.len().to_le_bytes());
         hash.update(mtime.as_nanos().to_le_bytes());
-        hash.update(target.extension().as_bytes());
         Some(hash.finalize().iter().map(|b| format!("{b:02x}")).collect())
     }
 
@@ -156,75 +326,79 @@ impl WebCopies {
         self.dir.join(format!("{key}.{}", target.extension()))
     }
 
-    /// Marks a file that needs no copy, so asking again doesn't convert it again.
-    fn original_marker(&self, key: &str) -> PathBuf {
-        self.dir.join(format!("{key}.original"))
+    fn plan_path(&self, key: &str) -> PathBuf {
+        self.dir.join(format!("{key}.plan"))
     }
 
-    /// The copy of `real` if it is already made, or that the original will do. Touches it, so
-    /// it counts as recently used.
-    pub fn cached(&self, real: &Path, target: Target) -> Option<Ready> {
-        let key = Self::key(real, target)?;
-        let copy = self.copy_path(&key, target);
-        if copy.is_file() {
-            touch(&copy);
-            return Some(Ready::Copy(copy, target));
+    /// What was decided for `real`, and its copy, if both are still kept. Touches them, so they
+    /// count as recently used.
+    pub fn cached(&self, real: &Path) -> Option<Ready> {
+        let key = Self::key(real)?;
+        let plan = self.plan_path(&key);
+        let line = std::fs::read_to_string(&plan).ok()?;
+        let ready = Ready::from_line(&line, |t| self.copy_path(&key, t))?;
+        if let Some((copy, _)) = &ready.copy {
+            if !copy.is_file() {
+                return None;
+            }
+            touch(copy);
         }
-        let marker = self.original_marker(&key);
-        if marker.is_file() {
-            touch(&marker);
-            return Some(Ready::Original);
-        }
-        None
+        touch(&plan);
+        Some(ready)
     }
 
-    /// Start making the copy of `real` if it isn't made or being made, and say where it has got
-    /// to. Never waits for it.
-    pub fn status(&self, real: &Path, target: Target) -> WebCopyStatus {
-        if self.cached(real, target).is_some() {
-            return finished(None);
+    /// Start deciding about `real`, and making its copy, if that isn't done or being done, and
+    /// say where it has got to. Never waits.
+    pub fn status(&self, real: &Path) -> WebCopyStatus {
+        if let Some(ready) = self.cached(real) {
+            return finished(Ok(ready));
         }
-        let Some(key) = Self::key(real, target) else {
-            return finished(Some("the file couldn't be read".to_owned()));
+        let Some(key) = Self::key(real) else {
+            return finished(Err("the file couldn't be read".to_owned()));
         };
-        let job = self.job(&key, real, target);
-        match &*job.done.lock().unwrap() {
-            Some((Ok(_), _)) => finished(None),
-            Some((Err(why), _)) => finished(Some(why.clone())),
-            None => WebCopyStatus {
-                finished: false,
-                permille: match job.permille.load(Ordering::Relaxed) {
-                    UNKNOWN => None,
-                    n => Some(n.min(999) as u16),
-                },
-                error: None,
+        let job = self.job(&key, real);
+        if let Some((result, _)) = &*job.done.lock().unwrap() {
+            return finished(result.clone());
+        }
+        let shown = *job.shown.lock().unwrap();
+        WebCopyStatus {
+            finished: false,
+            permille: match job.permille.load(Ordering::Relaxed) {
+                UNKNOWN => None,
+                n => Some(n.min(999) as u16),
             },
+            error: None,
+            shown,
+            width: None,
+            height: None,
         }
     }
 
-    /// The finished result for `real`, waiting up to `wait` for a job to finish. `None` if it
-    /// is still running after that.
+    /// The finished result for `real`, waiting for it up to `short` once it's known to be a
+    /// video, which can take minutes, or `long` otherwise. `None` if it is still running then.
     pub fn wait(
         &self,
         real: &Path,
-        target: Target,
-        wait: Duration,
+        short: Duration,
+        long: Duration,
     ) -> Option<Result<Ready, String>> {
-        if let Some(ready) = self.cached(real, target) {
+        if let Some(ready) = self.cached(real) {
             return Some(Ok(ready));
         }
-        let key = Self::key(real, target).ok_or("the file couldn't be read");
-        let key = match key {
-            Ok(k) => k,
-            Err(e) => return Some(Err(e.to_owned())),
+        let Some(key) = Self::key(real) else {
+            return Some(Err("the file couldn't be read".to_owned()));
         };
-        let job = self.job(&key, real, target);
-        let until = Instant::now() + wait;
+        let job = self.job(&key, real);
+        let start = Instant::now();
         loop {
             if let Some((result, _)) = &*job.done.lock().unwrap() {
                 return Some(result.clone());
             }
-            if Instant::now() >= until {
+            let limit = match *job.shown.lock().unwrap() {
+                Some(Shown::Video) => short,
+                _ => long,
+            };
+            if start.elapsed() >= limit {
                 return None;
             }
             std::thread::sleep(Duration::from_millis(20));
@@ -232,7 +406,7 @@ impl WebCopies {
     }
 
     /// The job for `key`, started if there isn't one.
-    fn job(&self, key: &str, real: &Path, target: Target) -> Arc<Job> {
+    fn job(&self, key: &str, real: &Path) -> Arc<Job> {
         let mut jobs = self.jobs.lock().unwrap();
         // Successes are in the cache from now on, so only their job entries are dropped; a
         // failure stays a while, so polling shows why rather than starting again.
@@ -246,6 +420,7 @@ impl WebCopies {
         }
         let job = Arc::new(Job {
             permille: AtomicU32::new(UNKNOWN),
+            shown: Mutex::new(None),
             done: Mutex::new(None),
         });
         jobs.insert(key.to_owned(), job.clone());
@@ -254,25 +429,11 @@ impl WebCopies {
         let worker = job.clone();
         let converter = self.converter.clone();
         let (input, key) = (real.to_path_buf(), key.to_owned());
-        let copy = self.copy_path(&key, target);
-        let part = self.dir.join(format!("{key}.part.{}", target.extension()));
-        let marker = self.original_marker(&key);
         let (dir, max_bytes) = (self.dir.clone(), self.max_bytes);
         std::thread::spawn(move || {
-            let progress = |p: u16| worker.permille.store(u32::from(p), Ordering::Relaxed);
-            let result = converter
-                .convert(&input, &part, target, target.time_limit(), &progress)
-                .and_then(|done| match done {
-                    Converted::Made => std::fs::rename(&part, &copy)
-                        .map(|()| Ready::Copy(copy.clone(), target))
-                        .map_err(|e| format!("couldn't keep the copy: {e}")),
-                    Converted::AlreadyFine => {
-                        let _ = std::fs::write(&marker, b"");
-                        Ok(Ready::Original)
-                    }
-                });
-            if result.is_err() {
-                let _ = std::fs::remove_file(&part);
+            let result = make(&*converter, &input, &dir, &key, &worker);
+            if let Ok(ready) = &result {
+                let _ = std::fs::write(dir.join(format!("{key}.plan")), ready.to_line());
             }
             evict(&dir, max_bytes);
             *worker.done.lock().unwrap() = Some((result, Instant::now()));
@@ -281,11 +442,181 @@ impl WebCopies {
     }
 }
 
-fn finished(error: Option<String>) -> WebCopyStatus {
-    WebCopyStatus {
-        finished: true,
-        permille: Some(1000),
-        error,
+/// Decide what `input` is and make its copy if it needs one, as `key` in `dir`.
+fn make(
+    converter: &dyn Converter,
+    input: &Path,
+    dir: &Path,
+    key: &str,
+    job: &Job,
+) -> Result<Ready, String> {
+    let (plan, probe) = decide(converter, input);
+    *job.shown.lock().unwrap() = Some(plan.shown());
+    let video_size = || probe.as_ref()?.video.as_ref()?.shown_size();
+    match plan {
+        Plan::NotMedia => Ok(Ready {
+            shown: Shown::NotMedia,
+            copy: None,
+            content_type: String::new(),
+            size: None,
+        }),
+        Plan::AsIs {
+            shown,
+            content_type,
+        } => Ok(Ready {
+            shown,
+            copy: None,
+            content_type: content_type.to_owned(),
+            size: match shown {
+                Shown::Picture | Shown::Animated => picture_size(input),
+                Shown::Video => video_size(),
+                Shown::Audio | Shown::NotMedia => None,
+            },
+        }),
+        Plan::Convert { shown, recipe } => {
+            let target = recipe.target();
+            let copy = dir.join(format!("{key}.{}", target.extension()));
+            let part = dir.join(format!("{key}.part.{}", target.extension()));
+            let progress = |p: u16| job.permille.store(u32::from(p), Ordering::Relaxed);
+            let made = if recipe == Recipe::Svg {
+                svg::render(input, &part).map(Some)
+            } else {
+                converter
+                    .convert(input, &part, &recipe, target.time_limit(), &progress)
+                    .map(|()| None)
+            };
+            let svg_size = match made {
+                Ok(size) => size,
+                Err(why) => {
+                    let _ = std::fs::remove_file(&part);
+                    return Err(why);
+                }
+            };
+            std::fs::rename(&part, &copy).map_err(|e| format!("couldn't keep the copy: {e}"))?;
+            let size = match shown {
+                Shown::Video => video_size(),
+                Shown::Picture | Shown::Animated => svg_size.or_else(|| picture_size(&copy)),
+                Shown::Audio | Shown::NotMedia => None,
+            };
+            Ok(Ready {
+                shown,
+                copy: Some((copy, target)),
+                content_type: target.content_type().to_owned(),
+                size,
+            })
+        }
+    }
+}
+
+/// What `input` is, from its first bytes if it's a picture, or else from ffprobe, whose probe
+/// comes back too.
+pub fn decide(converter: &dyn Converter, input: &Path) -> (Plan, Option<Probe>) {
+    let ext = input
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_default();
+    let mut head = read_head(input, HEAD_BYTES);
+    let mut picture = sniff::picture(&head, &ext);
+    // A GIF whose first frame fills the head may have more after it.
+    if let Some(sniff::Picture::AsIs {
+        content_type: "image/gif",
+        animated: false,
+    }) = picture
+        && head.len() as u64 == HEAD_BYTES
+    {
+        head = read_head(input, GIF_BYTES);
+        picture = Some(sniff::Picture::AsIs {
+            content_type: "image/gif",
+            animated: sniff::gif_frames(&head) > 1,
+        });
+    }
+    let plan = match picture {
+        Some(sniff::Picture::AsIs {
+            content_type,
+            animated,
+        }) => Plan::AsIs {
+            shown: if animated {
+                Shown::Animated
+            } else {
+                Shown::Picture
+            },
+            content_type,
+        },
+        Some(sniff::Picture::Convert {
+            magick,
+            magick_first,
+        }) => Plan::Convert {
+            shown: Shown::Picture,
+            recipe: Recipe::Picture {
+                magick,
+                magick_first,
+            },
+        },
+        Some(sniff::Picture::Svg) => Plan::Convert {
+            shown: Shown::Picture,
+            recipe: Recipe::Svg,
+        },
+        None if head.is_empty() => Plan::NotMedia,
+        None => {
+            let probe = converter.probe(input, PROBE_LIMIT);
+            let plan = probe
+                .as_ref()
+                .map_or(Plan::NotMedia, |p| plan::media(p, &ext));
+            return (plan, probe);
+        }
+    };
+    (plan, None)
+}
+
+fn read_head(path: &Path, max: u64) -> Vec<u8> {
+    let mut head = Vec::new();
+    if let Ok(f) = std::fs::File::open(path) {
+        let _ = f.take(max).read_to_end(&mut head);
+    }
+    head
+}
+
+/// A picture's size as it is shown: its EXIF orientation turns it on its side for 5 to 8.
+fn picture_size(path: &Path) -> Option<(u32, u32)> {
+    let size = imagesize::size(path).ok()?;
+    let (w, h) = (
+        u32::try_from(size.width).ok()?,
+        u32::try_from(size.height).ok()?,
+    );
+    let orientation = std::fs::File::open(path).ok().and_then(|f| {
+        let exif = exif::Reader::new()
+            .read_from_container(&mut std::io::BufReader::new(f))
+            .ok()?;
+        exif.get_field(exif::Tag::Orientation, exif::In::PRIMARY)?
+            .value
+            .get_uint(0)
+    });
+    Some(if matches!(orientation, Some(5..=8)) {
+        (h, w)
+    } else {
+        (w, h)
+    })
+}
+
+fn finished(result: Result<Ready, String>) -> WebCopyStatus {
+    match result {
+        Ok(ready) => WebCopyStatus {
+            finished: true,
+            permille: Some(1000),
+            error: None,
+            shown: Some(ready.shown),
+            width: ready.size.map(|s| s.0),
+            height: ready.size.map(|s| s.1),
+        },
+        Err(why) => WebCopyStatus {
+            finished: true,
+            permille: Some(1000),
+            error: Some(why),
+            shown: None,
+            width: None,
+            height: None,
+        },
     }
 }
 
@@ -296,7 +627,7 @@ fn touch(path: &Path) {
     }
 }
 
-/// Delete the least recently used copies in `dir` until they fit in `max_bytes`. Files still
+/// Delete the least recently used files in `dir` until they fit in `max_bytes`. Files still
 /// being written (`.part.`) are left alone.
 pub fn evict(dir: &Path, max_bytes: u64) {
     let Ok(read) = std::fs::read_dir(dir) else {
@@ -322,228 +653,6 @@ pub fn evict(dir: &Path, max_bytes: u64) {
         if std::fs::remove_file(&path).is_ok() {
             total -= len;
         }
-    }
-}
-
-/// The converter the server runs: ffmpeg, and `heif-convert` (libheif) for a HEIC photo
-/// ffmpeg can't read.
-pub struct Ffmpeg;
-
-impl Converter for Ffmpeg {
-    fn convert(
-        &self,
-        input: &Path,
-        output: &Path,
-        target: Target,
-        limit: Duration,
-        progress: &(dyn Fn(u16) + Sync),
-    ) -> Result<Converted, String> {
-        let deadline = Instant::now() + limit;
-        match target {
-            Target::Jpeg => {
-                let ffmpeg = run(
-                    ffmpeg_args()
-                        .arg("-i")
-                        .arg(input)
-                        .args(["-frames:v", "1", "-q:v", "3"])
-                        .arg(output),
-                    deadline,
-                    None,
-                );
-                let heif = matches!(
-                    input
-                        .extension()
-                        .and_then(|e| e.to_str())
-                        .map(str::to_ascii_lowercase)
-                        .as_deref(),
-                    Some("heic" | "heif")
-                );
-                match ffmpeg {
-                    Err(e) if heif => run(
-                        Command::new("heif-convert")
-                            .args(["-q", "90"])
-                            .arg(input)
-                            .arg(output),
-                        deadline,
-                        None,
-                    )
-                    .map_err(|e2| format!("{e}; heif-convert: {e2}")),
-                    other => other,
-                }?;
-            }
-            Target::Aac => {
-                if probe(input, "a").as_deref() == Some("aac")
-                    && input
-                        .extension()
-                        .is_some_and(|e| e.eq_ignore_ascii_case("m4a"))
-                {
-                    return Ok(Converted::AlreadyFine);
-                }
-                run(
-                    ffmpeg_args()
-                        .arg("-i")
-                        .arg(input)
-                        .args([
-                            "-vn",
-                            "-c:a",
-                            "aac",
-                            "-b:a",
-                            "192k",
-                            "-movflags",
-                            "+faststart",
-                        ])
-                        .args(["-f", "ipod"])
-                        .arg(output),
-                    deadline,
-                    None,
-                )?;
-            }
-            Target::Mp4 => {
-                let duration = duration_us(input);
-                // H.264 needs no re-encoding, only a new container; anything else does.
-                let video: &[&str] = if probe(input, "v").as_deref() == Some("h264") {
-                    &["-c:v", "copy"]
-                } else {
-                    &[
-                        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt",
-                        "yuv420p",
-                    ]
-                };
-                let audio: &[&str] = if probe(input, "a").as_deref() == Some("aac") {
-                    &["-c:a", "copy"]
-                } else {
-                    &["-c:a", "aac", "-b:a", "160k"]
-                };
-                let report = |line: &str| {
-                    if let (Some(total), Some(at)) = (
-                        duration,
-                        line.strip_prefix("out_time_us=")
-                            .and_then(|v| v.trim().parse::<u64>().ok()),
-                    ) && total > 0
-                    {
-                        progress((at.min(total) * 1000 / total) as u16);
-                    }
-                };
-                run(
-                    ffmpeg_args()
-                        .arg("-i")
-                        .arg(input)
-                        .args(["-map", "0:v:0", "-map", "0:a:0?"])
-                        .args(video)
-                        .args(audio)
-                        .args([
-                            "-movflags",
-                            "+faststart",
-                            "-f",
-                            "mp4",
-                            "-progress",
-                            "pipe:1",
-                        ])
-                        .arg(output),
-                    deadline,
-                    Some(&report),
-                )?;
-            }
-        }
-        Ok(Converted::Made)
-    }
-}
-
-fn ffmpeg_args() -> Command {
-    let mut cmd = Command::new("ffmpeg");
-    cmd.args(["-nostdin", "-hide_banner", "-loglevel", "error", "-y"]);
-    cmd
-}
-
-/// The codec of the first `kind` (`v` or `a`) stream, as ffprobe names it.
-fn probe(input: &Path, kind: &str) -> Option<String> {
-    let out = Command::new("ffprobe")
-        .args(["-v", "error", "-select_streams"])
-        .arg(format!("{kind}:0"))
-        .args(["-show_entries", "stream=codec_name", "-of", "csv=p=0"])
-        .arg(input)
-        .stdin(Stdio::null())
-        .output()
-        .ok()?;
-    let name = String::from_utf8_lossy(&out.stdout).trim().to_owned();
-    (!name.is_empty()).then_some(name)
-}
-
-fn duration_us(input: &Path) -> Option<u64> {
-    let out = Command::new("ffprobe")
-        .args([
-            "-v",
-            "error",
-            "-show_entries",
-            "format=duration",
-            "-of",
-            "csv=p=0",
-        ])
-        .arg(input)
-        .stdin(Stdio::null())
-        .output()
-        .ok()?;
-    let secs: f64 = String::from_utf8_lossy(&out.stdout).trim().parse().ok()?;
-    Some((secs * 1_000_000.0) as u64)
-}
-
-/// Run `cmd` until it exits or `deadline`, handing each stdout line to `on_line`. On failure,
-/// the end of what it said on stderr.
-fn run(
-    cmd: &mut Command,
-    deadline: Instant,
-    on_line: Option<&(dyn Fn(&str) + Sync)>,
-) -> Result<(), String> {
-    let name = cmd.get_program().to_string_lossy().into_owned();
-    let mut child = cmd
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("couldn't run {name}: {e}"))?;
-    let stdout = child.stdout.take().expect("piped");
-    let mut stderr = child.stderr.take().expect("piped");
-    let (status, said) = std::thread::scope(|scope| {
-        scope.spawn(move || {
-            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-                if let Some(f) = on_line {
-                    f(&line);
-                }
-            }
-        });
-        let said = scope.spawn(move || {
-            let mut s = String::new();
-            let _ = stderr.read_to_string(&mut s);
-            s
-        });
-        let status = loop {
-            match child.try_wait() {
-                Ok(Some(status)) => break Some(status),
-                Ok(None) if Instant::now() >= deadline => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    break None;
-                }
-                Ok(None) => std::thread::sleep(Duration::from_millis(50)),
-                Err(_) => break None,
-            }
-        };
-        (status, said.join().unwrap_or_default())
-    });
-    match status {
-        Some(s) if s.success() => Ok(()),
-        Some(_) => {
-            let said = said.trim();
-            let mut start = said.len().saturating_sub(300);
-            while !said.is_char_boundary(start) {
-                start += 1;
-            }
-            Err(format!(
-                "{name} couldn't convert it: {}",
-                said[start..].trim()
-            ))
-        }
-        None => Err(format!("{name} took too long and was stopped")),
     }
 }
 

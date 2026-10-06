@@ -1,9 +1,9 @@
 use ccosel_proto::fs::{
     DirEntry, DirListing, EntryKind, FileText, ImageInfo, ImageInfoReply, ListDir, MAX_TEXT_BYTES,
-    ReadFile, Search, SearchHit, SearchReply, WebCopy, WebCopyStatus,
+    ReadFile, Search, SearchHit, SearchReply, Shown, WebCopy, WebCopyStatus,
 };
 use ccosel_sdk::testing::{Harness, rpc_error};
-use ccosel_sdk::{MediaKind, TextStyle, icons};
+use ccosel_sdk::{MediaKind, TextStyle, Vec2, icons};
 
 use super::*;
 
@@ -35,6 +35,17 @@ fn opened_on(path: &str, size: u64) -> Harness<Viewer> {
     h.reply::<ListDir>(&listing(vec![entry(name, EntryKind::File, size)], false));
     h.frame();
     h
+}
+
+#[test]
+fn the_window_is_called_by_its_files_name() {
+    let mut h = Harness::new(Viewer::default());
+    h.frame();
+    assert_eq!(h.window_title(), None, "a search is just the Viewer");
+    let h = opened_on("/Photos/beach day.jpg", 10);
+    assert_eq!(h.window_title().as_deref(), Some("beach day.jpg"));
+    let h = opened_on("/notes.txt", 10);
+    assert_eq!(h.window_title().as_deref(), Some("notes.txt"));
 }
 
 #[test]
@@ -100,7 +111,7 @@ fn a_search_result_opens_and_the_window_stays_on_it() {
     // From here the window is that file: no search, and no way back to one.
     assert!(h.text_fields().is_empty());
     assert!(!h.has_text("Find a file"));
-    assert_eq!(h.buttons(), [details(false)], "nothing to go back with");
+    assert!(h.buttons().is_empty(), "nothing to go back with");
 }
 
 #[test]
@@ -123,84 +134,152 @@ fn a_search_that_finds_nothing_or_fails_says_so() {
     assert!(h.has_label("timed out"));
 }
 
-#[test]
-fn a_picture_is_drawn_by_the_shell_from_its_url() {
-    let h = opened_on("/Photos/beach day.jpg", 1000);
-    assert_eq!(h.images(), ["/files/Photos/beach%20day.jpg?inline=1"]);
-    assert!(h.has_text("beach day.jpg"));
-    assert!(h.has_text("/Photos"));
-}
-
-#[test]
-fn video_audio_and_pdf_are_handed_to_the_browser() {
-    for (path, kind) in [
-        ("/v/clip.MP4", MediaKind::Video),
-        ("/a/song.flac", MediaKind::Audio),
-        ("/d/report.pdf", MediaKind::Document),
-    ] {
-        let h = opened_on(path, 1000);
-        assert_eq!(h.media(), [(url::inline_file_url(path), kind)], "{path}");
+/// The server's answer for a file it has finished with.
+fn done(shown: Shown, size: Option<(u32, u32)>) -> WebCopyStatus {
+    WebCopyStatus {
+        finished: true,
+        permille: Some(1000),
+        error: None,
+        shown: Some(shown),
+        width: size.map(|s| s.0),
+        height: size.map(|s| s.1),
     }
 }
 
-#[test]
-fn apple_photos_and_audio_are_shown_from_the_servers_web_copy() {
-    let h = opened_on("/Photos/IMG_0001.HEIC", 1000);
-    assert_eq!(h.images(), ["/files/Photos/IMG_0001.HEIC?inline=1&as=web"]);
-    let h = opened_on("/Scans/page.tif", 1000);
-    assert_eq!(h.images(), ["/files/Scans/page.tif?inline=1&as=web"]);
-    for path in ["/m/lossless.m4a", "/m/memo.caf", "/m/take.AIFF"] {
-        let h = opened_on(path, 1000);
-        assert_eq!(
-            h.media(),
-            [(
-                format!("{}&as=web", url::inline_file_url(path)),
-                MediaKind::Audio
-            )],
-            "{path}"
-        );
-    }
-    assert!(!h.has_text("Safari"), "no browser note any more");
-    assert_eq!(
-        h.outstanding::<WebCopy>(),
-        0,
-        "only a video waits for its copy"
-    );
-}
-
-fn converting(permille: Option<u16>) -> WebCopyStatus {
+fn converting(shown: Option<Shown>, permille: Option<u16>) -> WebCopyStatus {
     WebCopyStatus {
         finished: false,
         permille,
         error: None,
+        shown,
+        width: None,
+        height: None,
     }
 }
 
+/// `path` opened, and the server's answer about it given.
+fn shown_as(path: &str, status: &WebCopyStatus) -> Harness<Viewer> {
+    let mut h = opened_on(path, 1000);
+    assert!(h.has_label("Opening…"));
+    assert_eq!(h.outstanding::<WebCopy>(), 1, "{path}: asks the server");
+    h.reply::<WebCopy>(status);
+    h.frame();
+    h
+}
+
 #[test]
-fn an_apple_video_shows_its_conversion_then_plays_the_copy() {
-    let mut h = opened_on("/Videos/IMG_0002.MOV", 1000);
+fn a_picture_is_the_whole_window_shaped_like_it() {
+    let h = shown_as(
+        "/Photos/beach day.jpg",
+        &done(Shown::Picture, Some((4032, 3024))),
+    );
+    assert_eq!(
+        h.images(),
+        ["/files/Photos/beach%20day.jpg?inline=1&as=web"]
+    );
+    assert_eq!(h.window_size(), Some(Vec2::new(4032.0, 3024.0)));
+    // No header: its name and the rest are in its right-click menu.
+    assert!(h.labels().is_empty(), "{:?}", h.labels());
+    assert_eq!(
+        h.context_menu_items(),
+        [
+            details(false),
+            label(icons::DOWNLOAD_SIMPLE, "Download"),
+            label(icons::LINK, "Share")
+        ]
+    );
+    assert!(
+        h.styled()
+            .contains(&("beach day.jpg".to_owned(), TextStyle::STRONG))
+    );
+    assert!(
+        h.styled()
+            .contains(&("/Photos".to_owned(), TextStyle::WEAK))
+    );
+    assert_eq!(
+        h.app.wants_repaint_after_ms(),
+        ccosel_sdk::REPAINT_ON_INPUT_ONLY
+    );
+}
+
+#[test]
+fn a_picture_with_no_known_size_asks_for_no_window_size() {
+    let h = shown_as("/x/drawing.svg", &done(Shown::Picture, None));
+    assert_eq!(h.images(), ["/files/x/drawing.svg?inline=1&as=web"]);
+    assert_eq!(h.window_size(), None);
+}
+
+#[test]
+fn a_moving_picture_is_played_by_the_browser() {
+    let h = shown_as("/fun/cat.gif", &done(Shown::Animated, Some((200, 150))));
+    assert!(h.images().is_empty(), "the shell would show it still");
+    assert_eq!(
+        h.media(),
+        [(
+            "/files/fun/cat.gif?inline=1&as=web".to_owned(),
+            MediaKind::Picture
+        )]
+    );
+    assert_eq!(h.window_size(), Some(Vec2::new(200.0, 150.0)));
+    assert!(h.context_menu_items().contains(&details(false)));
+}
+
+#[test]
+fn a_picture_still_being_made_says_so_without_a_header() {
+    let mut h = shown_as("/raw/IMG.dng", &converting(Some(Shown::Picture), None));
+    assert_eq!(h.labels(), ["Getting this ready to show…"]);
+    assert!(h.open_urls().is_empty(), "no header for a picture");
+    assert_eq!(h.app.wants_repaint_after_ms(), POLL_MS);
+    h.frame();
+    assert_eq!(h.outstanding::<WebCopy>(), 1, "asked again");
+    h.reply::<WebCopy>(&done(Shown::Picture, Some((6000, 4000))));
+    h.frame();
+    assert_eq!(h.images(), ["/files/raw/IMG.dng?inline=1&as=web"]);
+}
+
+#[test]
+fn video_audio_and_pdf_are_handed_to_the_browser() {
+    for (path, shown, kind) in [
+        ("/v/clip.MP4", Shown::Video, MediaKind::Video),
+        ("/a/song.flac", Shown::Audio, MediaKind::Audio),
+    ] {
+        let h = shown_as(path, &done(shown, None));
+        assert_eq!(h.media(), [(shown_url(path), kind)], "{path}");
+        assert!(h.has_text(split(path).1), "{path}: a header");
+        assert_eq!(
+            h.window_size(),
+            None,
+            "{path}: only pictures shape the window"
+        );
+    }
+    let h = opened_on("/d/report.pdf", 1000);
+    assert_eq!(h.outstanding::<WebCopy>(), 0, "a PDF needs no asking");
+    assert_eq!(
+        h.media(),
+        [(url::inline_file_url("/d/report.pdf"), MediaKind::Document)]
+    );
+}
+
+#[test]
+fn a_video_shows_its_conversion_then_plays_the_copy() {
+    let mut h = shown_as("/Videos/IMG_0002.MOV", &converting(None, None));
     assert!(h.media().is_empty(), "no blank player while it converts");
-    assert!(h.has_label("Converting this video so it plays in this browser…"));
+    assert!(h.has_label("Getting this ready to show…"));
     assert_eq!(h.app.wants_repaint_after_ms(), POLL_MS);
 
-    h.reply::<WebCopy>(&converting(None));
     h.frame();
-    assert!(h.has_label("Converting this video so it plays in this browser…"));
-    h.frame();
-    h.reply::<WebCopy>(&converting(Some(420)));
+    h.reply::<WebCopy>(&converting(Some(Shown::Video), Some(420)));
     h.frame();
     assert!(
         h.has_label("Converting this video so it plays in this browser… 42%"),
         "{:?}",
         h.labels()
     );
+    assert!(h.has_text("Only the first time: once converted, it plays straight away."));
+    assert!(h.has_text("IMG_0002.MOV"), "a video has its header");
     h.frame();
     assert_eq!(h.outstanding::<WebCopy>(), 1, "asked again");
-    h.reply::<WebCopy>(&WebCopyStatus {
-        finished: true,
-        permille: Some(1000),
-        error: None,
-    });
+    h.reply::<WebCopy>(&done(Shown::Video, Some((1920, 1080))));
     h.frame();
     assert_eq!(
         h.media(),
@@ -216,24 +295,56 @@ fn an_apple_video_shows_its_conversion_then_plays_the_copy() {
 }
 
 #[test]
-fn a_video_that_cannot_be_converted_says_why() {
-    let mut h = opened_on("/Videos/broken.mov", 1000);
-    h.reply::<WebCopy>(&WebCopyStatus {
-        finished: true,
-        permille: Some(1000),
-        error: Some("ffmpeg couldn't convert it: invalid data".to_owned()),
-    });
-    h.frame();
+fn a_file_that_cannot_be_converted_says_why() {
+    let h = shown_as(
+        "/Videos/broken.avi",
+        &WebCopyStatus {
+            finished: true,
+            permille: Some(1000),
+            error: Some("it looks damaged, or isn't a kind of video this can read".to_owned()),
+            shown: None,
+            width: None,
+            height: None,
+        },
+    );
     assert!(h.media().is_empty());
     assert!(h.has_label(
-        "This video couldn't be converted to play here: ffmpeg couldn't convert it: invalid \
-         data. Download it to watch it."
+        "This can't be shown here: it looks damaged, or isn't a kind of video this can read. \
+         Download it to open it."
     ));
+    assert!(h.open_urls().contains(&(
+        label(icons::DOWNLOAD_SIMPLE, "Download"),
+        "/files/Videos/broken.avi".to_owned()
+    )));
 
     let mut h = opened_on("/Videos/private.mov", 1000);
     h.fail::<WebCopy>(rpc_error::DENIED);
     h.frame();
     assert!(h.has_label("permission denied"));
+}
+
+/// Text called `.jpg`, or a file whose name says nothing: if the server finds it isn't a
+/// picture, video or recording, it's shown as text.
+#[test]
+fn what_isnt_media_after_all_is_shown_as_text() {
+    for path in ["/odd/notes.jpg", "/odd/README"] {
+        let mut h = shown_as(path, &done(Shown::NotMedia, None));
+        assert_eq!(h.outstanding::<ReadFile>(), 1, "{path}");
+        h.reply::<ReadFile>(&FileText {
+            text: "{\"a\": 1}".to_owned(),
+            writable: false,
+        });
+        h.frame();
+        assert_eq!(h.text_views(), ["{\"a\": 1}"], "{path}");
+        assert!(h.images().is_empty());
+    }
+}
+
+/// A file with no extension that is really a photo is shown as one.
+#[test]
+fn a_photo_with_no_extension_is_still_a_photo() {
+    let h = shown_as("/inbox/scan", &done(Shown::Picture, Some((640, 480))));
+    assert_eq!(h.images(), ["/files/inbox/scan?inline=1&as=web"]);
 }
 
 #[test]
@@ -263,7 +374,7 @@ fn an_empty_file_says_so() {
 
 #[test]
 fn a_file_that_is_not_text_offers_the_download() {
-    let mut h = opened_on("/program.exe", 500);
+    let mut h = shown_as("/program.exe", &done(Shown::NotMedia, None));
     h.fail::<ReadFile>(rpc_error::SERVER);
     h.frame();
     assert!(h.has_label("This kind of file can't be shown here. Download it to open it."));
@@ -338,6 +449,7 @@ fn a_missing_file_a_folder_and_a_failed_listing_each_say_so() {
     h.fail::<ListDir>(rpc_error::DENIED);
     h.frame();
     assert!(h.has_label("permission denied"));
+    assert!(h.has_text("x.txt"), "with its header, to download it from");
 }
 
 /// A folder too big to list in full may leave the file out of the listing: it is opened anyway.
@@ -362,23 +474,29 @@ fn opening_on_nothing_changes_nothing_and_a_bare_name_is_from_the_top() {
 
 #[test]
 fn kinds_follow_the_extension_whatever_its_case() {
-    assert_eq!(kind_of("/a/b.PNG"), Kind::Image);
-    assert_eq!(kind_of("x.heic"), Kind::Image);
-    assert_eq!(kind_of("x.mov"), Kind::Video);
-    assert_eq!(kind_of("x.m4a"), Kind::Audio);
+    for path in [
+        "/a/b.PNG", "x.heic", "x.svg", "x.dng", "x.exr", "x.mov", "x.AVI", "x.wmv", "x.m4a",
+        "x.wma", "x.ac3",
+    ] {
+        assert_eq!(kind_of(path), Kind::Media, "{path}");
+    }
     assert_eq!(kind_of("x.pdf"), Kind::Pdf);
-    assert_eq!(kind_of("x.md"), Kind::Other);
+    assert_eq!(kind_of("x.TSV"), Kind::Table);
+    assert_eq!(kind_of("x.md"), Kind::Text);
+    assert_eq!(kind_of("x.json"), Kind::Text);
+    assert_eq!(
+        kind_of("x.ts"),
+        Kind::Unknown,
+        "TypeScript or a TV recording"
+    );
+    assert_eq!(kind_of("x.exe"), Kind::Unknown);
     assert_eq!(
         kind_of("/folder.jpg/README"),
-        Kind::Other,
+        Kind::Unknown,
         "the folder's name doesn't count"
     );
-    assert_eq!(kind_of("Makefile"), Kind::Other);
-    assert!(needs_web_copy("/a/b.MOV"));
-    assert!(needs_web_copy("/a/b.m4a"));
-    assert!(!needs_web_copy("/a.mov/b.mp4"));
-    assert!(!needs_web_copy("/a/b.jpg"));
-    assert_eq!(shown_url("/a/b.jpg"), "/files/a/b.jpg?inline=1");
+    assert_eq!(kind_of("Makefile"), Kind::Unknown);
+    assert_eq!(shown_url("/a/b.jpg"), "/files/a/b.jpg?inline=1&as=web");
 }
 
 #[test]
@@ -492,10 +610,16 @@ fn details(show: bool) -> String {
     }
 }
 
+fn picture(path: &str, size: u64) -> Harness<Viewer> {
+    let mut h = opened_on(path, size);
+    h.reply::<WebCopy>(&done(Shown::Picture, Some((4032, 3024))));
+    h.frame();
+    h
+}
+
 #[test]
-fn a_pictures_details_are_asked_for_only_when_opened() {
-    let mut h = opened_on("/Photos/beach.jpg", 3 << 20);
-    assert!(h.has_button(&details(false)));
+fn a_pictures_details_open_from_its_menu_in_a_window() {
+    let mut h = picture("/Photos/beach.jpg", 3 << 20);
     assert_eq!(h.outstanding::<ImageInfo>(), 0, "not until asked");
 
     h.click(&details(false));
@@ -521,17 +645,27 @@ fn a_pictures_details_are_asked_for_only_when_opened() {
     );
     assert!(!h.has_text("No camera details in this picture."));
     assert_eq!(h.images().len(), 1, "the picture is still there");
+    assert!(h.context_menu_items().contains(&details(true)));
 
-    h.click(&details(true));
+    h.click("Close");
     h.frame();
     h.frame();
     assert!(!h.app.details);
     assert!(!h.has_label("Apple iPhone 15 Pro"));
+
+    // And the menu entry toggles it too.
+    h.click(&details(false));
+    h.frame();
+    h.frame();
+    h.click(&details(true));
+    h.frame();
+    h.frame();
+    assert!(!h.app.details);
 }
 
 #[test]
 fn a_picture_with_no_camera_details_says_so() {
-    let mut h = opened_on("/shot.png", 10);
+    let mut h = picture("/shot.png", 10);
     h.app.details = true;
     h.frame();
     h.reply::<ImageInfo>(&ImageInfoReply {
@@ -544,7 +678,7 @@ fn a_picture_with_no_camera_details_says_so() {
     assert!(h.has_label("10 bytes"));
     assert!(!h.has_label("Dimensions"));
 
-    let mut h = opened_on("/shot.png", 10);
+    let mut h = picture("/shot.png", 10);
     h.app.details = true;
     h.frame();
     h.fail::<ImageInfo>(rpc_error::DENIED);
@@ -554,6 +688,7 @@ fn a_picture_with_no_camera_details_says_so() {
 
 #[test]
 fn only_pictures_have_details() {
-    let h = opened_on("/v/clip.mp4", 10);
+    let h = shown_as("/v/clip.mp4", &done(Shown::Video, Some((320, 240))));
     assert!(!h.has_button(&details(false)));
+    assert!(h.context_menu_items().is_empty());
 }

@@ -83,7 +83,7 @@ fn web_copies(converter: Arc<dyn web_copy::Converter>) -> web_copy::WebCopies {
 /// Panics if it can't create `.scratch` in the jail: a server that can't write to its own jail
 /// can't accept uploads either, and failing at start is clearer than failing on first use.
 pub fn app(jail: Jail, web_dir: PathBuf, auth: AuthState) -> Router {
-    app_with_copies(jail, web_dir, auth, web_copies(Arc::new(web_copy::Ffmpeg)))
+    app_with_copies(jail, web_dir, auth, web_copies(Arc::new(web_copy::Tools)))
 }
 
 /// [`app`] making web copies with `copies` rather than ffmpeg, for tests.
@@ -202,38 +202,51 @@ async fn download(
         .and_then(|n| n.to_str())
         .unwrap_or("download")
         .replace(['"', '\\', '\r', '\n'], "_");
-    // A copy every browser can show, for the formats only some can. The check above is the
-    // same one as for the original, and the copy is found from the real path it passed.
+    // For the Viewer: the file as it is if every browser shows it, or else the copy every
+    // browser can. The check above is the same one as for the original, and the copy is found
+    // from the real path it passed.
     let mut real = real;
     let mut web_type = None;
-    if shown_inline_web(&params)
-        && let Some(target) = web_copy::target_for(&real)
-    {
+    if shown_inline_web(&params) {
         let copies = state.web_copies.clone();
         let source = real.clone();
         // A picture or a song takes a moment; wait for it. A video can take minutes, so it
         // only waits briefly, and the Viewer polls `WebCopy` for its progress meanwhile.
-        let wait = match target {
-            web_copy::Target::Mp4 => Duration::from_secs(2),
-            _ => target.time_limit(),
-        };
-        let ready = tokio::task::spawn_blocking(move || copies.wait(&source, target, wait))
-            .await
-            .ok()
-            .flatten();
+        let ready = tokio::task::spawn_blocking(move || {
+            copies.wait(
+                &source,
+                Duration::from_secs(2),
+                web_copy::Target::Webp.time_limit(),
+            )
+        })
+        .await
+        .ok()
+        .flatten();
         match ready {
             None => return (StatusCode::ACCEPTED, "still converting").into_response(),
             Some(Err(why)) => return (StatusCode::UNPROCESSABLE_ENTITY, why).into_response(),
-            Some(Ok(web_copy::Ready::Original)) => {}
-            Some(Ok(web_copy::Ready::Copy(copy, target))) => {
-                // Named for what it now is: `IMG_1.heic` is sent as `IMG_1.jpg`.
-                let stem = filename
-                    .rsplit_once('.')
-                    .map_or(filename.as_str(), |(stem, _)| stem);
-                filename = format!("{stem}.{}", target.extension());
-                real = copy;
-                web_type = Some(target.content_type());
-            }
+            Some(Ok(ready)) => match ready.copy {
+                Some((copy, target)) => {
+                    // Named for what it now is: `IMG_1.heic` is sent as `IMG_1.webp`.
+                    let stem = filename
+                        .rsplit_once('.')
+                        .map_or(filename.as_str(), |(stem, _)| stem);
+                    filename = format!("{stem}.{}", target.extension());
+                    real = copy;
+                    web_type = Some(target.content_type());
+                }
+                // Sent as what it really is, which its name may not say.
+                None => match web_copy::media_type(&ready.content_type) {
+                    Some(kind) => web_type = Some(kind),
+                    None => {
+                        return (
+                            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                            "not a picture, video or recording",
+                        )
+                            .into_response();
+                    }
+                },
+            },
         }
     }
     let shown = web_type.or_else(|| {

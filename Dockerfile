@@ -45,10 +45,14 @@ COPY --from=quay.io/keycloak/keycloak:26.7.4 /opt/keycloak /opt/keycloak
 # anything, but everything else works: `--build-arg WITH_RUST=0` makes the image ~1 GB smaller.
 ARG WITH_RUST=1
 ENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo PATH=/usr/local/cargo/bin:$PATH
-# ffmpeg and libheif's heif-convert make copies of Apple photos, videos and audio that every
-# browser can show, for the Viewer.
+# The Viewer shows any picture, video or recording by having the server copy what browsers can't
+# show into what they can: ffmpeg for video, sound and most pictures, and ImageMagick (with its
+# extra coders, and libheif's HEVC plugin for HEIC: camera raw, OpenEXR, JPEG 2000, Apple photos)
+# for the pictures this ffmpeg can't read.
+# A font so that text in an SVG is drawn. See `web_copy` in the server.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg libheif-examples \
+    && apt-get install -y --no-install-recommends ffmpeg imagemagick \
+         libmagickcore-6.q16-7-extra libheif-plugin-libde265 fonts-dejavu-core \
     && if [ "$WITH_RUST" = 1 ]; then \
          apt-get install -y --no-install-recommends ca-certificates curl gcc libc6-dev \
          && curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --no-modify-path \

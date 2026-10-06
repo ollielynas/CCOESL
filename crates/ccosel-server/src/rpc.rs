@@ -121,12 +121,10 @@ async fn dispatch(
             let status = jail
                 .authorize(a.path, user, crate::fs_api::Need::Read)
                 .and_then(|real| {
-                    let target =
-                        crate::web_copy::target_for(&real).ok_or(server_error::MALFORMED)?;
                     if !real.is_file() {
                         return Err(server_error::NOT_FOUND);
                     }
-                    Ok(state.web_copies.status(&real, target))
+                    Ok(state.web_copies.status(&real))
                 });
             (status, a.path)
         }),

@@ -60,6 +60,16 @@ pub enum OpCode {
     /// Like `UploadFolder`, but the picker chooses one or more files rather than a folder. Same
     /// payload, and the same finished-count response.
     UploadFiles = 0xB0,
+    /// The size the app would like its window's content area to be, in points, such as a
+    /// picture's own size so its window takes the picture's shape. The shell sizes the window
+    /// once, the first frame it's asked, within limits of its own (the desktop's size, a
+    /// smallest window), and never again: after that the person sizes it. Ignored where there
+    /// is no window to size, such as an app's own page.
+    WindowSize = 0xB3,
+    /// What the app's window is called while the app says so, such as the name of the file it
+    /// shows; its own name otherwise. Ignored where there is no window, such as an app's own
+    /// page.
+    WindowTitle = 0xCB,
     // 0x40..0x4F reserved for subtree caching (BeginCached / EndCached / CachedRef).
     // Not implemented yet, but the space is reserved so adding it is not an ABI break.
 }
@@ -90,6 +100,8 @@ impl OpCode {
             0x15 => Some(Self::Media),
             0x16 => Some(Self::TextView),
             0xB0 => Some(Self::UploadFiles),
+            0xB3 => Some(Self::WindowSize),
+            0xCB => Some(Self::WindowTitle),
             _ => None,
         }
     }

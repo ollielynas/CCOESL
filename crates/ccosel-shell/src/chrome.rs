@@ -36,6 +36,9 @@ pub struct Placement {
     restore_to: Option<Rect>,
     /// The position to go back to on the frame after that. See [`Self::place`].
     reposition_to: Option<Pos2>,
+    /// The app has had its say about the window's size ([`Self::size_once`]), or the window
+    /// was put back where someone left it, so it's theirs to size from now on.
+    sized: bool,
 }
 
 impl Placement {
@@ -48,7 +51,33 @@ impl Placement {
             // The first time it is shown it is pinned there once, the way un-maximising works.
             restore_to: (!maximized).then_some(rect),
             reposition_to: None,
+            sized: true,
         }
+    }
+
+    /// Size the window, currently at `current`, so its content area is `content`, as the app
+    /// asked: once, the first time it asks, and only once the window has been shown. Kept at
+    /// the same top-left corner, moved back onto `desktop` if that takes it off the edge. See
+    /// [`fit_window`] for the limits.
+    pub fn size_once(&mut self, content: Vec2, current: Option<Rect>, desktop: Rect) {
+        if self.sized || self.is_maximized() {
+            return;
+        }
+        let Some(current) = current else {
+            return;
+        };
+        self.sized = true;
+        let size = fit_window(content, desktop.size());
+        let mut rect = Rect::from_min_size(current.min, size);
+        rect = rect.translate(vec2(
+            (desktop.right() - rect.right()).min(0.0),
+            (desktop.bottom() - rect.bottom()).min(0.0),
+        ));
+        rect = rect.translate(vec2(
+            (desktop.left() - rect.left()).max(0.0),
+            (desktop.top() - rect.top()).max(0.0),
+        ));
+        self.restore_to = Some(rect);
     }
 
     pub fn is_maximized(&self) -> bool {
@@ -87,6 +116,35 @@ impl Placement {
             window
         }
     }
+}
+
+/// The most of the desktop, across and down, a window an app sizes ([`Placement::size_once`])
+/// may take: room is left to see there is a desktop behind it.
+pub const MOST_OF_DESKTOP: f32 = 0.8;
+/// The longest side of the content an app asks for is brought up to at least this, so a tiny
+/// picture doesn't make a window too small to use.
+pub const SMALLEST_LONG_SIDE: f32 = 320.0;
+/// And no side is smaller than this, so a 1×8000 strip still gets a window you can hold.
+pub const SMALLEST_SIDE: f32 = 200.0;
+
+/// The window size, title bar and margins included, for content of `content`'s shape on a
+/// desktop of `desktop`: as big as asked if that fits in [`MOST_OF_DESKTOP`], else scaled down
+/// to fit keeping its shape; scaled up if its longest side is under [`SMALLEST_LONG_SIDE`]; and
+/// each side at least [`SMALLEST_SIDE`].
+pub fn fit_window(content: Vec2, desktop: Vec2) -> Vec2 {
+    let margin = 2.0 * f32::from(theme::tokens().margin);
+    let chrome = vec2(margin, TITLE_BAR_HEIGHT + margin);
+    let room = (desktop * MOST_OF_DESKTOP - chrome).max(Vec2::splat(SMALLEST_SIDE));
+    let content = content.max(Vec2::splat(1.0));
+    let mut scale = (room.x / content.x).min(room.y / content.y).min(1.0);
+    let longest = content.max_elem() * scale;
+    if longest < SMALLEST_LONG_SIDE {
+        scale *= SMALLEST_LONG_SIDE / longest;
+    }
+    let fitted = (content * scale)
+        .max(Vec2::splat(SMALLEST_SIDE))
+        .min(room.max(Vec2::splat(SMALLEST_SIDE)));
+    fitted + chrome
 }
 
 /// The part of `area` a window can fill and still have its hard `shadow` inside `area`.
@@ -709,6 +767,97 @@ mod tests {
         rig.frame(vec![]);
         rig.frame(vec![]);
         assert_eq!(rig.rect(0), was);
+    }
+
+    /// The window's chrome: title bar and margins, around the content an app asks for.
+    fn chrome() -> Vec2 {
+        let m = 2.0 * f32::from(theme::tokens().margin);
+        vec2(m, TITLE_BAR_HEIGHT + m)
+    }
+
+    #[wasm_bindgen_test]
+    fn a_window_fits_its_content_within_the_desktop() {
+        let desk = vec2(1200.0, 800.0);
+        // Fits: exactly as asked, plus the chrome.
+        assert_eq!(
+            fit_window(vec2(640.0, 480.0), desk),
+            vec2(640.0, 480.0) + chrome()
+        );
+        // Too big: scaled down to fit in 80% of the desktop, keeping its shape.
+        let big = fit_window(vec2(4032.0, 3024.0), desk) - chrome();
+        assert!(
+            big.y <= desk.y * MOST_OF_DESKTOP - chrome().y + 0.01,
+            "{big:?}"
+        );
+        assert!(
+            (big.x / big.y - 4.0 / 3.0).abs() < 0.01,
+            "shape kept: {big:?}"
+        );
+        // Tiny: scaled up to a usable window.
+        assert_eq!(
+            fit_window(vec2(1.0, 1.0), desk) - chrome(),
+            Vec2::splat(SMALLEST_LONG_SIDE)
+        );
+        let small = fit_window(vec2(16.0, 8.0), desk) - chrome();
+        assert_eq!(
+            small,
+            vec2(SMALLEST_LONG_SIDE, SMALLEST_SIDE),
+            "and no side too thin"
+        );
+        // A strip: long side to fit, short side no thinner than the smallest.
+        let strip = fit_window(vec2(1.0, 8000.0), desk) - chrome();
+        assert_eq!(strip.x, SMALLEST_SIDE);
+        assert!(strip.y <= desk.y * MOST_OF_DESKTOP);
+        let wide = fit_window(vec2(65535.0, 1.0), desk) - chrome();
+        assert_eq!(wide.y, SMALLEST_SIDE);
+        assert!(wide.x <= desk.x * MOST_OF_DESKTOP);
+    }
+
+    #[wasm_bindgen_test]
+    fn an_app_sizes_its_window_once_and_then_it_is_the_persons() {
+        let mut rig = Rig::new(1);
+        let before = rig.rect(0);
+        let current = Some(before);
+        rig.windows[0]
+            .1
+            .size_once(vec2(400.0, 200.0), current, DESKTOP);
+        rig.frame(vec![]);
+        rig.frame(vec![]);
+        let sized = rig.rect(0);
+        assert_eq!(sized.min, before.min, "where it was");
+        assert_eq!(sized.size(), vec2(400.0, 200.0) + chrome());
+
+        // Asked again, nothing changes: the person may have sized it since.
+        rig.windows[0]
+            .1
+            .size_once(vec2(900.0, 100.0), Some(sized), DESKTOP);
+        rig.frame(vec![]);
+        rig.frame(vec![]);
+        assert_eq!(rig.rect(0), sized);
+    }
+
+    #[wasm_bindgen_test]
+    fn a_sized_window_is_kept_on_the_desktop() {
+        let mut p = Placement::default();
+        let near_edge = Rect::from_min_size(Pos2::new(1100.0, 700.0), vec2(300.0, 200.0));
+        p.size_once(vec2(500.0, 300.0), Some(near_edge), DESKTOP);
+        let rect = p.restore_to.unwrap();
+        assert!(DESKTOP.contains_rect(rect), "{rect:?}");
+        // Not before it has been shown, so it isn't sized from nowhere.
+        let mut p = Placement::default();
+        p.size_once(vec2(500.0, 300.0), None, DESKTOP);
+        assert_eq!(p.restore_to, None);
+        p.size_once(vec2(500.0, 300.0), Some(near_edge), DESKTOP);
+        assert!(p.restore_to.is_some(), "and then it is");
+    }
+
+    #[wasm_bindgen_test]
+    fn a_restored_window_keeps_the_size_it_was_left_at() {
+        let was = Rect::from_min_size(Pos2::new(200.0, 150.0), vec2(320.0, 240.0));
+        let mut p = Placement::restored(was, false, false);
+        p.restore_to = None;
+        p.size_once(vec2(1000.0, 1000.0), Some(was), DESKTOP);
+        assert_eq!(p.restore_to, None);
     }
 
     #[wasm_bindgen_test]

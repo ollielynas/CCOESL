@@ -250,21 +250,44 @@ impl Rpc for ImageInfo {
 
 impl Query for ImageInfo {}
 
-/// Where the server has got to making a copy of a file that every browser can show: JPEG for
-/// an Apple or TIFF photo, H.264 MP4 for HEVC or ProRes video, AAC for Apple audio. The copy
-/// itself is fetched from `/files/<path>?inline=1&as=web` once `finished` without an error.
+/// What a file turned out to be, decided by the server from its contents rather than its name,
+/// and so how the Viewer shows it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Shown {
+    /// A still picture, drawn by the shell.
+    Picture,
+    /// A picture that moves (GIF, APNG, WebP, AVIF): played by the browser itself.
+    Animated,
+    Video,
+    Audio,
+    /// Not a picture, video or recording at all, such as text named `.jpg`. Shown as text if
+    /// it is text.
+    NotMedia,
+}
+
+/// Where the server has got to with a file the Viewer shows: deciding what it is and, when no
+/// browser can show it as it is, making a copy every browser can (a picture as WebP or PNG,
+/// video as H.264 MP4, audio as AAC). The file, or its copy, is fetched from
+/// `/files/<path>?inline=1&as=web` once `finished` without an error.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WebCopyStatus {
     pub finished: bool,
     /// How far along, in thousandths, or `None` while that isn't known.
     pub permille: Option<u16>,
-    /// Why there is no copy, once `finished`.
+    /// Why there is nothing to show, once `finished`.
     pub error: Option<String>,
+    /// What it is, once that's known: before `finished`, too, so a video's progress can say so.
+    pub shown: Option<Shown>,
+    /// The size of what is shown, in pixels, the right way up, when it is a picture or video
+    /// and the server could tell.
+    pub width: Option<u32>,
+    pub height: Option<u32>,
 }
 
-/// Start making the web copy of a file if it isn't made or being made, and say how far along it
-/// is. A job: the first call starts it and every later one reports on it, so the app polls. The
-/// copy is kept, so asking again for an unchanged file finds it ready at once.
+/// Find out what a file is and, if no browser can show it as it is, start making the copy that
+/// every browser can; then say how far along that is. A job: the first call starts it and every
+/// later one reports on it, so the app polls. The answer and the copy are kept, so asking again
+/// for an unchanged file finds them ready at once.
 pub struct WebCopy;
 
 impl Rpc for WebCopy {

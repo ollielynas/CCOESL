@@ -61,6 +61,10 @@ pub enum MediaKind {
     Audio = 1,
     /// A document the browser displays itself, such as a PDF.
     Document = 2,
+    /// A picture the browser draws itself, scaled to fit the space and centred: one that moves
+    /// (an animated GIF, APNG, WebP or AVIF), which the shell's own image drawing would show
+    /// still. Clicks go through it to the space it sits over, so a right-click menu on it works.
+    Picture = 3,
 }
 
 impl MediaKind {
@@ -69,6 +73,7 @@ impl MediaKind {
             0 => Some(Self::Video),
             1 => Some(Self::Audio),
             2 => Some(Self::Document),
+            3 => Some(Self::Picture),
             _ => None,
         }
     }

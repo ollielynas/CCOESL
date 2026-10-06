@@ -318,3 +318,90 @@ fn a_tables_cells_line_up_in_columns() {
     assert!(cell(21)[1] > cell(11)[1], "rows go down");
     assert_eq!(cell(11)[1], cell(12)[1], "a row's cells share a line");
 }
+
+#[test]
+fn a_window_size_and_title_are_kept_for_the_shell_and_draw_nothing() {
+    let ctx = egui::Context::default();
+    let mut r = Replayer::new();
+    let buf = encode(&[
+        Cmd::WindowTitle { title: "beach.jpg" },
+        Cmd::WindowSize {
+            size: Vec2::new(4032.0, 3024.0),
+        },
+    ]);
+    assert!(frame(&ctx, &mut r, &buf, screen()).is_empty());
+    assert_eq!(r.window_size(), Some(egui::vec2(4032.0, 3024.0)));
+    assert_eq!(r.window_title(), Some("beach.jpg"));
+
+    // Only for as long as the app keeps asking.
+    frame(&ctx, &mut r, &encode(&[]), screen());
+    assert_eq!((r.window_size(), r.window_title()), (None, None));
+}
+
+#[test]
+fn a_picture_asked_to_fill_takes_the_space_that_is_left() {
+    let ctx = egui::Context::default();
+    let mut r = Replayer::new();
+    let buf = encode(&[
+        Cmd::Label {
+            id: 1,
+            text: "above",
+        },
+        Cmd::Image {
+            id: 2,
+            src: "/files/wide.png?inline=1&as=web",
+            size: Vec2::new(-1.0, -1.0),
+        },
+    ]);
+    let recs = frame(&ctx, &mut r, &buf, screen());
+    let label = find(&recs, 1).unwrap();
+    let image = find(&recs, 2).unwrap();
+    let (w, h) = (image.rect[2] - image.rect[0], image.rect[3] - image.rect[1]);
+    assert!(w > 700.0, "the row's width: {w}");
+    assert!(image.rect[1] >= label.rect[3], "below what's above it");
+    assert!(
+        (image.rect[3] - 600.0).abs() < 20.0,
+        "down to the bottom of what's visible: {h}"
+    );
+}
+
+#[test]
+fn a_moving_picture_fills_the_rest_and_takes_a_right_click() {
+    let ctx = egui::Context::default();
+    let mut r = Replayer::new();
+    let buf = encode(&[
+        Cmd::Media {
+            id: 30,
+            src: "/files/cat.gif?inline=1&as=web",
+            kind: MediaKind::Picture,
+            size: Vec2::new(0.0, 0.0),
+        },
+        Cmd::BeginScope {
+            id: 31,
+            layout: Layout::new(ScopeKind::ContextMenu, Align::Min),
+        },
+        Cmd::Button {
+            id: 32,
+            text: "Details",
+        },
+        Cmd::EndScope { id: 31 },
+    ]);
+    let recs = frame(&ctx, &mut r, &buf, screen());
+    let slot = &r.media()[0];
+    assert_eq!(slot.kind, MediaKind::Picture);
+    assert!(
+        slot.rect.height() > 500.0,
+        "the rest of the window: {:?}",
+        slot.rect
+    );
+
+    let picture = find(&recs, 30).unwrap();
+    frame(
+        &ctx,
+        &mut r,
+        &buf,
+        press(centre(&picture), egui::PointerButton::Secondary),
+    );
+    let recs = frame(&ctx, &mut r, &buf, screen());
+    assert!(find(&recs, 32).is_some(), "its menu opened");
+}

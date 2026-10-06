@@ -325,6 +325,10 @@ impl<'a> Ui<'a> {
     /// Guests must never push pixels through the ABI: routing images this way means they hit
     /// the browser's HTTP cache and never occupy guest linear memory, which is what keeps file
     /// thumbnails from blowing the app's memory budget.
+    ///
+    /// A size component of `0.0` fits the row's width, as tall as the picture's shape makes it.
+    /// Both below zero fill the space that's left: as big as fits in the row's width and the rest
+    /// of what's visible below, keeping its shape, centred. A picture viewer's whole window.
     pub fn image(&mut self, src: &str, size: Vec2) -> Response {
         let id = self.auto_id();
         self.rec.push(&Cmd::Image { id, src, size });
@@ -340,11 +344,12 @@ impl<'a> Ui<'a> {
         self.response(id)
     }
 
-    /// Audio, video or a PDF from `src`, played or shown by the browser itself, with its own
-    /// controls. Which formats work is up to the browser.
+    /// Audio, video, a PDF or a moving picture from `src`, played or shown by the browser
+    /// itself, with its own controls. Which formats work is up to the browser.
     ///
     /// A size component of `0.0` is the shell's choice: the row's width, and a height that suits
-    /// `kind` (16:9 for video, a control bar for audio, the rest of the window for a document).
+    /// `kind` (16:9 for video, a control bar for audio, the rest of the window for a document or
+    /// a picture). A [`MediaKind::Picture`] is scaled to fit that space, keeping its shape.
     pub fn media(&mut self, src: &str, kind: MediaKind, size: Vec2) -> Response {
         let id = self.auto_id();
         self.rec.push(&Cmd::Media {
@@ -354,6 +359,22 @@ impl<'a> Ui<'a> {
             size,
         });
         self.response(id)
+    }
+
+    /// Ask for this app's window to be sized so its content area is `size` points, such as a
+    /// picture's own size, so the window takes its shape. The shell does it once, the first time
+    /// it's asked, keeping it within the desktop and above a smallest size, and leaves the window
+    /// to the person after that; so asking every frame is fine. Nothing happens where the app
+    /// has no window of its own, such as on its own page.
+    pub fn window_size(&mut self, size: Vec2) {
+        self.rec.push(&Cmd::WindowSize { size });
+    }
+
+    /// Call this app's window `title` instead of the app's own name, for as long as it's asked
+    /// every frame: the Viewer names the file it shows. Nothing happens where the app has no
+    /// window of its own.
+    pub fn window_title(&mut self, title: &str) {
+        self.rec.push(&Cmd::WindowTitle { title });
     }
 
     /// A single-line text field. See [`Text`] for why the buffer usually isn't sent.
