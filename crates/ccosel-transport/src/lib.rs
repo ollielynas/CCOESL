@@ -75,6 +75,8 @@ fn policy(method: u16) -> (Coalesce, u32) {
         Some(Method::Stat) => (Coalesce::ByArgs, 4_000),
         Some(Method::ServerInfo) => (Coalesce::ByArgs, 4_000),
         Some(Method::Compile) => (Coalesce::ByArgs, 8_000),
+        Some(Method::Sheet) => (Coalesce::ByArgs, 8_000),
+        Some(Method::SheetRange) => (Coalesce::ByArgs, 8_000),
         Some(Method::WhoAmI) => (Coalesce::ByArgs, 4_000),
         Some(Method::SignOut) => (Coalesce::ByArgs, 8_000),
         Some(Method::ReadFile) => (Coalesce::ByArgs, 8_000),
