@@ -195,6 +195,7 @@ pub fn media(probe: &Probe, ext: &str) -> Plan {
                 recipe: Recipe::Picture {
                     magick: None,
                     magick_first: false,
+                    orientation: 1,
                 },
             },
             _ => Plan::NotMedia,

@@ -640,24 +640,57 @@ fn jpeg_with_orientation(w: u16, h: u16, orientation: u16) -> Vec<u8> {
 }
 
 #[test]
-fn a_photo_turned_on_its_side_says_so_in_its_size() {
+fn a_photo_tagged_as_turned_is_sent_turned_the_right_way_up() {
     let dir = temp("orientation");
     let (c, _) = copies(&dir, Fake::default(), 1 << 20);
-    for (orientation, size) in [
-        (1, (640, 480)),
-        (3, (640, 480)),
-        (6, (480, 640)),
-        (8, (480, 640)),
-    ] {
+    let fake = Fake::default();
+    for orientation in 0..=9u16 {
         let src = dir.join(format!("files/o{orientation}.jpg"));
         std::fs::write(&src, jpeg_with_orientation(640, 480, orientation)).unwrap();
-        let s = settle(&c, &src);
-        assert_eq!(
-            (s.width, s.height),
-            (Some(size.0), Some(size.1)),
-            "orientation {orientation}"
-        );
+        let (plan, _) = decide(&fake, &src);
+        if (2..=8).contains(&orientation) {
+            assert_eq!(
+                plan,
+                Plan::Convert {
+                    shown: Shown::Picture,
+                    recipe: Recipe::Picture {
+                        magick: Some("jpeg"),
+                        magick_first: true,
+                        orientation: u32::from(orientation),
+                    }
+                },
+                "orientation {orientation}"
+            );
+        } else {
+            // 1, and 0 and 9, which aren't orientations: as it is.
+            assert_eq!(
+                plan,
+                Plan::AsIs {
+                    shown: Shown::Picture,
+                    content_type: "image/jpeg"
+                },
+                "orientation {orientation}"
+            );
+            assert_eq!(
+                (settle(&c, &src).width, c.cached(&src).unwrap().size),
+                (Some(640), Some((640, 480)))
+            );
+        }
     }
+}
+
+#[test]
+fn turning_is_the_same_in_both_tools() {
+    assert!(tools::magick_turn(1).is_empty());
+    assert_eq!(tools::ffmpeg_turn(1), None);
+    for o in 2..=8 {
+        assert!(!tools::magick_turn(o).is_empty(), "{o}");
+        assert!(tools::ffmpeg_turn(o).is_some(), "{o}");
+    }
+    assert_eq!(tools::magick_turn(6), ["-rotate", "90"]);
+    assert_eq!(tools::ffmpeg_turn(6), Some("transpose=1"));
+    assert_eq!(tools::magick_turn(8), ["-rotate", "270"]);
+    assert_eq!(tools::ffmpeg_turn(8), Some("transpose=2"));
 }
 
 #[test]

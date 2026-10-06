@@ -218,6 +218,8 @@ fn broken(path: &str) -> bool {
         "text_as_",
         "html_named",
         "json_as_",
+        // EXIF the pack says readers should warn about or fail on.
+        "/malformed/",
     ]
     .iter()
     .any(|sign| path.contains(sign))
@@ -299,8 +301,18 @@ fn every_file_in_the_media_pack() {
             std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
             std::fs::copy(copy, dest).unwrap();
         }
+        // The pack's own notes and scripts.
+        let text = [".txt", ".sh", ".md", ".csv"]
+            .iter()
+            .any(|e| rel.ends_with(e));
         match &result {
             _ if broken(rel) => {}
+            Ok(r) if text => {
+                if r.shown != Shown::NotMedia {
+                    failures.push(format!("{rel}: text taken for {:?}", r.shown));
+                }
+            }
+            _ if text => failures.push(format!("{rel}: text not recognised as text")),
             Ok(r) if r.shown == Shown::NotMedia => {
                 failures.push(format!("{rel}: not recognised as media"));
             }

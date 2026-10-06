@@ -34,6 +34,8 @@ pub use ccosel_proto::fs::Shown;
 use ccosel_proto::fs::WebCopyStatus;
 use sha2::{Digest, Sha256};
 
+use crate::image_info;
+
 pub use plan::Probe;
 pub use tools::Tools;
 
@@ -114,6 +116,10 @@ pub enum Recipe {
     Picture {
         magick: Option<&'static str>,
         magick_first: bool,
+        /// How EXIF says to turn it to be the right way up, 1 (as it is) to 8. Applied by the
+        /// converter itself: ImageMagick 6 ignores the tag in a PNG or WebP, and the copy keeps
+        /// no tag for a browser to apply a second time.
+        orientation: u32,
     },
     /// An SVG, drawn by resvg here in the server.
     Svg,
@@ -532,6 +538,19 @@ pub fn decide(converter: &dyn Converter, input: &Path) -> (Plan, Option<Probe>) 
         });
     }
     let plan = match picture {
+        // Turned by its EXIF: browsers don't all apply that (outside JPEG, few do; and the
+        // shell's own decoding may not), so it's sent turned the right way up instead.
+        Some(sniff::Picture::AsIs {
+            content_type: content_type @ ("image/jpeg" | "image/png" | "image/webp"),
+            animated: false,
+        }) if image_info::orientation(input) != 1 => Plan::Convert {
+            shown: Shown::Picture,
+            recipe: Recipe::Picture {
+                magick: Some(&content_type["image/".len()..]),
+                magick_first: true,
+                orientation: image_info::orientation(input),
+            },
+        },
         Some(sniff::Picture::AsIs {
             content_type,
             animated,
@@ -551,6 +570,12 @@ pub fn decide(converter: &dyn Converter, input: &Path) -> (Plan, Option<Probe>) 
             recipe: Recipe::Picture {
                 magick,
                 magick_first,
+                // HEIC's and camera raw's decoders turn them already, by their own tags.
+                orientation: if matches!(magick, Some("tiff" | "psd" | "jpeg")) {
+                    image_info::orientation(input)
+                } else {
+                    1
+                },
             },
         },
         Some(sniff::Picture::Svg) => Plan::Convert {
@@ -577,26 +602,14 @@ fn read_head(path: &Path, max: u64) -> Vec<u8> {
     head
 }
 
-/// A picture's size as it is shown: its EXIF orientation turns it on its side for 5 to 8.
+/// A picture's size. What's sent is always the right way up (one with an orientation tag is
+/// converted), so it's the size as it's shown.
 fn picture_size(path: &Path) -> Option<(u32, u32)> {
     let size = imagesize::size(path).ok()?;
-    let (w, h) = (
+    Some((
         u32::try_from(size.width).ok()?,
         u32::try_from(size.height).ok()?,
-    );
-    let orientation = std::fs::File::open(path).ok().and_then(|f| {
-        let exif = exif::Reader::new()
-            .read_from_container(&mut std::io::BufReader::new(f))
-            .ok()?;
-        exif.get_field(exif::Tag::Orientation, exif::In::PRIMARY)?
-            .value
-            .get_uint(0)
-    });
-    Some(if matches!(orientation, Some(5..=8)) {
-        (h, w)
-    } else {
-        (w, h)
-    })
+    ))
 }
 
 fn finished(result: Result<Ready, String>) -> WebCopyStatus {

@@ -95,9 +95,10 @@ impl Tools {
             Recipe::Picture {
                 magick,
                 magick_first,
+                orientation,
             } => {
-                let by_ffmpeg = || ffmpeg_picture(input, output, deadline);
-                let by_magick = |coder| magick_picture(coder, input, output, deadline);
+                let by_ffmpeg = || ffmpeg_picture(input, output, orientation, deadline);
+                let by_magick = |coder| magick_picture(coder, input, output, orientation, deadline);
                 match (magick, magick_first) {
                     (None, _) => by_ffmpeg(),
                     (Some(coder), true) => by_magick(coder)
@@ -203,17 +204,57 @@ fn ffmpeg() -> Command {
     cmd
 }
 
-/// The first frame of a picture ffmpeg reads, as WebP within [`PICTURE_SIDE`].
-fn ffmpeg_picture(input: &Path, output: &Path, deadline: Instant) -> Result<(), String> {
+/// How ImageMagick turns a picture with EXIF orientation `o` the right way up.
+pub fn magick_turn(o: u32) -> &'static [&'static str] {
+    match o {
+        2 => &["-flop"],
+        3 => &["-rotate", "180"],
+        4 => &["-flip"],
+        5 => &["-transpose"],
+        6 => &["-rotate", "90"],
+        7 => &["-transverse"],
+        8 => &["-rotate", "270"],
+        _ => &[],
+    }
+}
+
+/// The same for ffmpeg, as a filter to put first.
+pub fn ffmpeg_turn(o: u32) -> Option<&'static str> {
+    Some(match o {
+        2 => "hflip",
+        3 => "hflip,vflip",
+        4 => "vflip",
+        5 => "transpose=0",
+        6 => "transpose=1",
+        7 => "transpose=3",
+        8 => "transpose=2",
+        _ => return None,
+    })
+}
+
+/// The first frame of a picture ffmpeg reads, turned by `orientation`, as WebP within
+/// [`PICTURE_SIDE`]. `-noautorotate`, so a turn ffmpeg found itself isn't applied as well.
+fn ffmpeg_picture(
+    input: &Path,
+    output: &Path,
+    orientation: u32,
+    deadline: Instant,
+) -> Result<(), String> {
     let side = PICTURE_SIDE;
+    let scale = format!(
+        "scale='max(1,min(iw,{side}*iw/max(iw,ih)))':'max(1,min(ih,{side}*ih/max(iw,ih)))'"
+    );
+    let filters = match ffmpeg_turn(orientation) {
+        Some(turn) => format!("{turn},{scale}"),
+        None => scale,
+    };
     run(
         ffmpeg()
+            .arg("-noautorotate")
             .arg("-i")
             .arg(input)
             .args(["-frames:v", "1", "-vf"])
-            .arg(format!(
-                "scale='max(1,min(iw,{side}*iw/max(iw,ih)))':'max(1,min(ih,{side}*ih/max(iw,ih)))'"
-            ))
+            .arg(filters)
             .args(["-c:v", "libwebp", "-quality", "90", "-f", "webp"])
             .arg(output),
         deadline,
@@ -237,12 +278,13 @@ fn magick_program() -> &'static str {
     })
 }
 
-/// The first frame of a picture ImageMagick reads as `coder`, turned the right way up, as WebP
-/// within [`PICTURE_SIDE`].
+/// The first frame of a picture ImageMagick reads as `coder`, turned by `orientation`, as WebP
+/// within [`PICTURE_SIDE`], with no metadata left in it for a browser to turn it again by.
 fn magick_picture(
     coder: &str,
     input: &Path,
     output: &Path,
+    orientation: u32,
     deadline: Instant,
 ) -> Result<(), String> {
     let side = PICTURE_SIDE;
@@ -257,9 +299,10 @@ fn magick_picture(
                 "-limit", "memory", "256MiB", "-limit", "map", "512MiB", "-limit", "disk", "1GiB",
             ])
             .arg(source)
-            .args(["-auto-orient", "-resize"])
+            .args(magick_turn(orientation))
+            .arg("-resize")
             .arg(format!("{side}x{side}>"))
-            .args(["-quality", "90"])
+            .args(["-strip", "-quality", "90"])
             .arg(dest),
         deadline,
         None,
