@@ -15,6 +15,7 @@ extern crate alloc;
 
 pub mod account;
 pub mod build;
+pub mod chess;
 pub mod desktop;
 pub mod fs;
 pub mod info;
@@ -51,6 +52,7 @@ pub enum Method {
     LoadDesktop = 16,
     SaveDesktop = 17,
     Remove = 51459,
+    EngineMove = 35434,
 }
 
 impl Method {
@@ -74,6 +76,7 @@ impl Method {
             16 => Some(Self::LoadDesktop),
             17 => Some(Self::SaveDesktop),
             51459 => Some(Self::Remove),
+            35434 => Some(Self::EngineMove),
             _ => None,
         }
     }

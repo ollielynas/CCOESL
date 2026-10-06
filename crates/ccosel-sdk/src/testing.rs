@@ -506,6 +506,19 @@ impl<A: App> Harness<A> {
         self.press(id);
     }
 
+    /// Clicks the widget whose tooltip is `tooltip`, for widgets a label can't tell apart, such
+    /// as the squares of a board, each named by its tooltip. Panics if no widget has it.
+    pub fn click_tooltip(&mut self, tooltip: &str) {
+        let id = self
+            .commands()
+            .find_map(|c| match c {
+                Cmd::Tooltip { id, text } if text == tooltip => Some(id),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no widget has the tooltip {tooltip:?} in the last frame"));
+        self.press(id);
+    }
+
     fn press(&mut self, id: u64) {
         self.clicks.push(RespRecord {
             local_id: id,
