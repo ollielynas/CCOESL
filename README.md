@@ -39,6 +39,7 @@ The user documentation, the same pages the Docs app shows, starts at
 | **Docs** | Read, write and search documents, including the user documentation | [docs.md](data/shared/Docs/Apps/docs.md) |
 | **Viewer** | Look at pictures, music, videos, PDFs and text files, and share them | [viewer.md](data/shared/Docs/Apps/viewer.md) |
 | **Compiler** | Build a Rust project on the server and download the result | [rust-compiler.md](data/shared/Docs/Apps/rust-compiler.md) |
+| **Chess** | Play chess against GNU Chess at five levels, and save games as PGN | [chess.md](data/shared/Docs/Apps/chess.md) |
 | **Server** | Live graphs of how the server is doing | [server-dashboard.md](data/shared/Docs/Apps/server-dashboard.md) |
 | **Account** | See who you are signed in as, sign out, and make app passwords | [account.md](data/shared/Docs/Apps/account.md) |
 | **Clock** | A clock and stopwatch | [clock.md](data/shared/Docs/Apps/clock.md) |
@@ -61,7 +62,7 @@ These are open tickets.
 - **Files**: compress and extract tar / gzip archives (#73)
 - **Viewer**: server-side conversion of Apple formats such as HEIC and HEVC (#81)
 - **Clock**: a sunlight map with timezones (#88)
-- **Chess** against GNU Chess (#76), and **Go** against GNU Go (#77)
+- **Go** against GNU Go (#77)
 - **Spreadsheet** backed by GNU Gnumeric (#75)
 - **Music Score** backed by GNU LilyPond (#74)
 - **Messages**: inbox, 1:1 and group chats, and file sharing (#49)

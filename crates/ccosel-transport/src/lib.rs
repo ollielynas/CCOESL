@@ -81,6 +81,7 @@ fn policy(method: u16) -> (Coalesce, u32) {
         Some(Method::Access) => (Coalesce::ByArgs, 4_000),
         Some(Method::Search) => (Coalesce::ByArgs, 8_000),
         Some(Method::ImageInfo) => (Coalesce::ByArgs, 8_000),
+        Some(Method::EngineMove) => (Coalesce::ByArgs, 10_000),
         Some(Method::ListAppPasswords) => (Coalesce::ByArgs, 4_000),
         Some(Method::LoadDesktop) => (Coalesce::ByArgs, 8_000),
         // A save replaces the last one: never merged, never retried on its own.

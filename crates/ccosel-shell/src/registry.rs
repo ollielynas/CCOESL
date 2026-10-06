@@ -144,6 +144,14 @@ pub fn catalog() -> Vec<AppEntry> {
             url: "/dist/docs.wasm",
             default_size: [560.0, 560.0],
         },
+        AppEntry {
+            id: "chess",
+            name: "Chess",
+            icon: egui_phosphor::regular::CROWN,
+            color: egui::Color32::from_rgb(0x78, 0x35, 0x0f),
+            url: "/dist/chess.wasm",
+            default_size: [460.0, 620.0],
+        },
     ]
 }
 
