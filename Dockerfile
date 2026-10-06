@@ -54,6 +54,11 @@ RUN apt-get update \
        fi \
     && rm -rf /var/lib/apt/lists/*
 
+# The Music Score app engraves with GNU LilyPond on the server (see `score_api`).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends lilypond \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY --from=build /usr/local/bin/ccosel-server /usr/local/bin/ccosel-server
 COPY --from=build /src/web /srv/ccosel/web
 # The Docs app's pages. A new named volume starts with these; an existing one keeps its own.

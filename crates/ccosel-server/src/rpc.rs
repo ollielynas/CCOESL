@@ -14,6 +14,7 @@ use ccosel_proto::build::CompileReq;
 use ccosel_proto::desktop::DesktopLayout;
 use ccosel_proto::fs::{ListDirReq, PathReq, SearchReq, WriteFileReq};
 use ccosel_proto::info::ServerInfoReply;
+use ccosel_proto::score::EngraveReq;
 use ccosel_proto::{Method, PROTO_VERSION, WireReply, WireRequest, WireResult, server_error};
 
 use serde::Serialize;
@@ -117,6 +118,9 @@ async fn dispatch(
                 .and_then(|_| crate::build_api::compile(jail, &state.jobs, &a));
             (result, a.path)
         }),
+        // Not tied to a file: the app sends the source itself, so there is nothing to authorize
+        // beyond reaching `/rpc` at all.
+        Method::Engrave => run::<EngraveReq, _>(req, |a| (state.engraver.engrave(a.source), "")),
         Method::ServerInfo => {
             let host = stats::sample_host();
             let info = ServerInfoReply {
