@@ -32,6 +32,7 @@ resvg = { version = "0.48", default-features = false, features = ["text", "syste
 base64 = "0.22"
 futures-util = "0.3"
 bytes = "1"
+roxmltree = "0.21"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "fs"] }
