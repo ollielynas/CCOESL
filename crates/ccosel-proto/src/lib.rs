@@ -51,6 +51,7 @@ pub enum Method {
     LoadDesktop = 16,
     SaveDesktop = 17,
     Remove = 51459,
+    WebCopy = 41400,
 }
 
 impl Method {
@@ -74,6 +75,7 @@ impl Method {
             16 => Some(Self::LoadDesktop),
             17 => Some(Self::SaveDesktop),
             51459 => Some(Self::Remove),
+            41400 => Some(Self::WebCopy),
             _ => None,
         }
     }

@@ -249,3 +249,55 @@ impl Rpc for ImageInfo {
 }
 
 impl Query for ImageInfo {}
+
+/// What a file turned out to be, decided by the server from its contents rather than its name,
+/// and so how the Viewer shows it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Shown {
+    /// A still picture, drawn by the shell.
+    Picture,
+    /// A picture that moves (GIF, APNG, WebP, AVIF): played by the browser itself.
+    Animated,
+    Video,
+    Audio,
+    /// Not a picture, video or recording at all, such as text named `.jpg`. Shown as text if
+    /// it is text.
+    NotMedia,
+}
+
+/// Where the server has got to with a file the Viewer shows: deciding what it is and, when no
+/// browser can show it as it is, making a copy every browser can (a picture as WebP or PNG,
+/// video as H.264 MP4, audio as AAC). The file, or its copy, is fetched from
+/// `/files/<path>?inline=1&as=web` once `finished` without an error.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WebCopyStatus {
+    pub finished: bool,
+    /// How far along, in thousandths, or `None` while that isn't known.
+    pub permille: Option<u16>,
+    /// Why there is nothing to show, once `finished`.
+    pub error: Option<String>,
+    /// What it is, once that's known: before `finished`, too, so a video's progress can say so.
+    pub shown: Option<Shown>,
+    /// The size of what is shown, in pixels, the right way up, when it is a picture or video
+    /// and the server could tell.
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+}
+
+/// Find out what a file is and, if no browser can show it as it is, start making the copy that
+/// every browser can; then say how far along that is. A job: the first call starts it and every
+/// later one reports on it, so the app polls. The answer and the copy are kept, so asking again
+/// for an unchanged file finds them ready at once.
+pub struct WebCopy;
+
+impl Rpc for WebCopy {
+    const METHOD: Method = Method::WebCopy;
+    const COALESCE: Coalesce = Coalesce::ByArgs;
+    // Polling an unchanged file reports on the one job, or finds the copy already made.
+    const EFFECT: Effect = Effect::Idempotent;
+    const DEADLINE_MS: u32 = 8_000;
+    type Req<'a> = PathReq<'a>;
+    type Reply = WebCopyStatus;
+}
+
+impl Query for WebCopy {}

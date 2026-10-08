@@ -225,6 +225,15 @@ impl Encoder {
                 self.f32(size.x);
                 self.f32(size.y);
             }
+            Cmd::WindowSize { size } => {
+                self.u8(OpCode::WindowSize as u8);
+                self.f32(size.x);
+                self.f32(size.y);
+            }
+            Cmd::WindowTitle { title } => {
+                self.u8(OpCode::WindowTitle as u8);
+                self.str(title);
+            }
         }
     }
 }

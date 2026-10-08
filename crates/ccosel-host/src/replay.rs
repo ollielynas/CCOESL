@@ -158,6 +158,10 @@ pub struct Replayer {
     copy_links: Vec<(u64, String)>,
     /// Where this frame's `Media` commands were drawn.
     media: Vec<MediaSlot>,
+    /// The window size the app asked for this frame, if it did. See `OpCode::WindowSize`.
+    window_size: Option<egui::Vec2>,
+    /// The window title the app asked for this frame, if it did. See `OpCode::WindowTitle`.
+    window_title: Option<String>,
 }
 
 impl Replayer {
@@ -195,6 +199,8 @@ impl Replayer {
         self.open_apps.clear();
         self.copy_links.clear();
         self.media.clear();
+        self.window_size = None;
+        self.window_title = None;
         for cmd in &cmds {
             match *cmd {
                 Cmd::Tooltip { id, text } => {
@@ -211,6 +217,8 @@ impl Replayer {
                     self.open_apps.push((id, app.to_owned(), arg.to_owned()));
                 }
                 Cmd::CopyLink { id, path, .. } => self.copy_links.push((id, path.to_owned())),
+                Cmd::WindowSize { size } => self.window_size = Some(convert::vec2(size)),
+                Cmd::WindowTitle { title } => self.window_title = Some(title.to_owned()),
                 _ => {}
             }
         }
@@ -295,6 +303,16 @@ impl Replayer {
 
     /// Where the last successfully replayed frame drew its audio, video and documents. Only
     /// the ones actually on screen: a `Media` scrolled out of view or in a closed menu isn't.
+    /// The size the app asked for its window's content area in its last frame, if it did.
+    pub fn window_size(&self) -> Option<egui::Vec2> {
+        self.window_size
+    }
+
+    /// The title the app asked for its window in its last frame, if it did.
+    pub fn window_title(&self) -> Option<&str> {
+        self.window_title.as_deref()
+    }
+
     pub fn media(&self) -> &[MediaSlot] {
         &self.media
     }
@@ -433,8 +451,12 @@ impl Cx<'_> {
                     i + 1
                 }
             };
-            // A tooltip belongs to the widget before it, not a row of its own.
-            if !matches!(cmds[i], Cmd::Tooltip { .. } | Cmd::Nop) {
+            // A tooltip belongs to the widget before it, not a row of its own, and a window size
+            // isn't drawn at all.
+            if !matches!(
+                cmds[i],
+                Cmd::Tooltip { .. } | Cmd::Nop | Cmd::WindowSize { .. } | Cmd::WindowTitle { .. }
+            ) {
                 ui.end_row();
             }
             i = next;
@@ -455,7 +477,11 @@ impl Cx<'_> {
         let mut frame_row: u32 = 0;
         while i < range.end {
             match cmds[i] {
-                Cmd::Nop | Cmd::Tooltip { .. } => {}
+                // Gathered before drawing, for the shell. See `Replayer::window_size`.
+                Cmd::Nop
+                | Cmd::Tooltip { .. }
+                | Cmd::WindowSize { .. }
+                | Cmd::WindowTitle { .. } => {}
 
                 Cmd::Label { id, text } => {
                     let r = ui.label(text);
@@ -501,7 +527,23 @@ impl Cx<'_> {
                     // picture's own shape makes it.
                     let size = convert::vec2(size);
                     let image = egui::Image::from_uri(src);
-                    let r = if size.x > 0.0 && size.y > 0.0 {
+                    let r = if size.x < 0.0 && size.y < 0.0 {
+                        // The space that's left, filled as far as the picture's shape allows
+                        // and centred in it: a picture viewer's whole window.
+                        let space = egui::vec2(ui.available_width(), rest_of_visible(ui, 1.0));
+                        let (rect, r) = ui.allocate_exact_size(space, egui::Sense::click());
+                        if ui.is_rect_visible(rect) {
+                            // `paint_at` stretches to whatever it's given, so the fit is worked
+                            // out here: up or down to the space, keeping the shape. Until the
+                            // picture loads it's the whole space, where the spinner goes.
+                            let image = image.fit_to_exact_size(space).maintain_aspect_ratio(true);
+                            let fit = image.load_and_calc_size(ui, space).map_or(rect, |size| {
+                                egui::Rect::from_center_size(rect.center(), size)
+                            });
+                            image.paint_at(ui, fit);
+                        }
+                        r
+                    } else if size.x > 0.0 && size.y > 0.0 {
                         // Exactly the size asked for, loaded or not, so the layout around it
                         // doesn't jump when the picture arrives.
                         let (rect, r) = ui.allocate_exact_size(size, egui::Sense::click());
@@ -564,7 +606,13 @@ impl Cx<'_> {
                     size,
                 } => {
                     let size = media_size(ui, kind, convert::vec2(size));
-                    let (rect, r) = ui.allocate_exact_size(size, egui::Sense::hover());
+                    // A picture lets clicks through to here, so its right-click menu opens.
+                    let sense = if kind == MediaKind::Picture {
+                        egui::Sense::click()
+                    } else {
+                        egui::Sense::hover()
+                    };
+                    let (rect, r) = ui.allocate_exact_size(size, sense);
                     // What shows until the browser's player is laid over it, and wherever the
                     // shell can't lay one (another window on top of it).
                     let visuals = ui.visuals();
@@ -577,6 +625,7 @@ impl Cx<'_> {
                             MediaKind::Video => "▶ Video",
                             MediaKind::Audio => "▶ Audio",
                             MediaKind::Document => "Document",
+                            MediaKind::Picture => "Picture",
                         },
                         egui::FontId::proportional(14.0),
                         visuals.weak_text_color(),
@@ -790,13 +839,17 @@ fn media_size(ui: &egui::Ui, kind: MediaKind, asked: egui::Vec2) -> egui::Vec2 {
             // The browser's own control bar.
             MediaKind::Audio => 54.0,
             // The rest of what is visible below here, like a `Scroll` scope.
-            MediaKind::Document => {
-                (ui.clip_rect().bottom() - ui.cursor().top() - ui.spacing().item_spacing.y)
-                    .max(240.0)
-            }
+            MediaKind::Document => rest_of_visible(ui, 240.0),
+            MediaKind::Picture => rest_of_visible(ui, 1.0),
         }
     };
     egui::vec2(width, height)
+}
+
+/// How much of the visible area is left below the cursor, at least `min`: for content that
+/// fills the rest of a window, like a document or a picture viewer's picture.
+fn rest_of_visible(ui: &egui::Ui, min: f32) -> f32 {
+    (ui.clip_rect().bottom() - ui.cursor().top() - ui.spacing().item_spacing.y).max(min)
 }
 
 /// How far a button's or text field's shadow sits below and to the right of it.

@@ -149,6 +149,16 @@ fn sample() -> Vec<Cmd<'static>> {
             version: 2,
             set: Some("read only"),
         },
+        Cmd::Media {
+            id: id::hash_str(win, "gif"),
+            src: "/files/cat.gif?inline=1",
+            kind: MediaKind::Picture,
+            size: Vec2::new(-1.0, -1.0),
+        },
+        Cmd::WindowSize {
+            size: Vec2::new(640.0, 480.0),
+        },
+        Cmd::WindowTitle { title: "beach.jpg" },
         Cmd::EndWindow { id: win },
     ]
 }
@@ -201,6 +211,15 @@ fn media_rejects_an_unknown_kind() {
     // opcode, id, then the one-byte src length and its byte: the kind follows.
     buf[1 + 8 + 2] = 9;
     assert_eq!(decode(&buf), Err(DecodeError::InvalidEnum));
+}
+
+#[test]
+fn a_window_size_is_its_opcode_and_two_numbers() {
+    let buf = encode(&[Cmd::WindowSize {
+        size: Vec2::new(300.0, 200.0),
+    }]);
+    assert_eq!(buf[0], OpCode::WindowSize as u8);
+    assert_eq!(buf.len(), 1 + 4 + 4);
 }
 
 #[test]
