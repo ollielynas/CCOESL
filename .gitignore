@@ -12,3 +12,5 @@
 /data/shared/home/
 # Temporary project uploads the server makes in the jail it serves; deleted on their own.
 /data/shared/.scratch/
+# Local git worktrees, one per branch being worked on or reviewed.
+/.worktrees/
