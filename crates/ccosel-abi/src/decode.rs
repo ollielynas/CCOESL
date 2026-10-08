@@ -132,6 +132,14 @@ pub enum Cmd<'a> {
         version: u32,
         set: Option<&'a str>,
     },
+    /// See `OpCode::WindowSize`.
+    WindowSize {
+        size: Vec2,
+    },
+    /// See `OpCode::WindowTitle`.
+    WindowTitle {
+        title: &'a str,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -280,6 +288,10 @@ impl<'a> Decoder<'a> {
                 let (id, version, set) = self.text_edit()?;
                 Cmd::TextView { id, version, set }
             }
+            OpCode::WindowTitle => Cmd::WindowTitle { title: self.str()? },
+            OpCode::WindowSize => Cmd::WindowSize {
+                size: Vec2::new(self.f32()?, self.f32()?),
+            },
             OpCode::OpenApp => Cmd::OpenApp {
                 id: self.u64()?,
                 label: self.str()?,

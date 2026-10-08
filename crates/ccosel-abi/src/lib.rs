@@ -39,7 +39,7 @@ pub use opcode::OpCode;
 ///
 /// A new opcode bumps this, unlike a new RPC method: an old shell's decoder has no arm for it
 /// and would discard every frame that uses it, so a clean refusal to load is better.
-pub const ABI_VERSION: u32 = 8;
+pub const ABI_VERSION: u32 = 9;
 
 /// Maximum scope nesting a guest may emit. Bounds the host's `Vec<egui::Ui>` stack so a
 /// malicious or buggy guest cannot drive it into unbounded recursion.

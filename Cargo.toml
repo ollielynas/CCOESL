@@ -33,7 +33,6 @@ ccosel-connection = { path = "crates/ccosel-connection" }
 ccosel-gitignore = { path = "crates/ccosel-gitignore" }
 ccosel-proto = { path = "crates/ccosel-proto" }
 ccosel-host = { path = "crates/ccosel-host" }
-ccosel-cas = { path = "crates/ccosel-cas" }
 ccosel-transport = { path = "crates/ccosel-transport" }
 
 egui = "0.36"
@@ -53,6 +52,23 @@ web-sys = "0.3"
 [profile.release]
 opt-level = 3
 lto = "thin"
+
+# The server draws SVGs, and saves them as PNG, with these (see `web_copy::svg`). Unoptimised, one drawing takes seconds,
+# which makes the dev server sluggish and the tests that draw slow; optimised, milliseconds.
+[profile.dev.package.tiny-skia]
+opt-level = 3
+[profile.dev.package.resvg]
+opt-level = 3
+[profile.dev.package.fontdb]
+opt-level = 3
+[profile.dev.package.ttf-parser]
+opt-level = 3
+[profile.dev.package.png]
+opt-level = 3
+[profile.dev.package.fdeflate]
+opt-level = 3
+[profile.dev.package.miniz_oxide]
+opt-level = 3
 
 # The shell is the single largest download in the system, so it gets its own profile: size
 # over speed, symbols stripped. The native dev build keeps `release` (opt-level 3, symbols)

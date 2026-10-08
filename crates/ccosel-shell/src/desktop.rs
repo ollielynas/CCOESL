@@ -516,6 +516,10 @@ impl Desktop {
             } else {
                 let id = window_id(window.instance_id);
                 let mut placement = std::mem::take(&mut window.placement);
+                // Asked in the app's last frame; a no-op after the first time.
+                if let Some(size) = window.asked_size() {
+                    placement.size_once(size, ctx.memory(|m| m.area_rect(id)), desktop);
+                }
                 let actions = chrome::show_window(
                     &ctx,
                     id,
@@ -523,7 +527,7 @@ impl Desktop {
                     desktop,
                     window.default_size.into(),
                     window.icon,
-                    &window.title.clone(),
+                    &window.shown_title(),
                     // The active window's bar is filled with its app's colour, the same as its
                     // dock badge, so the two read as one thing.
                     (active == Some(id)).then_some(window.color),
@@ -1077,7 +1081,8 @@ impl Desktop {
                                 egui::Stroke::new(t.stroke, t.ink),
                             );
                             for window in &self.windows {
-                                let item = dock_item(ui, window.icon, window.color, &window.title);
+                                let item =
+                                    dock_item(ui, window.icon, window.color, &window.shown_title());
                                 if item.clicked() {
                                     to_focus = Some(window.instance_id);
                                 }

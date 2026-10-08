@@ -117,6 +117,17 @@ async fn dispatch(
                 .and_then(|_| crate::build_api::compile(jail, &state.jobs, &a));
             (result, a.path)
         }),
+        Method::WebCopy => run::<PathReq, _>(req, |a| {
+            let status = jail
+                .authorize(a.path, user, crate::fs_api::Need::Read)
+                .and_then(|real| {
+                    if !real.is_file() {
+                        return Err(server_error::NOT_FOUND);
+                    }
+                    Ok(state.web_copies.status(&real))
+                });
+            (status, a.path)
+        }),
         Method::ServerInfo => {
             let host = stats::sample_host();
             let info = ServerInfoReply {

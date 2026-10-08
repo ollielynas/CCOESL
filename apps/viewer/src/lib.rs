@@ -2,14 +2,20 @@
 //!
 //! Pictures, audio, video and PDFs are shown by the *browser*: the shell decodes pictures with
 //! the browser's own decoders and lays the browser's players over the window for the rest, so
-//! this module links no decoder at all. Everything else is shown as text if it is text.
+//! this module links no decoder at all. What the browser can't decode, the server converts:
+//! it looks at what each file really is and sends either the file or a copy every browser shows
+//! (`WebCopy`). Everything else is shown as text if it is text.
+//!
+//! A picture's window is only the picture, shaped like it; its name, details, download and
+//! share are in its right-click menu.
 //!
 //! It opens on a file when another app asks it to ("Open with Viewer" in Files) or someone
 //! follows a shared link (`/app/viewer?open=<path>`). Opened from the app menu, it is a search
 //! for a file to open.
 
 use ccosel_proto::fs::{
-    EntryKind, ImageInfo, ListDir, ListDirReq, MAX_TEXT_BYTES, PathReq, ReadFile, Search, SearchReq,
+    EntryKind, ImageInfo, ListDir, ListDirReq, MAX_TEXT_BYTES, PathReq, ReadFile, Search,
+    SearchReq, Shown, WebCopy, WebCopyStatus,
 };
 use ccosel_sdk::{App, MediaKind, Poll, Text, TextStyle, Ui, Vec2, icons, url};
 
@@ -19,49 +25,73 @@ pub const APP_ID: &str = "viewer";
 /// The fewest characters a search is run for: one letter matches nearly everything.
 pub const MIN_QUERY: usize = 2;
 
-/// How a file is shown, decided by its name.
+/// How a file is shown, first guessed from its name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
-    Image,
-    Video,
-    Audio,
+    /// A picture, video or recording, by its name. The server says which it really is, and
+    /// whether it is one at all.
+    Media,
     Pdf,
     /// Spreadsheet data (`.csv`, `.tsv`): text, shown as a table.
     Table,
-    /// Anything else: shown if it turns out to be text.
-    Other,
+    /// Text by its name: shown as text without asking the server what it is.
+    Text,
+    /// A name that says nothing, or nothing known: the server is asked whether it's a picture,
+    /// video or recording, and if not, it is shown as text if it is text.
+    Unknown,
 }
 
-/// What kind of file `path` is, by its extension, whatever its case. These are the kinds the
-/// server will send with their own type (`?inline=1`); anything else it only offers as a
-/// download, so it can only be shown here as text.
+/// Extensions of pictures, video and sound: what browsers show, what the server converts, and
+/// what it can at least try.
+const MEDIA: &[&str] = &[
+    // Pictures.
+    "png", "jpg", "jpeg", "jpe", "jfif", "gif", "webp", "avif", "bmp", "ico", "cur", "heic", "heif",
+    "hif", "tif", "tiff", "svg", "jxl", "jp2", "j2k", "jpf", "exr", "hdr", "pfm", "dng", "cr2",
+    "cr3", "nef", "arw", "orf", "rw2", "raf", "pef", "srw", "psd", "tga", "pcx", "sgi", "rgb",
+    "qoi", "dds", "ppm", "pgm", "pbm", "pnm", "pam", "xpm", "wbmp", "apng", // Video.
+    "mp4", "m4v", "webm", "mov", "qt", "ogv", "mkv", "avi", "wmv", "asf", "flv", "f4v", "3gp",
+    "3g2", "mpg", "mpeg", "m2v", "m2ts", "mts", "vob", "mxf", "dv", "rm", "rmvb", "nut", "y4m",
+    "ivf", "obu", "h264", "264", "hevc", "265", "ismv", "swf", // Sound.
+    "mp3", "m4a", "m4b", "aac", "wav", "ogg", "oga", "opus", "flac", "caf", "aif", "aiff", "aifc",
+    "w64", "wma", "ac3", "eac3", "mp2", "mka", "amr", "weba", "dts",
+];
+
+/// Extensions of text, shown as text straight away.
+const TEXT: &[&str] = &[
+    "txt", "log", "md", "markdown", "json", "yaml", "yml", "toml", "xml", "ini", "conf", "cfg",
+    "env", "html", "htm", "css", "rs", "py", "js", "mjs", "tsx", "jsx", "c", "h", "cpp", "hpp",
+    "cc", "java", "go", "rb", "php", "swift", "kt", "cs", "lua", "sql", "sh", "bash", "zsh", "srt",
+    "vtt", "obj", "gltf", "rtf", "tex", "lock",
+];
+
+/// What kind of file `path` is, by its extension, whatever its case. `.ts` is in neither list,
+/// being TypeScript as often as an MPEG transport stream: the server is asked, and if it isn't
+/// video it is shown as text.
 pub fn kind_of(path: &str) -> Kind {
     let name = path.rsplit('/').next().unwrap_or(path);
     let Some((_, ext)) = name.rsplit_once('.') else {
-        return Kind::Other;
+        return Kind::Unknown;
     };
-    match ext.to_ascii_lowercase().as_str() {
-        "png" | "jpg" | "jpeg" | "gif" | "webp" | "avif" | "bmp" | "ico" | "heic" | "heif"
-        | "tif" | "tiff" => Kind::Image,
-        "mp4" | "m4v" | "webm" | "mov" | "ogv" | "mkv" => Kind::Video,
-        "mp3" | "m4a" | "aac" | "wav" | "ogg" | "oga" | "opus" | "flac" | "caf" | "aif"
-        | "aiff" => Kind::Audio,
+    let ext = ext.to_ascii_lowercase();
+    match ext.as_str() {
         "pdf" => Kind::Pdf,
         "csv" | "tsv" => Kind::Table,
-        _ => Kind::Other,
+        e if TEXT.contains(&e) => Kind::Text,
+        e if MEDIA.contains(&e) => Kind::Media,
+        _ => Kind::Unknown,
     }
 }
 
-/// Formats Apple devices make that most browsers other than Safari can't show yet. The page
-/// says so, rather than leaving someone wondering why a photo is blank.
-pub fn apple_only(path: &str) -> bool {
-    let name = path.rsplit('/').next().unwrap_or(path);
-    let ext = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase());
-    matches!(
-        ext.as_deref(),
-        Some("heic" | "heif" | "mov" | "caf" | "aif" | "aiff" | "tif" | "tiff")
-    )
+/// Where the page fetches `path` to show it: the file, or the server's copy of it that every
+/// browser can show, whichever the server decided.
+pub fn shown_url(path: &str) -> String {
+    let mut url = url::inline_file_url(path);
+    url.push_str("&as=web");
+    url
 }
+
+/// How often a video being converted is asked about.
+pub const POLL_MS: u32 = 500;
 
 /// The most rows of a table drawn: each cell is a widget every frame, and nobody reads ten
 /// thousand rows in a window. The rest are there in "Show as text", and in the download.
@@ -162,8 +192,12 @@ pub struct Viewer {
     rows: Vec<Vec<String>>,
     /// Whether a table file is shown as its text instead.
     pub as_text: bool,
-    /// Whether a picture's details (size, camera, when and where it was taken) are shown.
+    /// Whether a picture's details (size, camera, when and where it was taken) are shown, in a
+    /// window of their own.
     pub details: bool,
+    /// Whether the server is still deciding about the file or making its copy, so the app
+    /// polls until it's done.
+    pub converting: bool,
 }
 
 impl Default for Viewer {
@@ -175,12 +209,21 @@ impl Default for Viewer {
             text_for: None,
             rows: Vec::new(),
             as_text: false,
+            converting: false,
             details: false,
         }
     }
 }
 
 impl App for Viewer {
+    fn wants_repaint_after_ms(&self) -> u32 {
+        if self.converting {
+            POLL_MS
+        } else {
+            ccosel_sdk::REPAINT_ON_INPUT_ONLY
+        }
+    }
+
     fn open(&mut self, arg: &str) {
         if arg.is_empty() || self.file.is_some() {
             return;
@@ -270,35 +313,8 @@ impl Viewer {
 
     fn file_view(&mut self, ui: &mut Ui<'_>, path: &str) {
         let (dir, name) = split(path);
-        ui.horizontal(|ui| {
-            ui.styled(name, TextStyle::STRONG);
-            if kind_of(path) == Kind::Image {
-                let label = if self.details {
-                    format!("{}  Hide details", icons::INFO)
-                } else {
-                    format!("{}  Details", icons::INFO)
-                };
-                if ui.button(&label).clicked() {
-                    self.details = !self.details;
-                }
-                ui.tooltip("Its size, and what the camera recorded: when, where and how");
-            }
-            ui.open_url(
-                &format!("{}  Download", icons::DOWNLOAD_SIMPLE),
-                &url::file_url(path),
-            );
-            ui.copy_link(
-                &format!("{}  Share", icons::LINK),
-                &url::app_link(APP_ID, path),
-            );
-            ui.tooltip(
-                "Copy a link that opens this file here. Whoever follows it signs in first, \
-                 and sees it only if they may.",
-            );
-        });
-        ui.styled(dir, TextStyle::WEAK);
-        ui.separator();
-
+        // The window is the file, so it's called by the file's name.
+        ui.window_title(name);
         // The folder's listing says whether the file is there and readable, and how big it is,
         // without reading it.
         let listing = ui.rpc().get::<ListDir>(&ListDirReq { path: dir });
@@ -306,66 +322,175 @@ impl Viewer {
             Poll::Ready(l) => l.entries.iter().find(|e| e.name == name),
             _ => None,
         };
-        match (&listing, entry) {
+        let problem = match (&listing, entry) {
+            // No header yet: a picture's window won't have one.
             (Poll::Pending, _) => {
                 ui.label("Opening…");
                 return;
             }
-            (Poll::Failed(e), _) => {
-                ui.label(e.message());
-                return;
-            }
+            (Poll::Failed(e), _) => Some(e.message()),
             (Poll::Ready(_), Some(e)) if e.kind == EntryKind::Dir => {
-                ui.label("That is a folder. Open it in Files to see what is in it.");
-                return;
+                Some("That is a folder. Open it in Files to see what is in it.")
             }
             // A listing too long to hold everything may leave it out: try it anyway.
             (Poll::Ready(l), None) if !l.truncated => {
-                ui.label("This file isn't there any more, or you aren't allowed to see it.");
-                return;
+                Some("This file isn't there any more, or you aren't allowed to see it.")
             }
-            _ => {}
+            _ => None,
+        };
+        if let Some(problem) = problem {
+            self.header(ui, path);
+            ui.label(problem);
+            return;
         }
         let size = entry.map(|e| e.size);
 
+        self.converting = false;
         match kind_of(path) {
-            Kind::Image => {
-                if self.details {
-                    image_details(ui, path, size);
-                    ui.separator();
-                }
-                ui.image(&url::inline_file_url(path), Vec2::new(0.0, 0.0));
-            }
-            Kind::Video => {
-                ui.media(
-                    &url::inline_file_url(path),
-                    MediaKind::Video,
-                    Vec2::new(0.0, 0.0),
-                );
-            }
-            Kind::Audio => {
-                ui.media(
-                    &url::inline_file_url(path),
-                    MediaKind::Audio,
-                    Vec2::new(0.0, 0.0),
-                );
-            }
+            Kind::Media | Kind::Unknown => self.media_view(ui, path, size),
             Kind::Pdf => {
+                self.header(ui, path);
                 ui.media(
                     &url::inline_file_url(path),
                     MediaKind::Document,
                     Vec2::new(0.0, 0.0),
                 );
             }
-            Kind::Table => self.text_view(ui, path, size, Some(separator(path))),
-            Kind::Other => self.text_view(ui, path, size, None),
+            Kind::Table => {
+                self.header(ui, path);
+                self.text_view(ui, path, size, Some(separator(path)));
+            }
+            Kind::Text => {
+                self.header(ui, path);
+                self.text_view(ui, path, size, None);
+            }
         }
-        if apple_only(path) {
-            ui.styled(
-                "This is an Apple format. Safari shows it; other browsers may not yet, so \
-                 download it if nothing appears.",
-                TextStyle::WEAK,
-            );
+    }
+
+    /// The file's name, Download and Share, and its folder: above everything but a picture,
+    /// whose window is the picture alone.
+    fn header(&mut self, ui: &mut Ui<'_>, path: &str) {
+        let (dir, name) = split(path);
+        ui.horizontal(|ui| {
+            ui.styled(name, TextStyle::STRONG);
+            download_and_share(ui, path);
+        });
+        ui.styled(dir, TextStyle::WEAK);
+        ui.separator();
+    }
+
+    /// What the server says the file is, shown as that: a picture, a moving picture, a video,
+    /// a recording, or, if it is none of them, text.
+    fn media_view(&mut self, ui: &mut Ui<'_>, path: &str, size: Option<u64>) {
+        let req = PathReq { path };
+        let status = match ui.rpc().get::<WebCopy>(&req) {
+            Poll::Pending => {
+                ui.label("Opening…");
+                return;
+            }
+            Poll::Failed(e) => {
+                self.header(ui, path);
+                ui.label(e.message());
+                return;
+            }
+            Poll::Ready(status) => status,
+        };
+        if !status.finished {
+            if status.shown != Some(Shown::Picture) {
+                self.header(ui, path);
+            }
+            let mut text = String::from(if status.shown == Some(Shown::Video) {
+                "Converting this video so it plays in this browser…"
+            } else {
+                "Getting this ready to show…"
+            });
+            if let Some(p) = status.permille {
+                text.push(' ');
+                text.push_str(&(p / 10).to_string());
+                text.push('%');
+            }
+            ui.label(&text);
+            if status.shown == Some(Shown::Video) {
+                ui.styled(
+                    "Only the first time: once converted, it plays straight away.",
+                    TextStyle::WEAK,
+                );
+            }
+            self.converting = true;
+            // Ask again next time round; this reads the job's progress, never starts another.
+            ui.rpc().invalidate::<WebCopy>(&req);
+            return;
+        }
+        if let Some(why) = &status.error {
+            self.header(ui, path);
+            ui.label(&format!(
+                "This can't be shown here: {why}. Download it to open it."
+            ));
+            return;
+        }
+        match status.shown {
+            Some(shown @ (Shown::Picture | Shown::Animated)) => {
+                self.picture_view(ui, path, size, shown, &status);
+            }
+            Some(Shown::Video) => {
+                self.header(ui, path);
+                ui.media(&shown_url(path), MediaKind::Video, Vec2::new(0.0, 0.0));
+            }
+            Some(Shown::Audio) => {
+                self.header(ui, path);
+                ui.media(&shown_url(path), MediaKind::Audio, Vec2::new(0.0, 0.0));
+            }
+            Some(Shown::NotMedia) | None => {
+                self.header(ui, path);
+                self.text_view(ui, path, size, None);
+            }
+        }
+    }
+
+    /// A picture, filling the window, which is asked to take its shape. Everything else about
+    /// it is in its right-click menu.
+    fn picture_view(
+        &mut self,
+        ui: &mut Ui<'_>,
+        path: &str,
+        size: Option<u64>,
+        shown: Shown,
+        status: &WebCopyStatus,
+    ) {
+        if let (Some(w), Some(h)) = (status.width, status.height) {
+            ui.window_size(Vec2::new(w as f32, h as f32));
+        }
+        if shown == Shown::Animated {
+            // The browser plays it: the shell would only draw its first frame.
+            ui.media(&shown_url(path), MediaKind::Picture, Vec2::new(0.0, 0.0));
+        } else {
+            ui.image(&shown_url(path), Vec2::new(-1.0, -1.0));
+        }
+        ui.tooltip("Right-click for its details, to download it or to share it");
+        let (dir, name) = split(path);
+        ui.context_menu(|ui| {
+            ui.styled(name, TextStyle::STRONG);
+            ui.styled(dir, TextStyle::WEAK);
+            ui.separator();
+            let label = if self.details {
+                format!("{}  Hide details", icons::INFO)
+            } else {
+                format!("{}  Details", icons::INFO)
+            };
+            if ui.button(&label).clicked() {
+                self.details = !self.details;
+            }
+            download_and_share(ui, path);
+        });
+        if self.details {
+            let mut close = false;
+            ui.window(&format!("Details of {name}"), |ui| {
+                image_details(ui, path, size);
+                close = ui.button("Close").clicked();
+            });
+            if close {
+                self.details = false;
+            }
         }
     }
 
@@ -410,6 +535,22 @@ impl Viewer {
             }
         }
     }
+}
+
+/// Download and Share for `path`: in a file's header, or a picture's right-click menu.
+fn download_and_share(ui: &mut Ui<'_>, path: &str) {
+    ui.open_url(
+        &format!("{}  Download", icons::DOWNLOAD_SIMPLE),
+        &url::file_url(path),
+    );
+    ui.copy_link(
+        &format!("{}  Share", icons::LINK),
+        &url::app_link(APP_ID, path),
+    );
+    ui.tooltip(
+        "Copy a link that opens this file here. Whoever follows it signs in first, and sees it \
+         only if they may.",
+    );
 }
 
 /// A picture's size and what its camera recorded, read by the server (the app never holds the

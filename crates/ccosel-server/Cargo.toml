@@ -25,9 +25,14 @@ kamadak-exif = "0.6.1"
 imagesize = "0.15.0"
 dav-server = { version = "0.11", default-features = false }
 sha2 = "0.10"
+# SVG is rendered here rather than by a tool, so nothing it refers to is ever fetched or read:
+# not a URL, not a file elsewhere on the server. No `svgz`: a small gzipped file can inflate to
+# gigabytes before any limit here sees it. See `web_copy::svg`.
+resvg = { version = "0.48", default-features = false, features = ["text", "system-fonts", "memmap-fonts", "raster-images"] }
 base64 = "0.22"
 futures-util = "0.3"
 bytes = "1"
+roxmltree = "0.21"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "fs"] }

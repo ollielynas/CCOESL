@@ -26,7 +26,7 @@ use alloc::vec::Vec;
 use ccosel_abi::event::{
     Event, TextDelta, encode_error, encode_page_info, encode_text_delta, event_kind,
 };
-use ccosel_abi::{Cmd, Decoder, MediaKind, RespRecord, ResponseFlags, ScopeKind, TextStyle};
+use ccosel_abi::{Cmd, Decoder, MediaKind, RespRecord, ResponseFlags, ScopeKind, TextStyle, Vec2};
 
 /// The codes [`Harness::fail`] takes, re-exported so an app's tests need no `ccosel-abi`
 /// dependency of their own.
@@ -252,6 +252,22 @@ impl<A: App> Harness<A> {
                 _ => None,
             })
             .collect()
+    }
+
+    /// The window size the app asked for in the last frame, if it did.
+    pub fn window_size(&self) -> Option<Vec2> {
+        self.commands().find_map(|c| match c {
+            Cmd::WindowSize { size } => Some(size),
+            _ => None,
+        })
+    }
+
+    /// The window title the app asked for in the last frame, if it did.
+    pub fn window_title(&self) -> Option<String> {
+        self.commands().find_map(|c| match c {
+            Cmd::WindowTitle { title } => Some(title.to_string()),
+            _ => None,
+        })
     }
 
     /// The URL of every image drawn in the last frame, in order.

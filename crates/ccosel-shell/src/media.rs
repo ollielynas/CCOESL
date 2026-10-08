@@ -1,5 +1,5 @@
-//! Audio, video and PDFs (`Ui::media`), played or shown by the browser in elements laid over
-//! the canvas.
+//! Audio, video, PDFs and moving pictures (`Ui::media`), played or shown by the browser in
+//! elements laid over the canvas.
 //!
 //! egui can draw neither, and the browser already has every decoder it ships plus its own player
 //! controls. Replay reserves the space and reports where it is ([`MediaSlot`]); this keeps one
@@ -99,6 +99,7 @@ fn create(kind: MediaKind, src: &str) -> Result<web_sys::HtmlElement, String> {
         MediaKind::Video => "video",
         MediaKind::Audio => "audio",
         MediaKind::Document => "iframe",
+        MediaKind::Picture => "img",
     };
     let el: web_sys::HtmlElement = document
         .create_element(tag)
@@ -110,14 +111,20 @@ fn create(kind: MediaKind, src: &str) -> Result<web_sys::HtmlElement, String> {
             .map_err(|e| format!("{tag} {k}: {e:?}"))
     };
     set("src", src)?;
-    if kind != MediaKind::Document {
-        set("controls", "")?;
-        // Enough to show the length and first frame without fetching the whole file.
-        set("preload", "metadata")?;
-        // In the page on phones, not taken over to full screen.
-        set("playsinline", "")?;
-    } else {
-        set("title", "Document")?;
+    match kind {
+        MediaKind::Video | MediaKind::Audio => {
+            set("controls", "")?;
+            // Enough to show the length and first frame without fetching the whole file.
+            set("preload", "metadata")?;
+            // In the page on phones, not taken over to full screen.
+            set("playsinline", "")?;
+        }
+        MediaKind::Document => set("title", "Document")?,
+        MediaKind::Picture => {
+            set("alt", "")?;
+            // Not dragged out of the page as a file.
+            set("draggable", "false")?;
+        }
     }
     let style = el.style();
     for (k, v) in [
@@ -135,6 +142,18 @@ fn create(kind: MediaKind, src: &str) -> Result<web_sys::HtmlElement, String> {
         ),
         ("z-index", "10"),
         ("display", "none"),
+        // A picture fills its slot keeping its shape, like the shell draws a still one.
+        ("object-fit", "contain"),
+        // And it lets every click through to the canvas under it, so the app's right-click
+        // menu opens rather than the browser's, and the window can still be dragged by it.
+        (
+            "pointer-events",
+            if kind == MediaKind::Picture {
+                "none"
+            } else {
+                "auto"
+            },
+        ),
     ] {
         style
             .set_property(k, v)
